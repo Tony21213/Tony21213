@@ -65,6 +65,8 @@ class NeighborAnalysis:
     contralateral: ToothSegment | None = None
     template: Mesh | None = None  # contralateral tooth mirrored into place (world)
     chains: tuple[int, int] = (0, 0)  # teeth found on the mesial / distal side
+    buccal: np.ndarray | None = None  # world, convex side of the arch at the tooth
+    midline_normal: np.ndarray | None = None  # world, across the midline (tooth -> contralateral)
 
     def summary(self) -> dict:
         return {
@@ -359,8 +361,24 @@ def analyze_neighbors(jaw: Mesh | list[Mesh], margin: np.ndarray, axis=(0.0, 0.0
         f = template.faces[keep[template.faces].all(axis=1)]
         used, inv = np.unique(f, return_inverse=True)
         template = Mesh(template.vertices[used], inv.reshape(-1, 3))
+    # buccal = convex side of the arch: the chain of teeth turns towards lingual
+    poly = [s_.peak for s_ in reversed(sd[:2])] + [center] + [s_.peak for s_ in sm[:3]]
+    turn = 0.0
+    for a_, b_, c_ in zip(poly[:-2], poly[1:-1], poly[2:]):
+        u, v = b_ - a_, c_ - b_
+        turn += float(np.arctan2(u[0] * v[1] - u[1] * v[0], u @ v))
+    buccal = None
+    if abs(turn) > np.radians(3):
+        left = np.array([-mes_dir[1], mes_dir[0]])
+        b2 = -left if turn > 0 else left
+        buccal = frame0.vector_to_world(np.array([b2[0], b2[1], 0.0]))
+    midline = None
+    if contra is not None:
+        d2 = contra.center - center
+        midline = frame0.vector_to_world(np.array([d2[0], d2[1], 0.0]))
+        midline /= np.linalg.norm(midline)
     return NeighborAnalysis(frame, frame.x, frame0.to_world(np.array([center[0], center[1], 0.0])),
-                            space, neighbors, contra, template, (len(sm), len(sd)))
+                            space, neighbors, contra, template, (len(sm), len(sd)), buccal, midline)
 
 
 def _mirror(tooth: ToothSegment, frame0: ToothFrame, center: np.ndarray, mesial: np.ndarray,

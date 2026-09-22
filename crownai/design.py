@@ -135,7 +135,8 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
                  margin: np.ndarray | None = None, antagonist: Mesh | None = None,
                  axis=(0.0, 0.0, 1.0), md_direction=(1.0, 0.0, 0.0),
                  shape_model: ShapeModel | None = None, shape_coeffs=None,
-                 learner=None, neighbors=None, params: CrownParameters | None = None) -> CrownResult:
+                 learner=None, neighbors=None, occlusion=None, arch_orientation=None,
+                 params: CrownParameters | None = None) -> CrownResult:
     """Design a full-contour anatomical crown on ``prep`` (a segmented die scan, mm).
 
     Anatomy source, in priority order: the patient's own contralateral tooth
@@ -145,6 +146,12 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     otherwise the parametric library tooth.  With ``neighbors`` the crown also
     follows the arch direction, fills the space between the adjacent teeth
     and touches them at the contacts.
+
+    ``occlusion`` (e.g. :class:`crownai.occlusion.SlavicekConcept`) shapes the
+    occlusal surface functionally against the ``antagonist``: centric
+    contacts plus no interference along the simulated excursive movements.
+    ``arch_orientation`` = (anterior, buccal) world vectors overrides the
+    orientation derived from ``neighbors``.
     """
     p = params or CrownParameters()
     ttype = tooth if isinstance(tooth, ToothType) else tooth_type_for_fdi(tooth)
@@ -254,6 +261,12 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         if n_trim:
             outer = _laplacian(outer, 2)
 
+    occlusion_report = None
+    if occlusion is not None and antagonist is not None:
+        outer, outer_pole, occlusion_report = _functional_occlusion(
+            outer, outer_pole, antagonist, frame, v, tooth, neighbors, occlusion, arch_orientation,
+            p.occlusal_clearance, warnings)
+
     contacts = []
     if neighbors is not None:
         for nb in neighbors.neighbors:
@@ -287,6 +300,17 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     if shortfall.max() > 0.05:
         warnings.append(f"minimum thickness not reached by up to {shortfall.max():.2f} mm")
 
+    if occlusion_report is not None:
+        from .occlusion import excursion_interference
+
+        left_over = excursion_interference(
+            outer[:, v >= 0.35].reshape(-1, 3), antagonist, frame.z, occlusion_report.pop("_movements"),
+            crown_on_mandible=occlusion_report["crown_on_mandible"], clearance=p.occlusal_clearance,
+            excursion=occlusion.excursion, steps=occlusion.steps)
+        occlusion_report["remaining_interference_mm"] = round(left_over, 3)
+        if left_over > 0.05:
+            warnings.append(f"minimum thickness keeps {left_over:.2f} mm of excursive interference: "
+                            "the preparation needs more occlusal reduction")
     if antagonist is not None:
         lift = _antagonist_penetration(outer, antagonist, frame, p.occlusal_clearance)
         if lift > 0.05:
@@ -301,6 +325,7 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         "anatomy_source": source,
         **({"neighbors": neighbors.summary(), "contact_gap_before_fit_mm": contacts}
            if neighbors is not None else {}),
+        **({"occlusion": occlusion_report} if occlusion_report is not None else {}),
         "volume_mm3": round(crown.volume(), 2),
         "watertight": crown.is_watertight(),
         "vertices": int(len(crown.vertices)),
@@ -424,6 +449,45 @@ def _fit_contact(outer: np.ndarray, neighbor: Mesh, frame: ToothFrame, center: n
     w = _smoothstep((proj - (proj.max() - band)) / band)
     w *= _smoothstep((np.arange(outer.shape[1]) - 2) / 6.0)[None, :]
     return outer + d * ((closest - gap) * w)[..., None], closest
+
+
+def _functional_occlusion(outer, outer_pole, antagonist, frame, v, tooth, neighbors, concept,
+                          arch_orientation, clearance, warnings):
+    """Centric contacts and excursion-free occlusal surface after ``concept``."""
+    from .occlusion import arch_directions, carve_excursions, raise_to_centric_contacts
+
+    fdi = tooth if isinstance(tooth, (int, np.integer)) else None
+    if arch_orientation is not None:
+        anterior, buccal = (np.asarray(a, dtype=float) for a in arch_orientation)
+        source = "given"
+    elif neighbors is not None and neighbors.buccal is not None:
+        anterior, buccal = arch_directions(frame.x, frame.z, neighbors.buccal, fdi, neighbors.midline_normal)
+        source = "adjacent teeth" + (" + midline" if neighbors.midline_normal is not None else "")
+    else:
+        anterior, buccal = arch_directions(frame.x, frame.z, None, fdi)
+        source = "assumed"
+        warnings.append("arch orientation unknown (no adjacent teeth): excursion directions assumed")
+    on_mandible = (fdi // 10 in (3, 4)) if fdi else bool(frame.z[2] > 0)
+    movements = concept.movements(fdi, anterior, buccal)
+    region = np.broadcast_to((v >= 0.35)[None, :], outer.shape[:2])
+    n_centric = 0
+    if concept.centric_contacts:
+        outer, n_centric = raise_to_centric_contacts(outer, antagonist, frame.z, region, clearance)
+    grid = np.concatenate([outer, np.broadcast_to(outer_pole, (outer.shape[0], 1, 3))], axis=1)
+    reg = np.concatenate([region, np.ones((outer.shape[0], 1), bool)], axis=1)
+    grid, moves = carve_excursions(grid, antagonist, frame.z, movements, crown_on_mandible=on_mandible,
+                                   clearance=clearance, excursion=concept.excursion, steps=concept.steps,
+                                   region=reg)
+    outer = _laplacian(grid[:, :-1], 1, weight=0.2)
+    outer_pole = grid[:, -1].mean(axis=0)
+    return outer, outer_pole, {
+        "concept": "Slavicek sequential guidance",
+        "crown_on_mandible": on_mandible,
+        "orientation": source,
+        "centric_contact_points": n_centric,
+        "movements": moves,
+        "_movements": movements,
+    }
 
 
 def _clamp_above_margin(outer: np.ndarray, frame: ToothFrame, margin_z: np.ndarray) -> np.ndarray:

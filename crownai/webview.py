@@ -334,7 +334,7 @@ def case_for_tooth(objects: list[WebviewObject], tooth: int) -> WebviewCase:
 
 
 def design_from_webview(path: str | Path, tooth: int, *, learner=None, params=None,
-                        use_neighbors: bool = True):
+                        use_neighbors: bool = True, occlusion=None, fix_bite_first: bool = False):
     """Design ``tooth`` from an exocad webview: preparation, neighbours, antagonist.
 
     Returns ``(CrownResult, WebviewCase, NeighborAnalysis | None)``; when the
@@ -351,9 +351,17 @@ def design_from_webview(path: str | Path, tooth: int, *, learner=None, params=No
     na = None
     if use_neighbors and case.jaw is not None:
         na = analyze_neighbors(case.jaw, margin, case.axis, tooth=tooth)
-    res = design_crown(case.prep, tooth=tooth, margin=margin, antagonist=case.antagonist,
-                       axis=case.axis, neighbors=na, learner=learner, params=params)
+    antagonist = case.antagonist
+    bite = None
+    if fix_bite_first and case.jaw is not None and antagonist is not None:
+        from .occlusion import fix_bite
+
+        antagonist, bite = fix_bite(case.jaw, antagonist, case.axis)
+    res = design_crown(case.prep, tooth=tooth, margin=margin, antagonist=antagonist,
+                       axis=case.axis, neighbors=na, learner=learner, occlusion=occlusion, params=params)
     res.report["inputs"] = case.used
+    if bite is not None:
+        res.report["bite_correction"] = bite
     if case.reference is not None:
         top = res.frame.to_local(margin)[:, 2].max()
         res.report["reference"] = compare_to_reference(res.outer[:, 4:].reshape(-1, 3), res.crown,

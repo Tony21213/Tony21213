@@ -39,11 +39,25 @@ def _add_design_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--md-dir", type=_vec, default=(1.0, 0.0, 0.0), help="mesiodistal direction (default 1,0,0)")
     p.add_argument("--ssm", type=Path, help="trained shape model (.npz) instead of the parametric library")
     p.add_argument("--library", type=Path, help="learning library folder: design with the anatomy learned from past cases")
+    o = p.add_argument_group("functional occlusion (Slavicek sequential guidance)")
+    o.add_argument("--slavicek", action="store_true",
+                   help="centric contacts + no interference in protrusion / latero- / mediotrusion")
+    o.add_argument("--condylar-inclination", type=float, default=35.0,
+                   help="deg vs occlusal plane (axiography value, default mean 35)")
+    o.add_argument("--bennett", type=float, default=10.0, help="Bennett angle, deg")
 
 
 def _params(a) -> CrownParameters:
     return CrownParameters(cement_gap=a.cement_gap, margin_gap=a.margin_gap, min_axial=a.min_axial,
                            min_occlusal=a.min_occlusal, occlusal_clearance=a.clearance)
+
+
+def _occlusion(a):
+    if not getattr(a, "slavicek", False):
+        return None
+    from .occlusion import SlavicekConcept
+
+    return SlavicekConcept(condylar_inclination=a.condylar_inclination, bennett_angle=a.bennett)
 
 
 def _learner(a):
@@ -69,7 +83,8 @@ def cmd_design(a) -> int:
     margin = load_margin(a.margin) if a.margin else None
     ssm = ShapeModel.load(a.ssm) if a.ssm else None
     res = design_crown(prep, tooth=a.tooth, margin=margin, antagonist=ant, axis=a.axis,
-                       md_direction=a.md_dir, shape_model=ssm, learner=_learner(a), params=_params(a))
+                       md_direction=a.md_dir, shape_model=ssm, learner=_learner(a), occlusion=_occlusion(a),
+                       params=_params(a))
     save_stl(res.crown, a.out)
     if a.report:
         Path(a.report).write_text(json.dumps(res.report, indent=2, ensure_ascii=False))
@@ -194,7 +209,8 @@ def cmd_design_webview(a) -> int:
     from .webview import design_from_webview
 
     res, case, na = design_from_webview(a.file, a.tooth, learner=_learner(a), params=_params(a),
-                                        use_neighbors=not a.no_neighbors)
+                                        use_neighbors=not a.no_neighbors, occlusion=_occlusion(a),
+                                        fix_bite_first=a.fix_bite)
     save_stl(res.crown, a.out)
     if a.report:
         Path(a.report).write_text(json.dumps(res.report, indent=2, ensure_ascii=False))
@@ -215,6 +231,15 @@ def cmd_learn_webview(a) -> int:
             print(json.dumps(info, ensure_ascii=False))
             total += 1
     print(f"learned {total} tooth/teeth from {len(a.files)} file(s)")
+    return 0
+
+
+def cmd_fix_bite(a) -> int:
+    from .occlusion import fix_bite
+
+    fixed, info = fix_bite(load_stl(a.jaw), load_stl(a.antagonist), a.axis, contact=a.contact)
+    save_stl(fixed, a.out)
+    print(json.dumps(info, indent=2))
     return 0
 
 
@@ -299,6 +324,7 @@ def main(argv=None) -> int:
     p.add_argument("--report", type=Path)
     p.add_argument("--preview", type=Path)
     p.add_argument("--no-neighbors", action="store_true", help="ignore adjacent/contralateral teeth")
+    p.add_argument("--fix-bite", action="store_true", help="correct the jaw relation before designing")
     _add_design_options(p)
     p.set_defaults(func=cmd_design_webview)
 
@@ -307,6 +333,14 @@ def main(argv=None) -> int:
     p.add_argument("--library", required=True, type=Path)
     p.add_argument("--tooth", type=int, action="append")
     p.set_defaults(func=cmd_learn_webview)
+
+    p = sub.add_parser("fix-bite", help="move the antagonist scan so the jaws meet without penetrating")
+    p.add_argument("--jaw", required=True, type=Path)
+    p.add_argument("--antagonist", required=True, type=Path)
+    p.add_argument("--out", required=True, type=Path, help="corrected antagonist STL")
+    p.add_argument("--axis", type=_vec, default=(0.0, 0.0, 1.0), help="direction from jaw to antagonist")
+    p.add_argument("--contact", type=float, default=0.0, help="gap at the closest contact, mm")
+    p.set_defaults(func=cmd_fix_bite)
 
     a = ap.parse_args(argv)
     return a.func(a)
