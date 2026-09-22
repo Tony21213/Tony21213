@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crownai"
+version = "0.1.0"
+description = "Automatic dental crown design from an intraoral scan of a prepared tooth"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+viz = ["matplotlib>=3.7"]
+dev = ["pytest>=7", "matplotlib>=3.7"]
+
+[project.scripts]
+crownai = "crownai.cli:main"
+
+[tool.setuptools]
+packages = ["crownai"]
