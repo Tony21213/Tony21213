@@ -1,6 +1,7 @@
 """Command line interface.
 
-``crownai design | demo | train-ssm | learn | learn-case | library | exocad-case | exocad-watch``
+``crownai design | demo | train-ssm | learn | learn-case | library | exocad-case | exocad-watch |
+webview | design-webview | learn-webview``
 """
 
 from __future__ import annotations
@@ -172,6 +173,51 @@ def cmd_library(a) -> int:
     return 0
 
 
+def cmd_webview(a) -> int:
+    from .webview import classify, load_webview
+
+    objects = load_webview(a.file)
+    if a.export:
+        a.export.mkdir(parents=True, exist_ok=True)
+    for i, o in enumerate(objects):
+        c = classify(o)
+        teeth = "-".join(map(str, c["teeth"])) or "-"
+        label = f"{i:02d}_{c['kind']}_{c['jaw'] or 'na'}_{teeth}"
+        name = f"  {o.name}" if a.names else ""  # names may contain the patient's name
+        print(f"{label:34} {len(o.mesh.vertices):8d} vertices{name}")
+        if a.export:
+            save_stl(o.mesh, a.export / f"{label}.stl")
+    return 0
+
+
+def cmd_design_webview(a) -> int:
+    from .webview import design_from_webview
+
+    res, case, na = design_from_webview(a.file, a.tooth, learner=_learner(a), params=_params(a),
+                                        use_neighbors=not a.no_neighbors)
+    save_stl(res.crown, a.out)
+    if a.report:
+        Path(a.report).write_text(json.dumps(res.report, indent=2, ensure_ascii=False))
+    if a.preview:
+        _preview(res, case.prep, a.preview, case.antagonist, f"Tooth {a.tooth}")
+    print(json.dumps(res.report, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_learn_webview(a) -> int:
+    from .learning import CrownLearner
+    from .webview import learn_from_webview
+
+    learner = CrownLearner(a.library)
+    total = 0
+    for f in a.files:
+        for info in learn_from_webview(f, learner, teeth=a.tooth):
+            print(json.dumps(info, ensure_ascii=False))
+            total += 1
+    print(f"learned {total} tooth/teeth from {len(a.files)} file(s)")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="crownai", description="Automatic dental crown design")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -239,6 +285,28 @@ def main(argv=None) -> int:
     p.add_argument("--once", action="store_true", help="process pending cases and exit")
     _add_design_options(p)
     p.set_defaults(func=cmd_exocad_watch)
+
+    p = sub.add_parser("webview", help="list (and export) the objects of an exocad webview HTML")
+    p.add_argument("file", type=Path)
+    p.add_argument("--export", type=Path, help="write every object as STL into this folder")
+    p.add_argument("--names", action="store_true", help="show exocad object names (may contain patient data)")
+    p.set_defaults(func=cmd_webview)
+
+    p = sub.add_parser("design-webview", help="design a crown from an exocad webview HTML")
+    p.add_argument("file", type=Path)
+    p.add_argument("--tooth", type=int, required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--report", type=Path)
+    p.add_argument("--preview", type=Path)
+    p.add_argument("--no-neighbors", action="store_true", help="ignore adjacent/contralateral teeth")
+    _add_design_options(p)
+    p.set_defaults(func=cmd_design_webview)
+
+    p = sub.add_parser("learn-webview", help="learn the technician's wax-ups from exocad webview HTML files")
+    p.add_argument("files", type=Path, nargs="+")
+    p.add_argument("--library", required=True, type=Path)
+    p.add_argument("--tooth", type=int, action="append")
+    p.set_defaults(func=cmd_learn_webview)
 
     a = ap.parse_args(argv)
     return a.func(a)

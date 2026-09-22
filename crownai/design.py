@@ -41,6 +41,7 @@ class CrownParameters:
     n_v: int = 48  # samples from margin to occlusal pole
     smoothing: int = 4  # Laplacian passes on the outer surface
     emergence_height: float = 2.0  # mm above the margin over which anatomy blends into it
+    contact_gap: float = 0.0  # mm to the adjacent teeth at the contacts (negative = tight)
 
 
 @dataclass
@@ -134,12 +135,16 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
                  margin: np.ndarray | None = None, antagonist: Mesh | None = None,
                  axis=(0.0, 0.0, 1.0), md_direction=(1.0, 0.0, 0.0),
                  shape_model: ShapeModel | None = None, shape_coeffs=None,
-                 learner=None, params: CrownParameters | None = None) -> CrownResult:
+                 learner=None, neighbors=None, params: CrownParameters | None = None) -> CrownResult:
     """Design a full-contour anatomical crown on ``prep`` (a segmented die scan, mm).
 
-    Anatomy source, in priority order: an explicit ``shape_model``, a trained
-    ``learner`` (:class:`crownai.learning.CrownLearner`) with cases for this
-    tooth class, otherwise the parametric library tooth.
+    Anatomy source, in priority order: the patient's own contralateral tooth
+    mirrored into place (``neighbors``, see :func:`crownai.arch.analyze_neighbors`),
+    an explicit ``shape_model``, a trained ``learner``
+    (:class:`crownai.learning.CrownLearner`) with cases for this tooth class,
+    otherwise the parametric library tooth.  With ``neighbors`` the crown also
+    follows the arch direction, fills the space between the adjacent teeth
+    and touches them at the contacts.
     """
     p = params or CrownParameters()
     ttype = tooth if isinstance(tooth, ToothType) else tooth_type_for_fdi(tooth)
@@ -151,6 +156,8 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     else:
         margin = order_margin(np.asarray(margin, dtype=np.float64), axis=axis)
         margin = _resample_loop(margin, p.n_theta)
+    if neighbors is not None:
+        md_direction = neighbors.md_direction
     frame = make_frame(margin.mean(axis=0), axis, md_direction)
     m_loc = frame.to_local(margin)
     prep_top = frame.to_local(prep.vertices)[:, 2].max()
@@ -196,12 +203,26 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     B = max(ttype.buccolingual / 2, half_y * 1.12)
     H = max(ttype.height, prep_top + p.cement_gap + p.min_occlusal + 0.8)
     z0 = m_loc[:, 2].min() - 1.0
+    offset = np.zeros(3)
+    if neighbors is not None:
+        c = frame.to_local(neighbors.target_center)
+        offset = np.array([c[0], c[1], 0.0])
+        if neighbors.space is not None:
+            A = neighbors.space / 2
     prediction = None
     if shape_model is None and learner is not None:
         from .learning import case_features
 
         prediction = learner.predict(ttype.name, case_features(m_loc, prep_top))
-    if shape_model is not None:
+    if neighbors is not None and neighbors.template is not None:
+        from .learning import CENTER_Z, N_PHI, N_THETA, crown_signature
+
+        sig, (tA, tB, tH) = crown_signature(neighbors.template, frame, m_loc)
+        own = ShapeModel(N_THETA, N_PHI, CENTER_Z, sig, np.zeros((0, sig.size)), np.zeros(0))
+        H = max(tH, prep_top + p.cement_gap + p.min_occlusal + 0.3)
+        shape = ModelTooth(own, sig, tA, tB, H, z0)
+        source = "mirrored contralateral tooth"
+    elif shape_model is not None:
         shape = ModelTooth(shape_model, shape_model.reconstruct(shape_coeffs), A, B, H, z0)
         source = "shape model"
     elif prediction is not None:
@@ -214,6 +235,8 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         shape = ParametricTooth(ttype, A, B, H, cervical_x=half_x / A, cervical_y=half_y / B, z0=z0)
         source = "parametric library"
 
+    if neighbors is not None and neighbors.template is None and np.any(offset):
+        shape = _Shifted(shape, offset)
     shape = EmergenceShape(shape, m_loc, p.emergence_height)
     t_out = _shape_radii(shape, frame, center, dirs)
     t_out[:, 0] = t_margin
@@ -230,6 +253,13 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         outer, outer_pole, n_trim = _trim_to_antagonist(outer, outer_pole, antagonist, frame, p.occlusal_clearance)
         if n_trim:
             outer = _laplacian(outer, 2)
+
+    contacts = []
+    if neighbors is not None:
+        for nb in neighbors.neighbors:
+            outer, gap_before = _fit_contact(outer, nb.mesh, frame, center, p.contact_gap)
+            contacts.append(round(gap_before, 3))
+        outer = _laplacian(outer, 1, weight=0.2)
 
     inner_pts = np.concatenate([inner.reshape(-1, 3), inner_pole[None]])
     for it in range(12):
@@ -269,6 +299,8 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     report = {
         "tooth_type": ttype.name,
         "anatomy_source": source,
+        **({"neighbors": neighbors.summary(), "contact_gap_before_fit_mm": contacts}
+           if neighbors is not None else {}),
         "volume_mm3": round(crown.volume(), 2),
         "watertight": crown.is_watertight(),
         "vertices": int(len(crown.vertices)),
@@ -355,6 +387,43 @@ def _shape_radii(shape, frame: ToothFrame, center: np.ndarray, dirs: np.ndarray,
             lo, hi = np.where(m_in, mid, lo), np.where(m_in, hi, mid)
         out[s:s + 512] = 0.5 * (lo + hi)
     return out.reshape(shp)
+
+
+class _Shifted:
+    """An anatomy prior moved within the occlusal plane (tooth-local offset)."""
+
+    def __init__(self, base, offset: np.ndarray):
+        self.base, self.offset = base, offset
+
+    def inside(self, p: np.ndarray) -> np.ndarray:
+        return self.base.inside(p - self.offset)
+
+
+def _fit_contact(outer: np.ndarray, neighbor: Mesh, frame: ToothFrame, center: np.ndarray,
+                 gap: float, band: float = 3.0) -> tuple[np.ndarray, float]:
+    """Move the proximal surface facing ``neighbor`` so the closest approach is ``gap``.
+
+    The distance is measured along the direction to the neighbour; the whole
+    proximal third moves, fading out towards the middle of the crown and
+    towards the margin, which stays fixed.
+    """
+    nb_loc = frame.to_local(neighbor.vertices)
+    c_loc = frame.to_local(center)
+    d = nb_loc[:, :2].mean(0) - c_loc[:2]
+    d = frame.vector_to_world(np.array([d[0], d[1], 0.0]))
+    d /= np.linalg.norm(d)
+    pts = outer.reshape(-1, 3)
+    back = 4.0
+    t = raycast(pts - d * back, np.broadcast_to(d, pts.shape), neighbor) - back
+    t = t.reshape(outer.shape[:2])
+    t[:, :3] = np.inf  # never move the margin region
+    if not np.isfinite(t).any():
+        return outer, float("nan")
+    closest = float(np.min(t))
+    proj = (outer - center) @ d
+    w = _smoothstep((proj - (proj.max() - band)) / band)
+    w *= _smoothstep((np.arange(outer.shape[1]) - 2) / 6.0)[None, :]
+    return outer + d * ((closest - gap) * w)[..., None], closest
 
 
 def _clamp_above_margin(outer: np.ndarray, frame: ToothFrame, margin_z: np.ndarray) -> np.ndarray:

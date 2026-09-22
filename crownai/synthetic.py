@@ -80,3 +80,66 @@ def make_antagonist(z_level: float = 7.0, size: float = 9.0, n: int = 40) -> Mes
         faces += [(a, b, b + off), (a, b + off, a + off)]
     mesh = Mesh(verts, np.array(faces))
     return mesh if mesh.volume() > 0 else mesh.flipped()
+
+
+# FDI position -> (mesiodistal, buccolingual) crown size of lower teeth, mm
+_LOWER_SIZES = {1: (5.4, 5.9), 2: (5.9, 6.2), 3: (6.9, 7.5), 4: (7.0, 7.6), 5: (7.1, 8.0),
+                6: (11.0, 10.3), 7: (10.5, 10.0)}
+
+
+def make_lower_arch(missing: int = 33, res: float = 0.3) -> tuple[Mesh, dict]:
+    """Height-field scan of a lower dental arch with one tooth missing.
+
+    Returns the jaw mesh (z up = occlusal) and, per FDI tooth, its crown
+    centre, arch tangent and size.  Teeth are rounded bumps 6 mm above a
+    gingival ridge, placed along a parabolic arch with their real widths.
+    """
+    # arch: y = c - k x^2, teeth laid out along its arc length from the midline
+    k, c = 0.028, 22.0
+    xs_fine = np.linspace(-30, 30, 6001)
+    ys_fine = c - k * xs_fine ** 2
+    arc = np.concatenate([[0], np.cumsum(np.hypot(np.diff(xs_fine), np.diff(ys_fine)))])
+    arc -= np.interp(0.0, xs_fine, arc)
+    teeth = {}
+    for side, quadrant in ((-1, 3), (1, 4)):
+        s = 0.0
+        for pos in range(1, 8):
+            md, bl = _LOWER_SIZES[pos]
+            centre_s = side * (s + md / 2)
+            x = np.interp(centre_s, arc, xs_fine)
+            tangent = np.array([1.0, -2 * k * x])
+            tangent /= np.linalg.norm(tangent)
+            teeth[quadrant * 10 + pos] = {"center": np.array([x, c - k * x ** 2]), "tangent": tangent,
+                                          "md": md, "bl": bl}
+            s += md + 0.05
+    X, Y = np.meshgrid(np.arange(-30, 30, res), np.arange(-15, 26, res), indexing="ij")
+    # gingival ridge along the arch
+    d_arch = np.abs(Y - (c - k * X ** 2)) / np.sqrt(1 + (2 * k * X) ** 2)
+    Z = 2.0 * np.exp(-(d_arch / 6.0) ** 2)
+    for fdi, t in teeth.items():
+        if fdi == missing:
+            continue
+        rel = np.stack([X - t["center"][0], Y - t["center"][1]], -1)
+        a = rel @ t["tangent"] / (t["md"] / 2)
+        b = rel @ np.array([-t["tangent"][1], t["tangent"][0]]) / (t["bl"] / 2)
+        r = np.clip(1 - a ** 4, 0, None) * np.clip(1 - b ** 2, 0, None)
+        cusp = 6.0 + (0.8 if fdi % 10 == 3 else 0.0) * np.exp(-(a ** 2 + b ** 2) * 3)
+        Z = np.maximum(Z, 2.0 + cusp * np.sqrt(r))
+    n0, n1 = X.shape
+    verts = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()])
+    idx = np.arange(n0 * n1).reshape(n0, n1)
+    a, b, c_, d = idx[:-1, :-1].ravel(), idx[1:, :-1].ravel(), idx[1:, 1:].ravel(), idx[:-1, 1:].ravel()
+    faces = np.concatenate([np.stack([a, b, c_], 1), np.stack([a, c_, d], 1)])
+    return Mesh(verts, faces), teeth
+
+
+def make_prep_at(center_xy: np.ndarray, md: float, bl: float, margin_z: float = 2.0) -> Mesh:
+    """A small tapered preparation (die) standing at ``center_xy`` with its margin at ``margin_z``."""
+    die = make_prepared_molar(n_theta=64, height=4.2, shoulder=0.6, scallop=0.0)
+    v = die.vertices.copy()
+    v[:, 0] *= (md * 0.8 / 2) / 4.8
+    v[:, 1] *= (bl * 0.8 / 2) / 4.8
+    v[:, 0] += center_xy[0]
+    v[:, 1] += center_xy[1]
+    v[:, 2] += margin_z
+    return Mesh(v, die.faces)
