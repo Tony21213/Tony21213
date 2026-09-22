@@ -358,7 +358,8 @@ def design_from_webview(path: str | Path, tooth: int, *, learner=None, params=No
 
         antagonist, bite = fix_bite(case.jaw, antagonist, case.axis)
     res = design_crown(case.prep, tooth=tooth, margin=margin, antagonist=antagonist,
-                       axis=case.axis, neighbors=na, learner=learner, occlusion=occlusion, params=params)
+                       axis=case.axis, neighbors=na, learner=learner, occlusion=occlusion, jaw=case.jaw,
+                       params=params)
     res.report["inputs"] = case.used
     if bite is not None:
         res.report["bite_correction"] = bite

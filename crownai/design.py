@@ -135,7 +135,7 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
                  margin: np.ndarray | None = None, antagonist: Mesh | None = None,
                  axis=(0.0, 0.0, 1.0), md_direction=(1.0, 0.0, 0.0),
                  shape_model: ShapeModel | None = None, shape_coeffs=None,
-                 learner=None, neighbors=None, occlusion=None, arch_orientation=None,
+                 learner=None, neighbors=None, occlusion=None, arch_orientation=None, jaw: Mesh | None = None,
                  params: CrownParameters | None = None) -> CrownResult:
     """Design a full-contour anatomical crown on ``prep`` (a segmented die scan, mm).
 
@@ -151,7 +151,9 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     occlusal surface functionally against the ``antagonist``: centric
     contacts plus no interference along the simulated excursive movements.
     ``arch_orientation`` = (anterior, buccal) world vectors overrides the
-    orientation derived from ``neighbors``.
+    orientation derived from ``neighbors``.  With ``jaw`` (the scan of the
+    crown's own jaw) the excursive paths are simulated from the patient's
+    teeth themselves (relief-guided, see :func:`crownai.occlusion.guided_path`).
     """
     p = params or CrownParameters()
     ttype = tooth if isinstance(tooth, ToothType) else tooth_type_for_fdi(tooth)
@@ -246,10 +248,22 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         shape = _Shifted(shape, offset)
     shape = EmergenceShape(shape, m_loc, p.emergence_height)
     t_out = _shape_radii(shape, frame, center, dirs)
+    smoothing = p.smoothing
+    if neighbors is not None and neighbors.template is not None:
+        # Take the mirrored tooth's surface itself at full resolution - ridges,
+        # lobes, grooves and wear - instead of its coarse shape signature;
+        # near the margin the emergence profile still blends into the finish line.
+        t_tpl = raycast(center[None], dirs.reshape(-1, 3), neighbors.template, farthest=True)
+        t_tpl = t_tpl.reshape(t_out.shape)
+        t_tpl = np.where(np.isfinite(t_tpl), t_tpl, t_out)  # rays missing the template keep the prior
+        height = frame.to_local(center + dirs * t_tpl[..., None])[..., 2]
+        w = _smoothstep((height - m_loc[:, 2:3] - 0.5 * p.emergence_height) / p.emergence_height)
+        t_out = t_out * (1 - w) + t_tpl * w
+        smoothing = 1  # keep the surface detail
     t_out[:, 0] = t_margin
     outer = center + dirs * t_out[..., None]
     outer_pole = center + frame.z * _shape_radii(shape, frame, center, frame.z[None, None])[0, 0]
-    outer = _laplacian(outer, p.smoothing)
+    outer = _laplacian(outer, smoothing)
 
     # Thickness ramps up from the finish line over ``thickness_band`` (measured on the die).
     occlusal_w = _smoothstep((v - 0.45) / 0.3)[None, :]
@@ -265,7 +279,7 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     if occlusion is not None and antagonist is not None:
         outer, outer_pole, occlusion_report = _functional_occlusion(
             outer, outer_pole, antagonist, frame, v, tooth, neighbors, occlusion, arch_orientation,
-            p.occlusal_clearance, warnings)
+            p.occlusal_clearance, warnings, jaw)
 
     contacts = []
     if neighbors is not None:
@@ -452,7 +466,7 @@ def _fit_contact(outer: np.ndarray, neighbor: Mesh, frame: ToothFrame, center: n
 
 
 def _functional_occlusion(outer, outer_pole, antagonist, frame, v, tooth, neighbors, concept,
-                          arch_orientation, clearance, warnings):
+                          arch_orientation, clearance, warnings, jaw=None):
     """Centric contacts and excursion-free occlusal surface after ``concept``."""
     from .occlusion import arch_directions, carve_excursions, raise_to_centric_contacts
 
@@ -469,6 +483,36 @@ def _functional_occlusion(outer, outer_pole, antagonist, frame, v, tooth, neighb
         warnings.append("arch orientation unknown (no adjacent teeth): excursion directions assumed")
     on_mandible = (fdi // 10 in (3, 4)) if fdi else bool(frame.z[2] > 0)
     movements = concept.movements(fdi, anterior, buccal)
+    guidance = {}
+    if jaw is not None and getattr(concept, "patient_guidance", False):
+        from .occlusion import guided_path
+
+        mandible, maxilla = (jaw, antagonist) if on_mandible else (antagonist, jaw)
+        up = frame.z if on_mandible else -frame.z  # mandible -> maxilla
+        patient = []
+        for name, d, angle in movements:
+            try:
+                path = guided_path(mandible, maxilla, up, d, name, concept.excursion, concept.steps * 2)
+            except ValueError as exc:
+                warnings.append(f"relief-guided simulation not possible: {exc}")
+                patient = []
+                break
+            measured = path.summary()
+            concept_lift = path.s * np.tan(np.radians(angle))
+            # Canines and incisors lead the guidance: they may be as steep as the
+            # concept asks even where the other teeth guide flatter.  Premolars
+            # and molars must disclude: they stay under the flatter of the two.
+            leads = fdi is not None and fdi % 10 <= 3
+            lift = np.maximum(path.lift, concept_lift) if leads else np.minimum(path.lift, concept_lift)
+            if path.lift[-1] <= 0.1:  # the teeth do not guide this movement at all
+                lift = concept_lift
+            path.lift = lift
+            guidance[name] = {**measured, "concept_angle_deg": round(angle, 1),
+                              "used_angle_deg": round(path.angle(), 1),
+                              "role": "guiding tooth" if leads else "discluding tooth"}
+            patient.append((name, d, angle, path))
+        if patient:
+            movements = patient
     region = np.broadcast_to((v >= 0.35)[None, :], outer.shape[:2])
     n_centric = 0
     if concept.centric_contacts:
@@ -486,6 +530,7 @@ def _functional_occlusion(outer, outer_pole, antagonist, frame, v, tooth, neighb
         "orientation": source,
         "centric_contact_points": n_centric,
         "movements": moves,
+        **({"patient_guidance": guidance} if guidance else {}),
         "_movements": movements,
     }
 

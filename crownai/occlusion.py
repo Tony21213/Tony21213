@@ -55,6 +55,7 @@ class SlavicekConcept:
     excursion: float = 3.0  # mm of movement simulated
     steps: int = 8
     centric_contacts: bool = True
+    patient_guidance: bool = True  # use the relief-guided path from the scans when available
 
     def guidance_angle(self, fdi: int | None, movement: str) -> float:
         """Opening angle allowed at this tooth for a movement (deg vs occlusal plane)."""
@@ -140,17 +141,22 @@ def carve_excursions(outer: np.ndarray, antagonist: Mesh, z: np.ndarray, movemen
     pts = outer.reshape(-1, 3)
     lower = np.zeros(len(pts))
     report = {}
-    for name, horiz, angle in movements:
+    for mv in movements:
+        name, horiz, angle = mv[:3]
+        path = mv[3] if len(mv) > 3 else None  # GuidedPath: the patient's own guidance
         rel = -horiz if crown_on_mandible else horiz
         worst = 0.0
         for s in np.linspace(excursion / steps, excursion, steps):
-            shift = rel * s + z * (s * np.tan(np.radians(angle)))
+            opening = s * np.tan(np.radians(angle)) if path is None else float(np.interp(s, path.s, path.lift))
+            shift = rel * s + z * opening
             g = _gaps(pts, antagonist, z, shift)
             need = np.where(np.isfinite(g) & region.reshape(-1), clearance - g, 0.0)
             need = np.clip(need, 0.0, None)
             worst = max(worst, float(need.max(initial=0.0)))
             lower = np.maximum(lower, need)
-        report[name] = {"guidance_angle_deg": round(float(angle), 1), "interference_removed_mm": round(worst, 3)}
+        report[name] = {"guidance_angle_deg": round(float(angle if path is None else path.angle()), 1),
+                        "guidance": "patient (relief-guided)" if path is not None else "concept",
+                        "interference_removed_mm": round(worst, 3)}
     return outer - (lower.reshape(outer.shape[:2]))[..., None] * z, report
 
 
@@ -158,10 +164,13 @@ def excursion_interference(points: np.ndarray, antagonist: Mesh, z: np.ndarray, 
                            crown_on_mandible: bool, clearance: float, excursion: float, steps: int) -> float:
     """Deepest remaining collision along the simulated movements (mm, 0 = none)."""
     worst = 0.0
-    for _, horiz, angle in movements:
+    for mv in movements:
+        _, horiz, angle = mv[:3]
+        path = mv[3] if len(mv) > 3 else None
         rel = -horiz if crown_on_mandible else horiz
         for s in np.linspace(excursion / steps, excursion, steps):
-            g = _gaps(points, antagonist, z, rel * s + z * (s * np.tan(np.radians(angle))))
+            opening = s * np.tan(np.radians(angle)) if path is None else float(np.interp(s, path.s, path.lift))
+            g = _gaps(points, antagonist, z, rel * s + z * opening)
             g = g[np.isfinite(g)]
             if len(g):
                 worst = max(worst, float(clearance - g.min()))
@@ -229,3 +238,76 @@ def fix_bite(jaw: Mesh, antagonist: Mesh, axis=(0.0, 0.0, 1.0), *, contact: floa
                    "moved_along_axis_mm": round(float(shift), 3),
                    "tilt_deg": round(float(np.degrees(np.arccos(np.clip((np.trace(R) - 1) / 2, -1, 1)))), 2),
                    "contact_points": int(n_c)}
+
+
+# --------------------------------------------------------------------------
+# Relief-guided jaw motion (patient-specific guidance from the scans alone)
+# --------------------------------------------------------------------------
+
+@dataclass
+class GuidedPath:
+    """Mandible path along one movement, guided by the existing teeth.
+
+    ``lift[k]`` is how far the mandible must open (along the occlusal axis)
+    after moving ``s[k]`` mm horizontally so that no tooth penetrates - the
+    path the dentition itself dictates (canine guidance, incisal guidance or
+    group function), found by collision detection as in occlusal fingerprint
+    analysis.  ``guides[k]`` is the world point that carries the contact.
+    """
+
+    name: str
+    direction: np.ndarray  # horizontal mandible direction (world)
+    s: np.ndarray
+    lift: np.ndarray
+    guides: np.ndarray
+
+    def angle(self, upto: float | None = None) -> float:
+        """Mean guidance angle (deg vs occlusal plane) over the first ``upto`` mm."""
+        k = len(self.s) if upto is None else max(1, int(np.searchsorted(self.s, upto, side="right")))
+        return float(np.degrees(np.arctan2(self.lift[k - 1], self.s[k - 1])))
+
+    def summary(self) -> dict:
+        return {"guidance_angle_deg": round(self.angle(), 1),
+                "initial_angle_deg": round(self.angle(1.0), 1),
+                "opening_mm": round(float(self.lift[-1]), 2)}
+
+
+def guided_path(mandible: Mesh, maxilla: Mesh, z: np.ndarray, direction: np.ndarray, name: str = "",
+                excursion: float = 3.0, steps: int = 12, contact: float = 0.0,
+                sample: int = 8000, seed: int = 0) -> GuidedPath:
+    """Slide the mandible along ``direction``; open it just enough to stay out of the maxilla.
+
+    ``z`` points from the mandible to the maxilla (occlusal direction of the
+    lower teeth).  Only the mandible's occluding surface matters, so a random
+    sample of its vertices facing the maxilla is used.
+    """
+    z = np.asarray(z, float) / np.linalg.norm(z)
+    rng = np.random.default_rng(seed)
+    pts = mandible.vertices
+    g0 = _gaps(pts, maxilla, z, np.zeros(3))
+    near = np.flatnonzero(np.isfinite(g0) & (g0 < 3.0))  # the occluding surface
+    if len(near) == 0:
+        raise ValueError("the jaws do not occlude: no mandibular surface within 3 mm of the maxilla")
+    pts = pts[rng.choice(near, min(sample, len(near)), replace=False)]
+    s_all = np.linspace(excursion / steps, excursion, steps)
+    lifts, guides = [], []
+    base = np.nanmin(_gaps(pts, maxilla, z, np.zeros(3)))
+    for s in s_all:
+        # the maxilla moves the other way relative to the mandible
+        g = _gaps(pts, maxilla, z, -direction * s)
+        ok = np.isfinite(g)
+        if not ok.any():
+            lifts.append(lifts[-1] if lifts else 0.0)
+            guides.append(guides[-1] if guides else pts.mean(0))
+            continue
+        k = int(np.argmin(np.where(ok, g, np.inf)))
+        lifts.append(max(0.0, min(base, contact) - g[k]))
+        guides.append(pts[k] + direction * s)
+    lift = np.maximum.accumulate(np.array(lifts))  # the jaw does not close again mid-excursion
+    return GuidedPath(name, direction, s_all, lift, np.array(guides))
+
+
+def patient_guidance(mandible: Mesh, maxilla: Mesh, z: np.ndarray, movements, *,
+                     excursion: float = 3.0, steps: int = 12) -> list[GuidedPath]:
+    """Relief-guided paths for the (name, direction, _) movements of a concept."""
+    return [guided_path(mandible, maxilla, z, d, name, excursion, steps) for name, d, _ in movements]

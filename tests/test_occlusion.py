@@ -67,3 +67,28 @@ def test_fix_bite_removes_penetration():
     closed, info2 = fix_bite(lower, apart, (0, 0, 1), max_tilt_deg=0.0, sample=1500)
     g2 = _gaps(lower.vertices, closed, Z, np.zeros(3))
     assert np.nanmin(np.where(np.isfinite(g2), g2, np.nan)) == pytest.approx(0.0, abs=0.03)
+
+
+def _heightfield(fn, lo=-6.0, hi=6.0, n=121):
+    x = np.linspace(lo, hi, n)
+    X, Y = np.meshgrid(x, x, indexing="ij")
+    V = np.column_stack([X.ravel(), Y.ravel(), fn(X, Y).ravel()])
+    idx = np.arange(n * n).reshape(n, n)
+    a, b, c, d = idx[:-1, :-1].ravel(), idx[1:, :-1].ravel(), idx[1:, 1:].ravel(), idx[:-1, 1:].ravel()
+    return Mesh(V, np.concatenate([np.stack([a, b, c], 1), np.stack([a, c, d], 1)]))
+
+
+@pytest.mark.parametrize("ramp_deg", [25.0, 45.0])
+def test_relief_guided_path_follows_the_guiding_slope(ramp_deg):
+    from crownai.occlusion import guided_path
+
+    # lower "canine tip": a small cone; upper guiding surface: flat, then a ramp
+    # descending in +x at ``ramp_deg`` - moving the mandible along +x it must open
+    tip = _heightfield(lambda X, Y: -2.0 * np.hypot(X, Y), -1.0, 1.0, 21)
+    slope = np.tan(np.radians(ramp_deg))
+    upper = _heightfield(lambda X, Y: -np.clip(X + 0.0, 0, None) * slope + 0.0)
+    path = guided_path(tip, upper, Z, np.array([1.0, 0.0, 0.0]), "protrusion", excursion=3.0, steps=12)
+    assert path.angle() == pytest.approx(ramp_deg, abs=3.0)
+    # sliding the other way nothing guides: the jaw does not open
+    back = guided_path(tip, upper, Z, np.array([-1.0, 0.0, 0.0]), excursion=3.0, steps=6)
+    assert back.lift[-1] < 0.05
