@@ -243,6 +243,17 @@ def cmd_fix_bite(a) -> int:
     return 0
 
 
+def cmd_archive(a) -> int:
+    from .archive import survey
+
+    report = survey(a.root, inspect_webviews=a.webviews, limit=a.limit)
+    text = json.dumps(report, indent=2, ensure_ascii=False)
+    if a.out:
+        Path(a.out).write_text(text, encoding="utf-8")
+    print(text)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="crownai", description="Automatic dental crown design")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -341,6 +352,13 @@ def main(argv=None) -> int:
     p.add_argument("--axis", type=_vec, default=(0.0, 0.0, 1.0), help="direction from jaw to antagonist")
     p.add_argument("--contact", type=float, default=0.0, help="gap at the closest contact, mm")
     p.set_defaults(func=cmd_fix_bite)
+
+    p = sub.add_parser("archive", help="survey a lab archive (anonymised) before learning from it")
+    p.add_argument("root", type=Path)
+    p.add_argument("--webviews", action="store_true", help="open webview HTML files and count trainable teeth")
+    p.add_argument("--limit", type=int, help="describe at most this many case folders")
+    p.add_argument("--out", type=Path, help="also write the report to this JSON file")
+    p.set_defaults(func=cmd_archive)
 
     a = ap.parse_args(argv)
     return a.func(a)
