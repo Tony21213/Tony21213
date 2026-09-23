@@ -77,6 +77,113 @@ def load_stl(path: str | Path) -> Mesh:
     return merge_vertices(verts, np.arange(len(verts)).reshape(-1, 3))
 
 
+_PLY_TYPE = {  # PLY property type name -> (numpy dtype, size in bytes)
+    "char": ("i1", 1), "int8": ("i1", 1), "uchar": ("u1", 1), "uint8": ("u1", 1), "b1": ("u1", 1),
+    "short": ("i2", 2), "int16": ("i2", 2), "ushort": ("u2", 2), "uint16": ("u2", 2),
+    "int": ("i4", 4), "int32": ("i4", 4), "uint": ("u4", 4), "uint32": ("u4", 4),
+    "float": ("f4", 4), "float32": ("f4", 4), "double": ("f8", 8), "float64": ("f8", 8),
+}
+
+
+def load_ply(path: str | Path) -> Mesh:
+    """Load a binary or ASCII PLY scan (common intraoral-scanner export format)."""
+    data = Path(path).read_bytes()
+    header_end = data.index(b"end_header\n") + len(b"end_header\n")
+    header = data[:header_end].decode("ascii", errors="ignore").splitlines()
+    if not header or header[0].strip() != "ply":
+        raise ValueError(f"{path}: not a valid PLY file")
+    fmt = next((ln.split()[1] for ln in header if ln.startswith("format")), "ascii")
+
+    elements: list[tuple[str, int, list[tuple[str, str, str | None]]]] = []  # (name, count, props)
+    cur_name, cur_count, cur_props = None, 0, []
+    for ln in header[1:]:
+        parts = ln.split()
+        if not parts or parts[0] == "comment":
+            continue
+        if parts[0] == "element":
+            if cur_name is not None:
+                elements.append((cur_name, cur_count, cur_props))
+            cur_name, cur_count, cur_props = parts[1], int(parts[2]), []
+        elif parts[0] == "property":
+            if parts[1] == "list":
+                cur_props.append((parts[4], parts[2], parts[3]))  # (name, count_type, item_type)
+            else:
+                cur_props.append((parts[2], parts[1], None))
+    if cur_name is not None:
+        elements.append((cur_name, cur_count, cur_props))
+
+    if fmt == "ascii":
+        return _load_ply_ascii(data[header_end:].decode("ascii", errors="ignore"), elements)
+    endian = "<" if "little" in fmt else ">"
+    return _load_ply_binary(data, header_end, elements, endian)
+
+
+def _load_ply_ascii(text: str, elements) -> Mesh:
+    lines = iter(text.splitlines())
+    verts = faces = None
+    for name, count, props in elements:
+        if name == "vertex":
+            xi, yi, zi = (next(i for i, p in enumerate(props) if p[0] == c) for c in ("x", "y", "z"))
+            verts = np.empty((count, 3), dtype=np.float64)
+            for i in range(count):
+                tok = next(lines).split()
+                verts[i] = [float(tok[xi]), float(tok[yi]), float(tok[zi])]
+        elif name == "face":
+            rows = []
+            for _ in range(count):
+                tok = [int(float(t)) for t in next(lines).split()]
+                n = tok[0]
+                for k in range(1, n - 1):
+                    rows.append((tok[1], tok[1 + k], tok[2 + k]))
+                if not rows or n < 3:
+                    continue
+            faces = np.array(rows, dtype=np.int64) if rows else np.zeros((0, 3), dtype=np.int64)
+        else:
+            for _ in range(count):
+                next(lines)
+    if verts is None:
+        raise ValueError("PLY file has no vertex element")
+    return merge_vertices(verts, faces if faces is not None else np.zeros((0, 3), dtype=np.int64))
+
+
+def _load_ply_binary(data: bytes, offset: int, elements, endian: str) -> Mesh:
+    verts = faces = None
+    for name, count, props in elements:
+        if all(item_type is None for _, _, item_type in props):
+            dtype = np.dtype([(pname, endian + _PLY_TYPE[ptype][0]) for pname, ptype, _ in props])
+            rec = np.frombuffer(data, dtype=dtype, count=count, offset=offset)
+            offset += dtype.itemsize * count
+            if name == "vertex":
+                verts = np.column_stack([rec["x"], rec["y"], rec["z"]]).astype(np.float64)
+        else:
+            # list property (faces): count/item types are usually uniform across rows, but not
+            # necessarily the same row length (fans/quads) - walk it row by row.
+            pname, count_type, item_type = props[0]
+            ct_dtype, ct_size = _PLY_TYPE[count_type]
+            it_dtype, it_size = _PLY_TYPE[item_type]
+            rows = []
+            for _ in range(count):
+                (n,) = np.frombuffer(data, dtype=endian + ct_dtype, count=1, offset=offset)
+                offset += ct_size
+                idx = np.frombuffer(data, dtype=endian + it_dtype, count=int(n), offset=offset)
+                offset += it_size * int(n)
+                for k in range(1, int(n) - 1):
+                    rows.append((idx[0], idx[k], idx[k + 1]))
+            if name == "face":
+                faces = np.array(rows, dtype=np.int64) if rows else np.zeros((0, 3), dtype=np.int64)
+    if verts is None:
+        raise ValueError("PLY file has no vertex element")
+    return merge_vertices(verts, faces if faces is not None else np.zeros((0, 3), dtype=np.int64))
+
+
+def load_mesh(path: str | Path) -> Mesh:
+    """Load an STL or PLY scan, picked by file extension."""
+    path = Path(path)
+    if path.suffix.lower() == ".ply":
+        return load_ply(path)
+    return load_stl(path)
+
+
 def save_stl(mesh: Mesh, path: str | Path) -> None:
     """Write a binary STL."""
     tris = mesh.triangles.astype(np.float32)

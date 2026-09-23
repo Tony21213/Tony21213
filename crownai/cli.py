@@ -138,6 +138,31 @@ def cmd_exocad_case(a) -> int:
     return 0
 
 
+def cmd_construction_case(a) -> int:
+    from .exocad_project import process_construction_case
+
+    reports = process_construction_case(a.folder, teeth=a.tooth or None, out_dir=a.out_dir,
+                                        params=_params(a), learner=_learner(a),
+                                        use_neighbors=not a.no_neighbors, occlusion=_occlusion(a),
+                                        preview=not a.no_preview)
+    print(json.dumps(reports, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_learn_construction_case(a) -> int:
+    from .exocad_project import learn_construction_case
+    from .learning import CrownLearner
+
+    learner = CrownLearner(a.library)
+    total = 0
+    for folder in a.folders:
+        for info in learn_construction_case(folder, learner, teeth=a.tooth or None):
+            print(json.dumps(info, ensure_ascii=False))
+            total += 1
+    print(f"learned {total} crown(s)")
+    return 0
+
+
 def cmd_exocad_watch(a) -> int:
     from .exocad import watch
 
@@ -314,6 +339,23 @@ def main(argv=None) -> int:
     p.add_argument("--no-preview", action="store_true")
     _add_design_options(p)
     p.set_defaults(func=cmd_exocad_case)
+
+    p = sub.add_parser("construction-case", help="design crowns from exocad's own .constructionInfo "
+                       "(exact margin, no file-naming guesswork - needs no *prep*/*margin* files)")
+    p.add_argument("folder", type=Path)
+    p.add_argument("--tooth", type=int, action="append", help="FDI number(s); every restored tooth if omitted")
+    p.add_argument("--out-dir", type=Path, help="default: <folder>/crownai")
+    p.add_argument("--no-neighbors", action="store_true", help="ignore adjacent/contralateral teeth")
+    p.add_argument("--no-preview", action="store_true")
+    _add_design_options(p)
+    p.set_defaults(func=cmd_construction_case)
+
+    p = sub.add_parser("learn-construction-case", help="learn from finished crowns exported back into "
+                       ".constructionInfo case folders (exact margin from exocad, no crownai design step)")
+    p.add_argument("folders", type=Path, nargs="+")
+    p.add_argument("--library", required=True, type=Path)
+    p.add_argument("--tooth", type=int, action="append")
+    p.set_defaults(func=cmd_learn_construction_case)
 
     p = sub.add_parser("exocad-watch", help="watch a folder of exocad case exports")
     p.add_argument("root", type=Path)
