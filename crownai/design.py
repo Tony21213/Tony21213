@@ -40,7 +40,7 @@ class CrownParameters:
     n_theta: int = 128  # samples around the margin
     n_v: int = 48  # samples from margin to occlusal pole
     smoothing: int = 4  # Laplacian passes on the outer surface
-    emergence_height: float = 2.0  # mm above the margin over which anatomy blends into it
+    emergence_height: float = 3.5  # mm above the margin over which anatomy blends into it
     contact_gap: float = 0.0  # mm to the adjacent teeth at the contacts (negative = tight)
 
 
@@ -98,6 +98,26 @@ def _laplacian(P: np.ndarray, passes: int, weight: float = 0.5) -> np.ndarray:
         avg = avg + 0.25 * (up + down)
         P[:, 1:] = (1 - weight) * P[:, 1:] + weight * avg[:, 1:]
     return P
+
+
+def _smooth_top(P: np.ndarray, pole: np.ndarray, v: np.ndarray, start: float = 0.8,
+                iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
+    """Relax the rows around the pole (the cusp tip / incisal ridge) to remove folds.
+
+    Umbrella smoothing that includes the pole as the upper neighbour of the
+    last row; the weight fades in from ``start`` so the rest of the crown
+    keeps its shape.
+    """
+    P = P.copy()
+    w = _smoothstep((v - start) / (1.0 - start))[None, :, None] * 0.5
+    for _ in range(iters):
+        up = np.concatenate([P[:, 1:], np.broadcast_to(pole, (P.shape[0], 1, 3))], axis=1)
+        down = np.concatenate([P[:, :1], P[:, :-1]], axis=1)
+        avg = 0.25 * (np.roll(P, 1, 0) + np.roll(P, -1, 0) + up + down)
+        P = (1 - w) * P + w * avg
+        ring = P[:, -1]
+        pole = 0.5 * pole + 0.5 * (ring.mean(axis=0) + (pole - ring.mean(axis=0)) * 0.9)
+    return P, pole
 
 
 def _stitch(margin: np.ndarray, inner: np.ndarray, inner_pole: np.ndarray,
@@ -173,39 +193,7 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     if prep_top <= m_loc[:, 2].max():
         raise ValueError("preparation does not rise above the margin along the insertion axis")
 
-    # 3. Ray fan --------------------------------------------------------------
-    center_loc = np.array([0.0, 0.0, m_loc[:, 2].mean() + 0.35 * (prep_top - m_loc[:, 2].mean())])
-    center = frame.to_world(center_loc)
-    d0 = margin - center
-    t_margin = np.linalg.norm(d0, axis=1)
-    d0 /= t_margin[:, None]
-    v = (np.arange(p.n_v) / p.n_v) ** 1.5  # denser sampling near the margin
-    dirs = _slerp(d0, frame.z, v)  # (n_theta, n_v, 3)
-
-    # 4. Intaglio -------------------------------------------------------------
-    t_in = raycast(center[None], dirs.reshape(-1, 3), prep).reshape(p.n_theta, p.n_v)
-    t_in[:, 0] = t_margin
-    missing = ~np.isfinite(t_in)
-    if missing.any():
-        warnings.append(f"{int(missing.sum())} intaglio rays missed the die; interpolated")
-        for i in range(p.n_theta):
-            row = t_in[i]
-            ok = np.isfinite(row)
-            t_in[i] = np.interp(np.arange(p.n_v), np.flatnonzero(ok), row[ok])
-    t_pole = raycast(center[None], frame.z[None], prep)[0]
-    if not np.isfinite(t_pole):
-        t_pole = prep_top - center_loc[2]
-    die = center + dirs * t_in[..., None]
-    die_pole = center + frame.z * t_pole
-
-    s_in = _arc_length(die)
-    gap = p.margin_gap + (p.cement_gap - p.margin_gap) * _smoothstep(s_in / p.margin_band)
-    gap[:, 0] = 0.0
-    n_in = _grid_normals(die, die_pole, center)
-    inner = die + n_in * gap[..., None]
-    inner_pole = die_pole + frame.z * p.cement_gap
-
-    # 5. Outer anatomy ----------------------------------------------------------
+    # Anatomy (before the ray fan, which is aimed at the cusp tip) --------------
     half_x = np.abs(m_loc[:, 0]).max()
     half_y = np.abs(m_loc[:, 1]).max()
     A = max(ttype.mesiodistal / 2, half_x * 1.12)
@@ -223,7 +211,15 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         from .learning import case_features
 
         prediction = learner.predict(ttype.name, case_features(m_loc, prep_top))
-    if neighbors is not None and neighbors.template is not None:
+    fdi = int(tooth) if isinstance(tooth, (int, np.integer)) else None
+    anatomy_fit = None
+    placed = False
+    if fdi is not None and fdi % 10 <= 3 and shape_model is None:
+        # Incisors and canines: anatomical model, fitted to the patient's
+        # mirrored contralateral tooth when there is one.
+        shape, source, anatomy_fit = _anterior_anatomy(fdi, frame, m_loc, offset, neighbors, prep_top, p, prep)
+        placed = True
+    elif neighbors is not None and neighbors.template is not None:
         from .learning import CENTER_Z, N_PHI, N_THETA, crown_signature
 
         sig, (tA, tB, tH) = crown_signature(neighbors.template, frame, m_loc)
@@ -244,26 +240,75 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         shape = ParametricTooth(ttype, A, B, H, cervical_x=half_x / A, cervical_y=half_y / B, z0=z0)
         source = "parametric library"
 
-    if neighbors is not None and neighbors.template is None and np.any(offset):
+    if neighbors is not None and neighbors.template is None and np.any(offset) and not placed:
         shape = _Shifted(shape, offset)
+    if antagonist is not None:
+        # the antagonist bounds the shape itself, so the cut is clean (pressing
+        # surface points down afterwards folds thin incisal ridges)
+        shape = _BelowAntagonist(shape, antagonist, frame, m_loc, p.occlusal_clearance)
     shape = EmergenceShape(shape, m_loc, p.emergence_height)
+    # 3. Ray fan --------------------------------------------------------------
+    center_loc = np.array([0.0, 0.0, m_loc[:, 2].mean() + 0.35 * (prep_top - m_loc[:, 2].mean())])
+    center = frame.to_world(center_loc)
+    d0 = margin - center
+    t_margin = np.linalg.norm(d0, axis=1)
+    d0 /= t_margin[:, None]
+    v = (np.arange(p.n_v) / p.n_v) ** 1.5  # denser sampling near the margin
+    pole_dir = frame.z
+    tip, node = None, shape
+    while node is not None and tip is None:  # EmergenceShape(_BelowAntagonist(PlacedAnatomy)) ...
+        tip = getattr(node, "tip_local", None)
+        node = getattr(node, "base", None)
+    if tip is not None:
+        # aim the fan's pole at the cusp tip so an off-axis tip is sampled cleanly
+        d_tip = frame.to_world(tip()) - center
+        d_tip /= np.linalg.norm(d_tip)
+        if d_tip @ frame.z > np.cos(np.radians(20)):
+            pole_dir = d_tip
+    dirs = _slerp(d0, pole_dir, v)  # (n_theta, n_v, 3)
+
+    # 4. Intaglio -------------------------------------------------------------
+    t_in = raycast(center[None], dirs.reshape(-1, 3), prep).reshape(p.n_theta, p.n_v)
+    t_in[:, 0] = t_margin
+    missing = ~np.isfinite(t_in)
+    if missing.any():
+        warnings.append(f"{int(missing.sum())} intaglio rays missed the die; interpolated")
+        for i in range(p.n_theta):
+            row = t_in[i]
+            ok = np.isfinite(row)
+            t_in[i] = np.interp(np.arange(p.n_v), np.flatnonzero(ok), row[ok])
+    t_pole = raycast(center[None], pole_dir[None], prep)[0]
+    if not np.isfinite(t_pole):
+        t_pole = prep_top - center_loc[2]
+    die = center + dirs * t_in[..., None]
+    die_pole = center + pole_dir * t_pole
+
+    s_in = _arc_length(die)
+    gap = p.margin_gap + (p.cement_gap - p.margin_gap) * _smoothstep(s_in / p.margin_band)
+    gap[:, 0] = 0.0
+    n_in = _grid_normals(die, die_pole, center)
+    inner = die + n_in * gap[..., None]
+    inner_pole = die_pole + pole_dir * p.cement_gap
+
+    # 5. Outer anatomy: shaped above, sampled on the ray fan
     t_out = _shape_radii(shape, frame, center, dirs)
     smoothing = p.smoothing
-    if neighbors is not None and neighbors.template is not None:
-        # Take the mirrored tooth's surface itself at full resolution - ridges,
-        # lobes, grooves and wear - instead of its coarse shape signature;
-        # near the margin the emergence profile still blends into the finish line.
-        t_tpl = raycast(center[None], dirs.reshape(-1, 3), neighbors.template, farthest=True)
-        t_tpl = t_tpl.reshape(t_out.shape)
-        t_tpl = np.where(np.isfinite(t_tpl), t_tpl, t_out)  # rays missing the template keep the prior
-        height = frame.to_local(center + dirs * t_tpl[..., None])[..., 2]
-        w = _smoothstep((height - m_loc[:, 2:3] - 0.5 * p.emergence_height) / p.emergence_height)
-        t_out = t_out * (1 - w) + t_tpl * w
-        smoothing = 1  # keep the surface detail
+    # Near the pole the rays graze a thin incisal ridge / cusp: neighbouring
+    # rays hit its crest or its flanks and the radius jumps.  Smooth around
+    # the circumference there (keeps the heights, removes the zigzag).
+    top_rows = v > 0.75
+    if top_rows.any():
+        k = np.exp(-0.5 * (np.arange(-4, 5) / 2.0) ** 2)
+        k /= k.sum()
+        ext = np.concatenate([t_out[-4:], t_out, t_out[:4]], axis=0)
+        smooth = np.stack([np.convolve(ext[:, j], k, mode="valid") for j in range(t_out.shape[1])], axis=1)
+        w_top = _smoothstep((v - 0.75) / 0.15)[None, :]
+        t_out = t_out * (1 - w_top) + smooth * w_top
     t_out[:, 0] = t_margin
     outer = center + dirs * t_out[..., None]
-    outer_pole = center + frame.z * _shape_radii(shape, frame, center, frame.z[None, None])[0, 0]
+    outer_pole = center + pole_dir * _shape_radii(shape, frame, center, pole_dir[None, None])[0, 0]
     outer = _laplacian(outer, smoothing)
+    outer, outer_pole = _smooth_top(outer, outer_pole, v)
 
     # Thickness ramps up from the finish line over ``thickness_band`` (measured on the die).
     occlusal_w = _smoothstep((v - 0.45) / 0.3)[None, :]
@@ -298,15 +343,18 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         # Push along the surface normal blended with the ray direction: near the
         # margin the normal is almost tangential to the die, the ray is not.
         push = _grid_normals(outer, outer_pole, center) + dirs
-        push /= np.linalg.norm(push, axis=-1, keepdims=True)
+        # never push below the finish line: that would be clamped back into a ledge
+        push -= np.minimum(push @ frame.z, 0.0)[..., None] * frame.z
+        push /= np.maximum(np.linalg.norm(push, axis=-1, keepdims=True), 1e-9)
         outer = outer + push * (1.1 * np.clip(deficit, 0, None))[..., None]
         if it < 8:
             outer = _laplacian(outer, 1, weight=0.15)
         outer = _clamp_above_margin(outer, frame, m_loc[:, 2])
+    # the pole follows its ring of neighbours (moving it on its own makes a spike)
+    ring = outer[:, -1]
+    mid = ring.mean(axis=0)
+    outer_pole = mid + pole_dir * max(float(((ring - mid) @ pole_dir).max()), 0.0)
     pole_thick = float(np.linalg.norm(outer_pole - inner_pole))
-    if pole_thick < p.min_occlusal:
-        outer_pole = inner_pole + frame.z * p.min_occlusal
-        pole_thick = p.min_occlusal
 
     thick, _ = nearest_distance(outer.reshape(-1, 3), inner_pts)
     thick = thick.reshape(outer.shape[:2])
@@ -337,6 +385,7 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     report = {
         "tooth_type": ttype.name,
         "anatomy_source": source,
+        **({"anatomy_fit": anatomy_fit} if anatomy_fit else {}),
         **({"neighbors": neighbors.summary(), "contact_gap_before_fit_mm": contacts}
            if neighbors is not None else {}),
         **({"occlusion": occlusion_report} if occlusion_report is not None else {}),
@@ -361,14 +410,17 @@ class EmergenceShape:
     """Adapts an anatomy prior so its surface starts exactly on the margin line.
 
     The template's cylindrical radius is shifted by ``r_margin - r_template``
-    at the margin height, fading out over ``height`` mm, and nothing is kept
-    below the margin: the crown emerges from the finish line without ledges
-    or overhangs.
+    at the margin height, fading out over ``height`` mm, the crown may widen
+    by at most ``max_slope`` mm per mm of height above the finish line (a
+    straight emergence ramp) and nothing is kept below the margin: the crown
+    emerges from the finish line without ledges or overhangs.
     """
 
-    def __init__(self, base, margin_local: np.ndarray, height: float, samples: int = 256):
+    def __init__(self, base, margin_local: np.ndarray, height: float, samples: int = 256,
+                 max_slope: float = 1.0):
         self.base = base
         self.height = height
+        self.max_slope = max_slope  # emergence: at most 1 mm outwards per 1 mm up (45 deg)
         th = np.arctan2(margin_local[:, 1], margin_local[:, 0])
         order = np.argsort(th)
         th, m = th[order], margin_local[order]
@@ -377,6 +429,7 @@ class EmergenceShape:
         self.theta = grid
         self.z_m = np.interp(grid, ext, np.tile(m[:, 2], 3))
         r_m = np.interp(grid, ext, np.tile(np.hypot(m[:, 0], m[:, 1]), 3))
+        self.r_m = r_m
         # Template radius at the margin height, by bisection along each direction.
         lo, hi = np.zeros(samples), np.full(samples, 30.0)
         u = np.stack([np.cos(grid), np.sin(grid), np.zeros(samples)], 1)
@@ -402,12 +455,20 @@ class EmergenceShape:
         r_base = np.maximum(r - self._lookup(self.delta, theta) * fade, 0.0)
         scale = np.where(r > 1e-9, r_base / np.maximum(r, 1e-9), 1.0)
         q = np.stack([p[..., 0] * scale, p[..., 1] * scale, p[..., 2]], axis=-1)
-        return self.base.inside(q) & (p[..., 2] >= z_m - 1e-6)
+        # emergence profile: rise from the finish line as a ramp, never a ledge
+        ramp = r <= self._lookup(self.r_m, theta) + self.max_slope * np.maximum(p[..., 2] - z_m, 0.0) + 0.05
+        return self.base.inside(q) & (p[..., 2] >= z_m - 1e-6) & ramp
 
 
 def _shape_radii(shape, frame: ToothFrame, center: np.ndarray, dirs: np.ndarray,
                  r_max: float = 25.0, step: float = 0.1) -> np.ndarray:
-    """First exit distance of each ray from the implicit anatomy."""
+    """Last exit distance of each ray from the implicit anatomy.
+
+    The last exit is the outer envelope seen from the centre: where a ray
+    leaves through a concavity (lingual fossa, occlusal groove) and enters
+    the crown again, the first exit would jump between neighbouring rays and
+    fold the surface.
+    """
     c_loc = frame.to_local(center)
     d_loc = np.stack([dirs @ frame.x, dirs @ frame.y, dirs @ frame.z], axis=-1)
     shp = d_loc.shape[:-1]
@@ -417,15 +478,89 @@ def _shape_radii(shape, frame: ToothFrame, center: np.ndarray, dirs: np.ndarray,
     for s in range(0, len(d_loc), 512):
         dc = d_loc[s:s + 512]
         ins = shape.inside(c_loc + dc[:, None, :] * t[None, :, None])
-        outside = ~ins
-        first = np.where(outside.any(1), outside.argmax(1), len(t) - 1)
-        lo, hi = t[np.maximum(first - 1, 0)], t[first]
+        # index of the last sample inside the shape along each ray
+        last_in = len(t) - 1 - np.argmax(ins[:, ::-1], axis=1)
+        last_in = np.where(ins.any(1), last_in, 0)
+        exit_ = np.minimum(last_in + 1, len(t) - 1)
+        lo, hi = t[last_in], t[exit_]
         for _ in range(12):
             mid = 0.5 * (lo + hi)
             m_in = shape.inside(c_loc + dc * mid[:, None])
             lo, hi = np.where(m_in, mid, lo), np.where(m_in, hi, mid)
         out[s:s + 512] = 0.5 * (lo + hi)
     return out.reshape(shp)
+
+
+def _anterior_anatomy(fdi, frame, m_loc, offset, neighbors, prep_top, p, prep):
+    """Anatomical incisor/canine placed on the preparation (and fitted to the contralateral)."""
+    from dataclasses import replace
+
+    from .anatomy_model import PlacedAnatomy, default_anterior, fit_to_surface
+
+    base = default_anterior(fdi)
+    if neighbors is not None and neighbors.space is not None:
+        k = neighbors.space / base.md
+        base = replace(base, md=base.md * k, md_cervix=base.md_cervix * k)
+    labial = 1.0
+    if neighbors is not None and neighbors.buccal is not None:
+        labial = 1.0 if frame.to_local(frame.origin + neighbors.buccal)[1] >= 0 else -1.0
+    z_cervix = float(m_loc[:, 2].mean())
+    shift = np.array([offset[0], labial * offset[1]])
+    # the crown's cervical cross-section is the root's: take it from the finish line
+    mm = PlacedAnatomy.on_margin(base, labial, shift, m_loc).to_model(m_loc)
+    base = replace(base, md_cervix=float(np.ptp(mm[:, 0])) * 0.98, ll_cervix=float(np.ptp(mm[:, 1])) * 0.98)
+    shift = shift + np.array([0.5 * (mm[:, 0].max() + mm[:, 0].min()), 0.5 * (mm[:, 1].max() + mm[:, 1].min())])
+    placed = PlacedAnatomy.on_margin(base, labial, shift, m_loc)
+    # the preparation grown by the minimum thickness: the anatomy must enclose it
+    q = frame.to_local(prep.vertices)
+    zc = placed.cervix(q[:, 0], q[:, 1])
+    above = q[:, 2] > zc + 0.3
+    q = q[above]
+    rel = q[:, :2] - placed.shift * np.array([1.0, labial])
+    radial = np.column_stack([rel / np.maximum(np.linalg.norm(rel, axis=1, keepdims=True), 1e-6), np.zeros(len(q))])
+    h = (q[:, 2] - zc[above]) / max(prep_top - float(zc.mean()), 1e-3)
+    t_min = p.cement_gap + p.min_axial + (p.min_occlusal - p.min_axial) * np.clip((h - 0.5) / 0.4, 0, 1)
+    grown = q + radial * t_min[:, None]
+    grown[:, 2] += np.where(h > 0.85, t_min, 0.0)  # over the top of the stump
+    contain = placed.to_model(grown)
+    tpl = placed.to_model(frame.to_local(neighbors.template.vertices)) \
+        if neighbors is not None and neighbors.template is not None else None
+    fitted, d, stats = fit_to_surface(base, tpl, contain=contain, fix_cervix=True)
+    placed = PlacedAnatomy.on_margin(fitted, labial, shift + d[:2], m_loc)
+    source = ("anatomical model fitted to the mirrored contralateral tooth" if tpl is not None
+              else "anatomical model (textbook proportions, sized to the preparation)")
+    # the crown must cover the preparation with the occlusal minimum
+    need = prep_top + p.cement_gap + p.min_occlusal + 0.3 - float(placed.margin_z.min())
+    if placed.model.height < need:
+        placed.model = replace(placed.model, height=need)
+    if stats is not None:
+        stats = {**stats, **{k: round(float(getattr(placed.model, k)), 2)
+                             for k in ("height", "md", "ll", "tip_u", "tip_w", "drop_m", "drop_d")}}
+    return placed, source, stats
+
+
+class _BelowAntagonist:
+    """Anatomy prior limited to the space under the antagonist (occlusal height field)."""
+
+    def __init__(self, base, antagonist: Mesh, frame: ToothFrame, m_loc: np.ndarray, clearance: float,
+                 reach: float = 9.0, res: float = 0.2):
+        self.base = base
+        c = m_loc[:, :2].mean(0)
+        self.x0, self.y0 = c[0] - reach, c[1] - reach
+        self.res = res
+        n = int(2 * reach / res) + 1
+        xs = self.x0 + np.arange(n) * res
+        ys = self.y0 + np.arange(n) * res
+        X, Y = np.meshgrid(xs, ys, indexing="ij")
+        low = m_loc[:, 2].min() - 30.0
+        origins = frame.to_world(np.column_stack([X.ravel(), Y.ravel(), np.full(X.size, low)]))
+        t = raycast(origins, np.broadcast_to(frame.z, origins.shape), antagonist)
+        self.ceiling = (low + t).reshape(n, n) - clearance  # inf where there is no antagonist
+
+    def inside(self, p: np.ndarray) -> np.ndarray:
+        i = np.clip(np.round((p[..., 0] - self.x0) / self.res).astype(int), 0, self.ceiling.shape[0] - 1)
+        j = np.clip(np.round((p[..., 1] - self.y0) / self.res).astype(int), 0, self.ceiling.shape[1] - 1)
+        return self.base.inside(p) & (p[..., 2] <= self.ceiling[i, j])
 
 
 class _Shifted:

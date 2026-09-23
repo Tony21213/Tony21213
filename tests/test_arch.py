@@ -47,7 +47,7 @@ def test_crown_touches_neighbours(arch_case):
     params = CrownParameters(n_theta=64, n_v=28)
     res = design_crown(prep, tooth=33, margin=margin, neighbors=na, params=params)
     assert res.crown.is_watertight()
-    assert res.report["anatomy_source"] == "mirrored contralateral tooth"
+    assert res.report["anatomy_source"] == "anatomical model fitted to the mirrored contralateral tooth"
     for nb in na.neighbors:
         d, _ = nearest_distance(res.outer.reshape(-1, 3), nb.mesh.vertices)
         assert d.min() < 0.35  # in contact (vertex spacing of the scan ~0.3 mm)
@@ -64,3 +64,21 @@ def test_without_contralateral_uses_library_in_the_gap():
                        params=CrownParameters(n_theta=64, n_v=28))
     assert res.crown.is_watertight()
     assert res.report["anatomy_source"] == "parametric library"
+
+
+def test_anterior_anatomy_model_looks_like_a_canine():
+    from crownai.anatomy_model import default_anterior, radial_distance
+
+    m = default_anterior(33)
+    # labial view: the cusp tip is the highest point, the mesial angle higher than the distal one
+    assert m.top(np.array(m.tip_u)) == pytest.approx(m.height, abs=0.01)
+    assert m.top(np.array(m.md / 2)) > m.top(np.array(-m.md / 2))
+    # widest at the contacts, narrower at the cervix
+    M, D = m.mesiodistal(np.array([0.1, m.contact_m * m.height]))
+    assert M[1] > M[0]
+    # proximal view: labial height of contour near the cervix, lingual concavity above the cingulum
+    lab, lin = m.labiolingual(np.array([m.labial_hc, 0.9]))
+    assert lab[0] > lab[1]
+    c = np.array([0.0, 0.0, 0.4 * m.height])
+    r = radial_distance(m, c, np.array([[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]]))
+    assert 2.5 < r[0] < 5 and 2.5 < r[1] < 5
