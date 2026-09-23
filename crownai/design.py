@@ -41,6 +41,7 @@ class CrownParameters:
     n_v: int = 48  # samples from margin to occlusal pole
     smoothing: int = 4  # Laplacian passes on the outer surface
     emergence_height: float = 3.5  # mm above the margin over which anatomy blends into it
+    emergence_slope: float = 1.0  # max widening per mm of height above the margin (1 = 45 deg)
     contact_gap: float = 0.0  # mm to the adjacent teeth at the contacts (negative = tight)
 
 
@@ -261,7 +262,7 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         # the antagonist bounds the shape itself, so the cut is clean (pressing
         # surface points down afterwards folds thin incisal ridges)
         shape = _BelowAntagonist(shape, antagonist, frame, m_loc, p.occlusal_clearance)
-    shape = EmergenceShape(shape, m_loc, p.emergence_height)
+    shape = EmergenceShape(shape, m_loc, p.emergence_height, max_slope=p.emergence_slope)
     # 3. Ray fan --------------------------------------------------------------
     center_loc = np.array([0.0, 0.0, m_loc[:, 2].mean() + 0.35 * (prep_top - m_loc[:, 2].mean())])
     center = frame.to_world(center_loc)

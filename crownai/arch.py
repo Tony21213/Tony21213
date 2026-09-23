@@ -258,6 +258,8 @@ def analyze_neighbors(jaw: Mesh | list[Mesh], margin: np.ndarray, axis=(0.0, 0.0
     frame0 = make_frame(margin.mean(axis=0), axis)
     m_loc = frame0.to_local(margin)
     r_prep = float(np.hypot(m_loc[:, 0], m_loc[:, 1]).max())
+    if tooth:  # an implant's emergence is much narrower than the tooth it carries
+        r_prep = max(r_prep, 0.5 * tooth_type_for_fdi(tooth).mesiodistal)
     hm = _HeightMap(jaw, frame0, search_radius, resolution)
     q = frame0.to_local(jaw.vertices)
     gum = m_loc[:, 2].mean() + 2.0  # crowns stand at least this far above the margin
@@ -327,6 +329,8 @@ def analyze_neighbors(jaw: Mesh | list[Mesh], margin: np.ndarray, axis=(0.0, 0.0
     sm, sd = segs[mesial], segs[1 - mesial]
     contra = sm[2 * pos - 2] if pos and len(sm) >= 2 * pos - 1 else None
 
+    if pos and pos >= 7 and sm and sd and sd[0].top < sm[0].top - 0.7:
+        sd = []  # behind a second molar: the retromolar pad, not a third molar
     neighbors = [s_[0] for s_ in (sm, sd) if s_ and np.linalg.norm(s_[0].near) < r_prep + 4.0]
     near_m = sm[0].near if sm and any(n is sm[0] for n in neighbors) else None
     near_d = sd[0].near if sd and any(n is sd[0] for n in neighbors) else None
@@ -352,7 +356,17 @@ def analyze_neighbors(jaw: Mesh | list[Mesh], margin: np.ndarray, axis=(0.0, 0.0
 
     frame = make_frame(frame0.origin, axis, frame0.vector_to_world(np.array([mes_dir[0], mes_dir[1], 0.0])))
     template = None
-    if contra is not None:
+    if contra is None and pos and pos >= 4:
+        # posterior teeth are too far for the chain (small incisors merge on the
+        # height map): find the contralateral tooth by the arch's mirror symmetry
+        found_sym = _contralateral_by_symmetry(jaw, frame0, center, mes_dir, sm[0].near if sm else None,
+                                               tooth_type_for_fdi(tooth).mesiodistal, m_loc[:, 2].mean(),
+                                               tooth_type_for_fdi(tooth).height,
+                                               _local_top(hm, sm[0].near + 0.5 * mes_dir * tooth_type_for_fdi(tooth).mesiodistal)
+                                               if sm else None, sm[0] if sm else None)
+        if found_sym is not None:
+            contra, template, midline_sym = found_sym
+    if contra is not None and template is None:
         width = space if space is not None else contra.md_width
         template = _mirror(contra, frame0, center, mes_dir, width)
         # keep the crown only: the scan below the preparation's margin level is gingiva
@@ -373,10 +387,16 @@ def analyze_neighbors(jaw: Mesh | list[Mesh], margin: np.ndarray, axis=(0.0, 0.0
         b2 = -left if turn > 0 else left
         buccal = frame0.vector_to_world(np.array([b2[0], b2[1], 0.0]))
     midline = None
-    if contra is not None:
+    if template is not None and contra is not None and 'midline_sym' in locals():
+        midline = midline_sym
+    elif contra is not None:
         d2 = contra.center - center
         midline = frame0.vector_to_world(np.array([d2[0], d2[1], 0.0]))
         midline /= np.linalg.norm(midline)
+    if buccal is None and midline is not None:
+        # straight posterior segment: buccal = across the arch, away from the other side
+        left = frame0.vector_to_world(np.array([-mes_dir[1], mes_dir[0], 0.0]))
+        buccal = -left if left @ midline > 0 else left
     return NeighborAnalysis(frame, frame.x, frame0.to_world(np.array([center[0], center[1], 0.0])),
                             space, neighbors, contra, template, (len(sm), len(sd)), buccal, midline)
 
@@ -400,3 +420,147 @@ def _mirror(tooth: ToothSegment, frame0: ToothFrame, center: np.ndarray, mesial:
     xy = center + np.outer(-along * scale, mesial) + np.outer(lat, left0)
     placed = frame0.to_world(np.column_stack([xy, q[:, 2]]))
     return Mesh(placed, tooth.mesh.faces[:, ::-1].copy())  # a mirror image flips orientation
+
+
+def _symmetry_line(pts: np.ndarray) -> tuple[np.ndarray, float]:
+    """Mirror line (unit normal n, offset d: n.p = d) that best maps the arch onto itself.
+
+    ``pts``: (n, 3) local (x, y, height) samples of the tooth crowns.
+    """
+    from scipy.spatial import cKDTree
+
+    pts = pts.copy()
+    # the scan's occlusal plane is rarely level: compare heights above the fitted plane
+    A = np.column_stack([pts[:, :2], np.ones(len(pts))])
+    pts[:, 2] -= A @ np.linalg.lstsq(A, pts[:, 2], rcond=None)[0]
+    tree = cKDTree(pts)
+    c = pts[:, :2].mean(axis=0)
+
+    def score(phi, d):
+        n = np.array([np.cos(phi), np.sin(phi)])
+        m = pts.copy()
+        m[:, :2] -= 2 * ((m[:, :2] @ n) - d)[:, None] * n
+        return float(np.mean(np.minimum(tree.query(m)[0], 3.0)))
+
+    best = min(((score(phi, c @ np.array([np.cos(phi), np.sin(phi)])), phi)
+                for phi in np.radians(np.arange(0, 180, 2))))
+    phi = best[1]
+    d = c @ np.array([np.cos(phi), np.sin(phi)])
+    for step_a, step_d in ((np.radians(1.0), 1.0), (np.radians(0.3), 0.3), (np.radians(0.1), 0.1)):
+        cand = [(score(phi + i * step_a, d + j * step_d), phi + i * step_a, d + j * step_d)
+                for i in (-2, -1, 0, 1, 2) for j in (-2, -1, 0, 1, 2)]
+        _, phi, d = min(cand)
+    return np.array([np.cos(phi), np.sin(phi)]), float(d)
+
+
+def _contralateral_by_symmetry(jaw: Mesh, frame0: ToothFrame, center: np.ndarray, mes_dir: np.ndarray,
+                               near_m: np.ndarray | None, md: float, margin_z: float, crown_h: float = 7.5,
+                               nb_top: float | None = None, nb_seg: ToothSegment | None = None):
+    """Contralateral tooth found by mirroring the whole arch; ``None`` if nothing stands there.
+
+    Returns ``(ToothSegment, template Mesh mirrored onto the site (world), midline normal (world))``.
+    """
+    hm = _HeightMap(jaw, frame0, 70.0, 0.4)
+    gum = margin_z + 2.0
+    X, Y = np.meshgrid(hm.xs, hm.ys, indexing="ij")
+    P = np.column_stack([X[hm.valid], Y[hm.valid], hm.H[hm.valid]])
+    # crowns = what stands above the (tilted) mean plane of the scan; a fixed height
+    # threshold keeps more of the higher side and biases the mirror line
+    Ap = np.column_stack([P[:, :2], np.ones(len(P))])
+    resid = P[:, 2] - Ap @ np.linalg.lstsq(Ap, P[:, 2], rcond=None)[0]
+    teeth = resid > 0
+    if teeth.sum() < 200:
+        return None
+    n, d = _symmetry_line(np.column_stack([P[teeth, :2], 0.3 * resid[teeth]]))
+    plane = np.linalg.lstsq(Ap, P[:, 2], rcond=None)[0]  # occlusal tilt of the scan
+
+    def mirror2(p):
+        p = np.array(p, float)
+        return p - 2 * ((p @ n) - d) * n
+
+    site = mirror2(center)
+    if np.linalg.norm(site - center) < 15.0:  # the site is on the midline: not a posterior tooth
+        return None
+    mdir = mirror2(mes_dir) - mirror2(np.zeros(2))  # mesial direction on the other side
+    q = frame0.to_local(jaw.vertices)
+    rel = q[:, :2] - site
+    along = rel @ mdir
+    lat = rel @ np.array([-mdir[1], mdir[0]])
+    lo = (mirror2(near_m) - site) @ mdir if near_m is not None else md / 2 + 0.5
+    hi = -(md / 2 + 1.5)
+    box = (along < lo) & (along > hi) & (np.abs(lat) < 6.5)
+    if box.sum() < 100:
+        return None
+    # crown only: from its cusp tip down one textbook crown height (the rest is gingiva)
+    tip_z = float(q[box, 2].max())
+    # gingiva: the level of the soft tissue on a ring around the tooth (buccal and
+    # lingual flanks stand high around short clinical crowns)
+    r_site = np.linalg.norm(rel, axis=1)
+    ring = (r_site > md / 2 + 1.0) & (r_site < md / 2 + 3.0) & (q[:, 2] < tip_z - 2.0)
+    gum_c = float(np.percentile(q[ring, 2], 60)) if ring.sum() > 50 else tip_z - crown_h
+    keep = box & (q[:, 2] > max(tip_z - crown_h - 0.3, gum_c + 0.5))
+    f = jaw.faces[keep[jaw.faces].all(axis=1)]
+    if len(f) < 200:
+        return None
+    # low, flat ledges (gingiva, the scan's border) are not crown surface
+    tri = q[f]
+    nz = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    nz = np.abs(nz[:, 2]) / np.maximum(np.linalg.norm(nz, axis=1), 1e-12)
+    f = f[~((nz > 0.8) & (tri[:, :, 2].mean(axis=1) < tip_z - 3.0))]
+    used, inv = np.unique(f, return_inverse=True)
+    patch = Mesh(jaw.vertices[used], inv.reshape(-1, 3))
+    patch = _component_with(patch, int(np.argmax(frame0.to_local(patch.vertices)[:, 2])))
+    pl = frame0.to_local(patch.vertices)
+    if pl[:, 2].max() < gum + 1.0:  # only gingiva there: the contralateral tooth is missing too
+        return None
+    # mirror the patch back onto the site
+    back = pl.copy()
+    back[:, :2] -= 2 * ((back[:, :2] @ n) - d)[:, None] * n
+    # The scan's occlusal plane is tilted, so a pure mirror puts the tooth too high or
+    # low: keep its height relative to its mesial neighbour, as on the other side.
+    if near_m is not None and nb_top is not None:
+        other_nb = mirror2(near_m + 0.5 * mes_dir * md)  # the contralateral's own mesial neighbour
+        k = np.linalg.norm(q[:, :2] - other_nb, axis=1) < 3.0
+        if k.any():
+            back[:, 2] += nb_top - float(q[k, 2].max())
+    else:
+        back[:, 2] += (back[:, :2] - pl[:, :2]) @ plane[:2]
+    if nb_seg is not None:
+        # mirror symmetry is only approximate: set the tooth against the mesial
+        # neighbour's contact and on the line of its central groove
+        lat0 = np.array([-mes_dir[1], mes_dir[0]])
+        a_t = back[:, :2] @ mes_dir
+        nq = frame0.to_local(nb_seg.mesh.vertices)
+        nq = nq[nq[:, 2] > nq[:, 2].max() - 3.0]
+        d_along = nb_seg.near @ mes_dir - float(np.percentile(a_t, 99.5))
+        d_lat = float(nq[:, :2].mean(axis=0) @ lat0 - back[:, :2].mean(axis=0) @ lat0)
+        back[:, :2] += d_along * mes_dir + d_lat * lat0
+    template = Mesh(frame0.to_world(back), patch.faces[:, ::-1].copy())
+    a_patch = (pl[:, :2] - site) @ (-mdir)  # "along" = away from the midline... measured on the tooth
+    tip = pl[np.argmax(pl[:, 2]), :2]
+    a0 = (tip - site) @ (-mdir)
+    seg = ToothSegment(tip, -mdir, float(np.percentile(a_patch, 1)) - a0, float(np.percentile(a_patch, 99)) - a0,
+                       float(pl[:, 2].max()), patch)
+    midline = frame0.vector_to_world(np.array([*(site - center), 0.0]))
+    return seg, template, midline / np.linalg.norm(midline)
+
+
+def _local_top(hm: _HeightMap, p: np.ndarray, radius: float = 3.0) -> float | None:
+    X, Y = np.meshgrid(hm.xs, hm.ys, indexing="ij")
+    near = (np.hypot(X - p[0], Y - p[1]) < radius) & hm.valid
+    return float(hm.H[near].max()) if near.any() else None
+
+
+def _component_with(mesh: Mesh, vertex: int) -> Mesh:
+    """The connected piece of ``mesh`` that contains ``vertex``."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    f = mesh.faces
+    e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    n = len(mesh.vertices)
+    _, lab = connected_components(coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n)), directed=False)
+    keep = lab == lab[vertex]
+    f = f[keep[f].all(axis=1)]
+    used, inv = np.unique(f, return_inverse=True)
+    return Mesh(mesh.vertices[used], inv.reshape(-1, 3))

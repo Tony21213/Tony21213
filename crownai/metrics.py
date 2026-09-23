@@ -32,3 +32,17 @@ def compare_to_reference(outer_points: np.ndarray, crown: Mesh, reference: Mesh,
         "reference_to_crown_mean_mm": round(float(d_ref.mean()), 3),
         "reference_to_crown_p90_mm": round(float(np.percentile(d_ref, 90)), 3),
     }
+
+
+def outer_skin(mesh: Mesh, depth: float = 1.2) -> Mesh:
+    """Drop inner surfaces (a screw channel, a ti-base or die cavity) from a crown mesh.
+
+    A face is inner when the ray along its outward normal runs into the crown
+    again farther than ``depth`` mm away (fissure walls see each other closer).
+    """
+    from .mesh import raycast
+
+    n = mesh.face_normals()
+    t = raycast(mesh.triangles.mean(axis=1) + 0.02 * n, n, mesh)
+    keep = ~(np.isfinite(t) & (t > depth))
+    return Mesh(mesh.vertices, mesh.faces[keep])

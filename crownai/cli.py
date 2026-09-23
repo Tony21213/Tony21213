@@ -1,7 +1,7 @@
 """Command line interface.
 
 ``crownai design | demo | train-ssm | learn | learn-case | library | exocad-case | exocad-watch |
-webview | design-webview | learn-webview``
+webview | design-webview | design-missing | learn-webview``
 """
 
 from __future__ import annotations
@@ -245,6 +245,18 @@ def cmd_design_webview(a) -> int:
     return 0
 
 
+def cmd_design_missing(a) -> int:
+    from .pontic import missing_tooth_from_webview
+
+    res, solid, _ = missing_tooth_from_webview(a.file, a.tooth, center=a.center, occlusion=_occlusion(a),
+                                               learner=_learner(a), params=_params(a))
+    save_stl(solid, a.out)
+    if a.report:
+        Path(a.report).write_text(json.dumps(res.report, indent=2, ensure_ascii=False, default=float))
+    print(json.dumps(res.report, indent=2, ensure_ascii=False, default=float))
+    return 0
+
+
 def cmd_learn_webview(a) -> int:
     from .learning import CrownLearner
     from .webview import learn_from_webview
@@ -380,6 +392,16 @@ def main(argv=None) -> int:
     p.add_argument("--fix-bite", action="store_true", help="correct the jaw relation before designing")
     _add_design_options(p)
     p.set_defaults(func=cmd_design_webview)
+
+    p = sub.add_parser("design-missing",
+                       help="design a full tooth where one is missing (implant crown / pontic) from a webview HTML")
+    p.add_argument("file", type=Path)
+    p.add_argument("--tooth", type=int, required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--report", type=Path)
+    p.add_argument("--center", type=_vec, help="x,y,z of the site; default: the implant hole in the scan")
+    _add_design_options(p)
+    p.set_defaults(func=cmd_design_missing)
 
     p = sub.add_parser("learn-webview", help="learn the technician's wax-ups from exocad webview HTML files")
     p.add_argument("files", type=Path, nargs="+")
