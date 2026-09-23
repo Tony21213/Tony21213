@@ -41,6 +41,7 @@ def _add_design_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--library", type=Path, help="learning library folder: design with the anatomy learned from past cases")
     p.add_argument("--posterior-anatomy", choices=("rules", "mirror"), default=d.posterior_anatomy,
                    help="premolars/molars: rule-based cusp model (default) or the mirrored contralateral tooth")
+    p.add_argument("--rules-profile", type=Path, help="the lab's tuned rules (from crownai tune-rules)")
     o = p.add_argument_group("functional occlusion (Slavicek sequential guidance)")
     o.add_argument("--slavicek", action="store_true",
                    help="centric contacts + no interference in protrusion / latero- / mediotrusion")
@@ -52,7 +53,16 @@ def _add_design_options(p: argparse.ArgumentParser) -> None:
 def _params(a) -> CrownParameters:
     return CrownParameters(cement_gap=a.cement_gap, margin_gap=a.margin_gap, min_axial=a.min_axial,
                            min_occlusal=a.min_occlusal, occlusal_clearance=a.clearance,
-                           posterior_anatomy=getattr(a, "posterior_anatomy", "rules"))
+                           posterior_anatomy=getattr(a, "posterior_anatomy", "rules"),
+                           rules_profile=_rules_profile(a))
+
+
+def _rules_profile(a):
+    if getattr(a, "rules_profile", None) is None:
+        return None
+    from .rules_tuning import load_profile
+
+    return load_profile(a.rules_profile)
 
 
 def _occlusion(a):
@@ -260,6 +270,15 @@ def cmd_design_missing(a) -> int:
     return 0
 
 
+def cmd_tune_rules(a) -> int:
+    from .rules_tuning import tune_rules
+
+    tune_rules(a.root, a.out, fits_path=a.fits, limit=a.limit, holdout=a.holdout, eval_limit=a.eval,
+               min_cases=a.min_cases)
+    print(f"profile written to {a.out}; design with --rules-profile {a.out}")
+    return 0
+
+
 def cmd_learn_webview(a) -> int:
     from .learning import CrownLearner
     from .webview import learn_from_webview
@@ -405,6 +424,17 @@ def main(argv=None) -> int:
     p.add_argument("--center", type=_vec, help="x,y,z of the site; default: the implant hole in the scan")
     _add_design_options(p)
     p.set_defaults(func=cmd_design_missing)
+
+    p = sub.add_parser("tune-rules",
+                       help="tune the premolar/molar anatomy rules to the lab's finished crowns (exocad archive)")
+    p.add_argument("root", type=Path, help="archive folder; every case with a .constructionInfo is used")
+    p.add_argument("--out", type=Path, default=Path("rules_profile.json"))
+    p.add_argument("--fits", type=Path, help="per-crown fits (JSON lines, resumable); default next to --out")
+    p.add_argument("--limit", type=int, help="use at most this many crowns (random sample)")
+    p.add_argument("--holdout", type=float, default=0.15, help="share of crowns kept out for the check")
+    p.add_argument("--eval", type=int, default=8, help="held-out crowns to design with/without the profile")
+    p.add_argument("--min-cases", type=int, default=5, help="crowns needed before a tooth type gets a profile")
+    p.set_defaults(func=cmd_tune_rules)
 
     p = sub.add_parser("learn-webview", help="learn the technician's wax-ups from exocad webview HTML files")
     p.add_argument("files", type=Path, nargs="+")

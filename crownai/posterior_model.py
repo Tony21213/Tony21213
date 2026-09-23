@@ -85,6 +85,9 @@ class PosteriorCrown:
     fissure_k: float = 5.0  # sharpness of the fissures (smooth-max of the cusp slopes)
     tip_u: float = 0.0  # for PlacedAnatomy.tip_local (centre of the occlusal table)
     tip_w: float = 0.0
+    # learned secondary anatomy: mean difference between real crowns and the rule
+    # surface, on a grid over (u / (md/2), w / (bl/2)) in [-1, 1]^2 (see crownai.rules_tuning)
+    detail: np.ndarray | None = field(default=None, repr=False)
 
     # ---- occlusal surface --------------------------------------------------
     def _cusp_xy(self, c: Cusp) -> np.ndarray:
@@ -145,7 +148,10 @@ class PosteriorCrown:
         P = np.stack(parts)
         k = self.fissure_k
         m = P.max(axis=0)
-        return m + np.log(np.exp(k * (P - m)).sum(axis=0)) / k
+        z = m + np.log(np.exp(k * (P - m)).sum(axis=0)) / k
+        if self.detail is not None:
+            z = z + sample_grid(self.detail, u / (self.md / 2), w / (self.bl / 2))
+        return z
 
     # ---- outlines ------------------------------------------------------------
     def _profile(self, z, cervix, hc, contour, tipline, z_occ):
@@ -192,6 +198,20 @@ class PosteriorCrown:
         return section & (z >= -3.0) & (z <= self.occlusal(u, w))
 
 
+def sample_grid(grid: np.ndarray, x, y) -> np.ndarray:
+    """Bilinear lookup in a square grid spanning [-1, 1]^2 (0 outside, faded at the rim)."""
+    n = grid.shape[0]
+    fx = (np.clip(x, -1, 1) + 1) / 2 * (n - 1)
+    fy = (np.clip(y, -1, 1) + 1) / 2 * (n - 1)
+    i0 = np.clip(np.floor(fx).astype(int), 0, n - 2)
+    j0 = np.clip(np.floor(fy).astype(int), 0, n - 2)
+    tx, ty = fx - i0, fy - j0
+    v = (grid[i0, j0] * (1 - tx) * (1 - ty) + grid[i0 + 1, j0] * tx * (1 - ty)
+         + grid[i0, j0 + 1] * (1 - tx) * ty + grid[i0 + 1, j0 + 1] * tx * ty)
+    r = np.maximum(np.abs(x), np.abs(y))
+    return v * np.clip((1.15 - r) / 0.25, 0, 1)  # no detail beyond the occlusal table
+
+
 # --------------------------------------------------------------------------
 # Tooth types
 # --------------------------------------------------------------------------
@@ -219,8 +239,43 @@ _CUSPS = {
 }
 
 
-def default_posterior(fdi: int) -> PosteriorCrown:
-    """Textbook premolar / molar crown for FDI position 4-8 (8 uses the 7)."""
+def profile_key(fdi: int) -> str:
+    arch = "upper" if fdi // 10 in (1, 2, 5, 6) else "lower"
+    return f"{arch}_{min(fdi % 10, 7)}"
+
+
+# scalar rule parameters a profile may override (all tooth-shape, none size or placement)
+PROFILE_FIELDS = ("slope_in", "slope_out", "cusp_ridge_slope", "ridge_ratio", "fossa_depth", "marginal_drop",
+                  "mesial_ridge_extra", "hc_b", "hc_l", "contact_m", "contact_d", "buccal_share",
+                  "squareness", "tilt")
+
+
+def default_posterior(fdi: int, profile: dict | None = None) -> PosteriorCrown:
+    """Premolar / molar crown for FDI position 4-8 (8 uses the 7).
+
+    Textbook values, or - with ``profile`` (from :func:`crownai.rules_tuning.tune_rules`,
+    learned from the lab's own finished crowns) - the lab's typical proportions,
+    cusp arrangement and secondary anatomy for this tooth type.
+    """
+    base = _textbook_posterior(fdi)
+    entry = (profile or {}).get(profile_key(fdi))
+    if not entry:
+        return base
+    kw = {f: float(entry[f]) for f in PROFILE_FIELDS if f in entry}
+    if "cusps" in entry and len(entry["cusps"]) == len(base.cusps):
+        kw["cusps"] = tuple(replace(c, u=float(e["u"]), w=float(e["w"]), dh=float(e["dh"]))
+                            for c, e in zip(base.cusps, entry["cusps"]))
+    if "md" in entry:
+        md = float(entry["md"])
+        base = scaled(base, md=md, bl=md * float(entry.get("bl_md_ratio", base.bl / base.md)))
+    if "height" in entry:
+        kw["height"] = float(entry["height"])
+    if entry.get("detail") is not None:
+        kw["detail"] = np.asarray(entry["detail"], dtype=float)
+    return replace(base, **kw)
+
+
+def _textbook_posterior(fdi: int) -> PosteriorCrown:
     arch = "upper" if fdi // 10 in (1, 2, 5, 6) else "lower"
     pos = min(fdi % 10, 7)
     if pos < 4:
@@ -250,3 +305,32 @@ def scaled(model: PosteriorCrown, md: float | None = None, bl: float | None = No
     if height is not None:
         kw.update(height=height)
     return replace(model, **kw)
+
+
+def model_mesh(model: PosteriorCrown, n_theta: int = 120, n_phi: int = 70):
+    """Closed mesh of a crown model (visualisation, tests, synthetic references)."""
+    from .anatomy_model import radial_distance
+    from .mesh import Mesh
+
+    c = np.array([0.0, 0.0, 0.4 * model.height])
+    th = np.linspace(0, 2 * np.pi, n_theta, endpoint=False)
+    ph = np.linspace(0.03, np.pi - 0.03, n_phi)
+    T, P = np.meshgrid(th, ph, indexing="ij")
+    d = np.stack([np.sin(P) * np.cos(T), np.sin(P) * np.sin(T), np.cos(P)], -1).reshape(-1, 3)
+    r = radial_distance(model, c, d, r_max=14.0, steps=140)
+    V = (c + d * r[:, None]).reshape(n_theta, n_phi, 3)
+    faces = []
+    for i in range(n_theta):
+        i1 = (i + 1) % n_theta
+        for j in range(n_phi - 1):
+            a, b, cc, dd = i * n_phi + j, i1 * n_phi + j, i1 * n_phi + j + 1, i * n_phi + j + 1
+            faces += [[a, cc, b], [a, dd, cc]]
+    top = len(V.reshape(-1, 3))
+    verts = np.vstack([V.reshape(-1, 3), c + [0, 0, r.reshape(n_theta, n_phi)[:, 0].mean()],
+                       c - [0, 0, r.reshape(n_theta, n_phi)[:, -1].mean()]])
+    for i in range(n_theta):
+        i1 = (i + 1) % n_theta
+        faces.append([top, i * n_phi, i1 * n_phi])
+        faces.append([top + 1, i1 * n_phi + n_phi - 1, i * n_phi + n_phi - 1])
+    mesh = Mesh(verts, np.array(faces))
+    return mesh if mesh.volume() > 0 else mesh.flipped()

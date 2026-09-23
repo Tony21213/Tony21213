@@ -44,6 +44,7 @@ class CrownParameters:
     emergence_slope: float = 1.0  # max widening per mm of height above the margin (1 = 45 deg)
     posterior_anatomy: str = "rules"  # premolars/molars: "rules" (anatomical cusp model) or "mirror"
     implant: bool = False  # implant crown: narrower occlusal table (less lateral load), opt-in
+    rules_profile: dict | None = None  # the lab's tuned rules (crownai tune-rules), per tooth type
     follow_arch_line: bool = False  # no root to centre on (implant, pontic): line up with the neighbours
     cusp_fossa_max: float = 0.0  # opt-in: max buccolingual shift to put supporting cusps into antagonist fossae (mm)
     contact_gap: float = 0.0  # mm to the adjacent teeth at the contacts (negative = tight)
@@ -615,8 +616,10 @@ def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, arch_or
 
     pos = min(fdi % 10, 7)
     arch = "upper" if fdi // 10 in (1, 2, 5, 6) else "lower"
-    base = default_posterior(fdi)
+    base = default_posterior(fdi, p.rules_profile)
     info = {}
+    if p.rules_profile and base.detail is not None:
+        info["profile"] = "lab profile"
     md = base.md
     if neighbors is not None and neighbors.space is not None:
         md, info["md_from"] = neighbors.space, "space between neighbours"
@@ -655,7 +658,11 @@ def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, arch_or
     if buccal_vec is not None:
         labial = 1.0 if frame.to_local(frame.origin + buccal_vec)[1] >= 0 else -1.0
     else:
-        warnings.append("buccal side unknown: cusp arrangement may be mirrored buccolingually")
+        # the quadrant fixes the side: buccal = +z x mesial in quadrants 1 and 3 (valid
+        # when the mesial direction is real, e.g. exocad's; a guessed one gets a note)
+        labial = 1.0 if (fdi // 10) % 2 == 1 else -1.0
+        info["buccal_from"] = "tooth number"
+        warnings.append("buccal side unknown: taken from the tooth number and the mesial direction")
     shift = np.array([offset[0], labial * offset[1]])
     if mesial and (neighbors is None or neighbors.space is None):
         # free end: touch the mesial neighbour
