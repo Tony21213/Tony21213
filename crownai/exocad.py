@@ -31,7 +31,7 @@ import numpy as np
 
 from .design import CrownParameters, design_crown
 from .margin import load_margin, make_frame
-from .mesh import Mesh, load_stl, save_stl
+from .mesh import Mesh, load_stl, nearest_distance, save_stl
 
 PREP_PATTERNS = ("*prep*.stl", "*die*.stl", "*stump*.stl", "*stumpf*.stl", "*upperjaw*.stl", "*lowerjaw*.stl")
 ANTAGONIST_PATTERNS = ("*antag*.stl", "*opposing*.stl", "*gegenkiefer*.stl")
@@ -111,11 +111,18 @@ def discover_case(folder: str | Path, prep_patterns=PREP_PATTERNS,
 
 
 def crop_to_margin(scan: Mesh, margin: np.ndarray, axis=(0.0, 0.0, 1.0),
-                   radial_pad: float = 1.0, depth: float = 3.0) -> Mesh:
+                   radial_pad: float = 1.0, depth: float = 3.0, height_cap: float | None = None) -> Mesh:
     """Cut the region of one preparation out of a full-arch scan.
 
     Keeps triangles inside a cylinder around the margin (plus ``radial_pad``)
-    and above ``depth`` mm below the lowest margin point.
+    and above ``depth`` mm below the lowest margin point. Intraoral scans are
+    one continuous surface (gum tissue connects every tooth), so on a crowded
+    arch this cylinder can also catch part of a neighbouring, unprepared
+    tooth still rising well above the margin - it stays topologically
+    connected via the gum, so a connected-component filter cannot separate
+    it. ``height_cap``, when given (e.g. the tooth's expected natural crown
+    height + a couple mm), additionally excludes anything higher than that
+    above the margin's own top, which a real prepared stump should not reach.
     """
     frame = make_frame(margin.mean(axis=0), axis)
     m = frame.to_local(margin)
@@ -123,9 +130,34 @@ def crop_to_margin(scan: Mesh, margin: np.ndarray, axis=(0.0, 0.0, 1.0),
     q = frame.to_local(scan.triangles.reshape(-1, 3)).reshape(-1, 3, 3)
     c = q.mean(axis=1)
     keep = (np.hypot(c[:, 0], c[:, 1]) <= r_max) & (c[:, 2] >= m[:, 2].min() - depth)
+    if height_cap is not None:
+        keep &= c[:, 2] <= m[:, 2].max() + height_cap
     faces = scan.faces[keep]
     used, inv = np.unique(faces, return_inverse=True)
-    return Mesh(scan.vertices[used], inv.reshape(-1, 3))
+    cropped = Mesh(scan.vertices[used], inv.reshape(-1, 3))
+    return _largest_component_near_margin(cropped, margin)
+
+
+def _largest_component_near_margin(mesh: Mesh, margin: np.ndarray) -> Mesh:
+    """Keep only the connected surface patch that the margin line actually sits on."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    f = mesh.faces
+    if len(f) == 0:
+        return mesh
+    edges = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    n = len(mesh.vertices)
+    g = coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n))
+    n_comp, labels = connected_components(g, directed=False)
+    if n_comp <= 1:
+        return mesh
+    _, idx = nearest_distance(margin, mesh.vertices)
+    keep_label = np.bincount(labels[idx]).argmax()
+    keep_v = labels == keep_label
+    faces = mesh.faces[keep_v[mesh.faces].all(axis=1)]
+    used, inv = np.unique(faces, return_inverse=True)
+    return Mesh(mesh.vertices[used], inv.reshape(-1, 3))
 
 
 def process_case(folder: str | Path, *, teeth: list[int] | None = None, prep: str | Path | None = None,

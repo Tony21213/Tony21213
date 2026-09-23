@@ -164,6 +164,7 @@ def design_construction_case(folder: str | Path, tooth: int, *, learner=None, pa
     the technician's finished crown was exported back into the folder
     (:func:`find_final_crown`), ``report["reference"]`` compares the two.
     """
+    from .anatomy import tooth_type_for_fdi
     from .arch import analyze_neighbors
     from .design import design_crown
     from .exocad import crop_to_margin
@@ -182,7 +183,10 @@ def design_construction_case(folder: str | Path, tooth: int, *, learner=None, pa
         raise ValueError(f"tooth {tooth}: no margin line recorded in {case.path.name}")
 
     jaw_world = case.load_prep_scan(tooth)
-    die = crop_to_margin(jaw_world, info.margin, info.axis)
+    # a crowded arch's crop cylinder can catch part of a still-connected neighbour
+    # tooth well above where a real prepared stump would reach (see crop_to_margin)
+    height_cap = tooth_type_for_fdi(tooth).height + 2.0
+    die = crop_to_margin(jaw_world, info.margin, info.axis, height_cap=height_cap)
     ant_scan = case.antagonist_scan(tooth)
     antagonist = case.load_world(ant_scan) if ant_scan is not None else None
     neighbors = None
@@ -260,6 +264,7 @@ def learn_construction_case(folder: str | Path, learner, *, teeth: list[int] | N
     intermediate crownai design step needed, unlike
     :func:`crownai.exocad.learn_case`.
     """
+    from .anatomy import tooth_type_for_fdi
     from .exocad import crop_to_margin
     from .learning import learn_from_crown
 
@@ -285,7 +290,8 @@ def learn_construction_case(folder: str | Path, learner, *, teeth: list[int] | N
             # neighbouring teeth in the same file do not pollute the learned shape.
             crown = crop_to_margin(crown_full, info.margin, info.axis, radial_pad=2.5, depth=1.0)
             jaw_world = case.load_prep_scan(tooth)
-            prep = crop_to_margin(jaw_world, info.margin, info.axis)
+            height_cap = tooth_type_for_fdi(tooth).height + 2.0
+            prep = crop_to_margin(jaw_world, info.margin, info.axis, height_cap=height_cap)
             info_out = learn_from_crown(learner, crown, prep=prep, margin=info.margin, tooth=tooth,
                                         axis=info.axis, md_direction=info.md_direction,
                                         case_id=f"{folder.name}/{tooth}")

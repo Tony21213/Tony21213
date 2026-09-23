@@ -192,6 +192,14 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     prep_top = frame.to_local(prep.vertices)[:, 2].max()
     if prep_top <= m_loc[:, 2].max():
         raise ValueError("preparation does not rise above the margin along the insertion axis")
+    if prep_top - m_loc[:, 2].max() > 0.9 * ttype.height:
+        # a real prep is reduced well below the tooth's natural crown height; this
+        # tall a rise usually means the scan is still the unprepared tooth (or the
+        # margin/axis do not match this scan) - the ray fan below assumes a mostly
+        # convex stump and can produce a badly distorted crown on real anatomy
+        warnings.append(f"preparation rises {prep_top - m_loc[:, 2].max():.1f} mm above the margin - "
+                        f"close to or above a natural {ttype.name} crown height "
+                        f"({ttype.height:.1f} mm); this may not be an actual reduced preparation")
 
     # Anatomy (before the ray fan, which is aimed at the cusp tip) --------------
     half_x = np.abs(m_loc[:, 0]).max()
@@ -231,7 +239,11 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         shape = ModelTooth(shape_model, shape_model.reconstruct(shape_coeffs), A, B, H, z0)
         source = "shape model"
     elif prediction is not None:
-        A = max(prediction.dims[0], half_x * 1.05)
+        # A real mesiodistal space measured from the patient's own neighbouring
+        # teeth (set above) is more reliable than the learned model's prediction,
+        # which can extrapolate badly outside its training range - keep it.
+        if neighbors is None or neighbors.space is None:
+            A = max(prediction.dims[0], half_x * 1.05)
         B = max(prediction.dims[1], half_y * 1.05)
         H = max(prediction.dims[2], prep_top + p.cement_gap + p.min_occlusal + 0.3)
         shape = ModelTooth(prediction.shape_model, prediction.signature, A, B, H, z0)
@@ -272,6 +284,18 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     t_in[:, 0] = t_margin
     missing = ~np.isfinite(t_in)
     if missing.any():
+        miss_ratio = missing.sum() / missing.size
+        row_ok_counts = np.isfinite(t_in).sum(axis=1)
+        if miss_ratio > 0.1 or (row_ok_counts < 2).any():
+            # this many missed rays means the ray fan from the design pole does not
+            # sweep the die cleanly (concave/undercut anatomy, e.g. an unreduced
+            # natural crown rather than a real prepared stump) - interpolating across
+            # gaps this large does not reconstruct a real surface, it fabricates one
+            # (self-intersecting folds), so refuse rather than ship a bad crown
+            raise ValueError(
+                f"{int(missing.sum())}/{missing.size} intaglio rays missed the preparation "
+                "(die geometry is not a clean, mostly-convex stump around the insertion axis - "
+                "check that the scan is actually the reduced/prepared tooth, not the natural one)")
         warnings.append(f"{int(missing.sum())} intaglio rays missed the die; interpolated")
         for i in range(p.n_theta):
             row = t_in[i]
