@@ -35,7 +35,8 @@ def test_crown_is_closed_solid(result):
     crown = result.crown
     assert crown.is_watertight()
     assert crown.volume() > 100
-    assert result.report["warnings"] == []
+    # a lone die carries no arch orientation: the only expected note is about that
+    assert [w for w in result.report["warnings"] if not w.startswith("buccal side unknown")] == []
 
 
 def test_crown_respects_minimum_thickness(result, fast_params):

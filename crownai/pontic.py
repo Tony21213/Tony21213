@@ -239,16 +239,24 @@ def design_missing_tooth(jaw: Mesh, tooth: int, *, antagonist: Mesh | None = Non
     if hole is not None:
         # an implant crown flares from the narrow ti-base to full width within the gum
         params = replace(params or CrownParameters(), emergence_slope=2.5, emergence_height=3.0)
+    # no root to centre on, and the abutment is virtual: the tooth lines up with its
+    # neighbours and needs no material minimum over the abutment
+    params = replace(params or CrownParameters(), min_axial=0.2, min_occlusal=0.2, follow_arch_line=True)
     margin, die = virtual_site(jaw, tooth, center, axis, hole=hole)
     na = analyze_neighbors(jaw, margin, axis, tooth=tooth) if use_neighbors else None
     if na is not None:  # re-orient the cervical outline along the arch
         margin, die = virtual_site(jaw, tooth, center, axis, na.md_direction, hole=hole)
         na = analyze_neighbors(jaw, margin, axis, tooth=tooth)
-    if na is not None and na.template is not None and antagonist is not None:
+    mirror = (params or CrownParameters()).posterior_anatomy == "mirror" or tooth % 10 <= 3
+    if mirror and na is not None and na.template is not None and antagonist is not None:
         seated = _seat_on_antagonist(na.template, antagonist, axis)
         na.template = seated
     res = design_crown(die, tooth=tooth, margin=margin, antagonist=antagonist, axis=axis, neighbors=na,
                        occlusion=occlusion, learner=learner, jaw=jaw, params=params)
+    # the abutment is virtual: advice about reducing a preparation does not apply
+    res.report["warnings"] = [w.replace("minimum thickness keeps", "left:")
+                               .replace("the preparation needs more occlusal reduction", "check the bite")
+                              for w in res.report["warnings"] if "intaglio rays" not in w]
     res.report["site"] = ("implant: crown emerges from the soft-tissue hole" if hole is not None
                           else "pontic: ovate base on the ridge")
     solid = close_with_base(res)

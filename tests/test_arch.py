@@ -53,7 +53,7 @@ def test_crown_touches_neighbours(arch_case):
         assert d.min() < 0.35  # in contact (vertex spacing of the scan ~0.3 mm)
 
 
-def test_without_contralateral_uses_library_in_the_gap():
+def test_without_contralateral_builds_anatomy_by_rules_in_the_gap():
     jaw, teeth = make_lower_arch(missing=35)
     t = teeth[35]
     prep = make_prep_at(t["center"], t["md"], t["bl"])
@@ -63,6 +63,13 @@ def test_without_contralateral_uses_library_in_the_gap():
     res = design_crown(prep, tooth=35, margin=margin, neighbors=na,
                        params=CrownParameters(n_theta=64, n_v=28))
     assert res.crown.is_watertight()
+    assert res.report["anatomy_source"].startswith("anatomical rules")
+    assert res.report["anatomy_fit"]["md_from"] == "space between neighbours"
+    for nb in na.neighbors:  # fills the gap: touches both neighbours
+        d, _ = nearest_distance(res.outer.reshape(-1, 3), nb.mesh.vertices)
+        assert d.min() < 0.35
+    res = design_crown(prep, tooth=35, margin=margin, neighbors=na,
+                       params=CrownParameters(n_theta=64, n_v=28, posterior_anatomy="mirror"))
     assert res.report["anatomy_source"] == "parametric library"
 
 

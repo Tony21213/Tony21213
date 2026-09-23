@@ -328,9 +328,12 @@ class PlacedAnatomy:
     shift: np.ndarray  # (u, w) of the model axis in the local frame
     margin_theta: np.ndarray | None = None  # sorted angles of the margin around the local origin
     margin_z: np.ndarray | None = None
+    fade: float = 0.0  # >0: the margin's ups and downs fade out over this height (mm) - the
+    #                   occlusal table stays level however scalloped or inclined the finish line
 
     @classmethod
-    def on_margin(cls, model, labial_sign, shift, margin_local: np.ndarray, samples: int = 180):
+    def on_margin(cls, model, labial_sign, shift, margin_local: np.ndarray, samples: int = 180,
+                  fade: float = 0.0):
         th = np.arctan2(margin_local[:, 1], margin_local[:, 0])
         order = np.argsort(th)
         grid = np.linspace(-np.pi, np.pi, samples, endpoint=False)
@@ -339,7 +342,7 @@ class PlacedAnatomy:
         # smooth the cervical line (a finish line has small wiggles a CEJ has not)
         k = np.exp(-0.5 * (np.arange(-8, 9) / 4.0) ** 2)
         z = np.convolve(np.concatenate([z[-8:], z, z[:8]]), k / k.sum(), mode="valid")
-        return cls(model, labial_sign, float(margin_local[:, 2].mean()), np.asarray(shift, float), grid, z)
+        return cls(model, labial_sign, float(margin_local[:, 2].mean()), np.asarray(shift, float), grid, z, fade)
 
     def cervix(self, x, y):
         if self.margin_theta is None:
@@ -351,8 +354,17 @@ class PlacedAnatomy:
         w = f - np.floor(f)
         return (1 - w) * self.margin_z[i0] + w * self.margin_z[(i0 + 1) % n]
 
+    def level(self, x, y, z):
+        """Cervical reference height for a point: the local margin, fading to the mean."""
+        zc = self.cervix(x, y)
+        if self.fade > 0:
+            t = np.clip((z - self.z_cervix) / self.fade, 0, 1)
+            t = t * t * (3 - 2 * t)
+            zc = zc * (1 - t) + self.z_cervix * t
+        return zc
+
     def to_model(self, p: np.ndarray) -> np.ndarray:
-        zc = self.cervix(p[..., 0], p[..., 1])
+        zc = self.level(p[..., 0], p[..., 1], p[..., 2])
         return np.stack([p[..., 0] - self.shift[0], self.labial_sign * p[..., 1] - self.shift[1],
                          p[..., 2] - zc], axis=-1)
 
@@ -364,4 +376,5 @@ class PlacedAnatomy:
         m = self.model
         x = m.tip_u + self.shift[0]
         y = self.labial_sign * (m.tip_w + self.shift[1] + m.tilt * m.height)
-        return np.array([x, y, float(self.cervix(np.array(x), np.array(y))) + m.height])
+        zc = self.z_cervix if self.fade > 0 else float(self.cervix(np.array(x), np.array(y)))
+        return np.array([x, y, zc + m.height])

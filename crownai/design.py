@@ -42,6 +42,10 @@ class CrownParameters:
     smoothing: int = 4  # Laplacian passes on the outer surface
     emergence_height: float = 3.5  # mm above the margin over which anatomy blends into it
     emergence_slope: float = 1.0  # max widening per mm of height above the margin (1 = 45 deg)
+    posterior_anatomy: str = "rules"  # premolars/molars: "rules" (anatomical cusp model) or "mirror"
+    implant: bool = False  # implant crown: narrower occlusal table (less lateral load), opt-in
+    follow_arch_line: bool = False  # no root to centre on (implant, pontic): line up with the neighbours
+    cusp_fossa_max: float = 0.0  # opt-in: max buccolingual shift to put supporting cusps into antagonist fossae (mm)
     contact_gap: float = 0.0  # mm to the adjacent teeth at the contacts (negative = tight)
 
 
@@ -161,11 +165,15 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
                  params: CrownParameters | None = None) -> CrownResult:
     """Design a full-contour anatomical crown on ``prep`` (a segmented die scan, mm).
 
-    Anatomy source, in priority order: the patient's own contralateral tooth
-    mirrored into place (``neighbors``, see :func:`crownai.arch.analyze_neighbors`),
-    an explicit ``shape_model``, a trained ``learner``
-    (:class:`crownai.learning.CrownLearner`) with cases for this tooth class,
-    otherwise the parametric library tooth.  With ``neighbors`` the crown also
+    Anatomy source: incisors and canines use the anatomical model of
+    :mod:`crownai.anatomy_model`, fitted to the mirrored contralateral tooth when
+    there is one.  Premolars and molars: an explicit ``shape_model``, a trained
+    ``learner`` (:class:`crownai.learning.CrownLearner`) with cases for this
+    tooth class, otherwise the rule-based cusp model of
+    :mod:`crownai.posterior_model` (``params.posterior_anatomy="rules"``, the
+    default) or, with ``"mirror"``, the patient's contralateral tooth mirrored
+    into place (``neighbors``, see :func:`crownai.arch.analyze_neighbors`) and
+    the parametric library tooth when there is none.  With ``neighbors`` the crown also
     follows the arch direction, fills the space between the adjacent teeth
     and touches them at the contacts.
 
@@ -231,6 +239,13 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         # mirrored contralateral tooth when there is one.
         shape, source, anatomy_fit = _anterior_anatomy(fdi, frame, m_loc, offset, neighbors, prep_top, p, prep)
         placed = True
+    elif fdi is not None and fdi % 10 >= 4 and shape_model is None and prediction is None \
+            and p.posterior_anatomy == "rules":
+        # Premolars and molars: cusp model from the rules of anatomy, sized and set
+        # by the patient's neighbours and antagonist (the mirror image only lends its size)
+        shape, source, anatomy_fit = _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist,
+                                                        arch_orientation, prep_top, p, warnings)
+        placed = True
     elif neighbors is not None and neighbors.template is not None:
         from .learning import CENTER_Z, N_PHI, N_THETA, crown_signature
 
@@ -264,12 +279,22 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
         shape = _BelowAntagonist(shape, antagonist, frame, m_loc, p.occlusal_clearance)
     shape = EmergenceShape(shape, m_loc, p.emergence_height, max_slope=p.emergence_slope)
     # 3. Ray fan --------------------------------------------------------------
+    detailed = placed and fdi is not None and fdi % 10 >= 4
+    if detailed:
+        # fine occlusal anatomy needs rows every ~0.2 mm over the occlusal table too
+        from dataclasses import replace as _replace
+
+        p = _replace(p, n_v=max(p.n_v, 96), n_theta=max(p.n_theta, 160))
+        margin = _resample_loop(margin, p.n_theta)
+        m_loc = frame.to_local(margin)
+        v = (np.arange(p.n_v) / p.n_v) ** 1.15
+    else:
+        v = (np.arange(p.n_v) / p.n_v) ** 1.5  # denser sampling near the margin
     center_loc = np.array([0.0, 0.0, m_loc[:, 2].mean() + 0.35 * (prep_top - m_loc[:, 2].mean())])
     center = frame.to_world(center_loc)
     d0 = margin - center
     t_margin = np.linalg.norm(d0, axis=1)
     d0 /= t_margin[:, None]
-    v = (np.arange(p.n_v) / p.n_v) ** 1.5  # denser sampling near the margin
     pole_dir = frame.z
     tip, node = None, shape
     while node is not None and tip is None:  # EmergenceShape(_BelowAntagonist(PlacedAnatomy)) ...
@@ -321,22 +346,26 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     # 5. Outer anatomy: shaped above, sampled on the ray fan
     t_out = _shape_radii(shape, frame, center, dirs)
     smoothing = p.smoothing
+    # a posterior occlusal table carries fine anatomy (fissures, triangular ridges):
+    # keep it - the pole smoothing below is for the single tip of a canine
+    if detailed:
+        smoothing = min(smoothing, 1)
     # Near the pole the rays graze a thin incisal ridge / cusp: neighbouring
     # rays hit its crest or its flanks and the radius jumps.  Smooth around
     # the circumference there (keeps the heights, removes the zigzag).
-    top_rows = v > 0.75
+    top_rows = v > (0.97 if detailed else 0.75)
     if top_rows.any():
         k = np.exp(-0.5 * (np.arange(-4, 5) / 2.0) ** 2)
         k /= k.sum()
         ext = np.concatenate([t_out[-4:], t_out, t_out[:4]], axis=0)
         smooth = np.stack([np.convolve(ext[:, j], k, mode="valid") for j in range(t_out.shape[1])], axis=1)
-        w_top = _smoothstep((v - 0.75) / 0.15)[None, :]
+        w_top = _smoothstep((v - (0.97 if detailed else 0.75)) / 0.15)[None, :]
         t_out = t_out * (1 - w_top) + smooth * w_top
     t_out[:, 0] = t_margin
     outer = center + dirs * t_out[..., None]
     outer_pole = center + pole_dir * _shape_radii(shape, frame, center, pole_dir[None, None])[0, 0]
     outer = _laplacian(outer, smoothing)
-    outer, outer_pole = _smooth_top(outer, outer_pole, v)
+    outer, outer_pole = _smooth_top(outer, outer_pole, v, **({"start": 0.95, "iters": 4} if detailed else {}))
 
     # Thickness ramps up from the finish line over ``thickness_band`` (measured on the die).
     occlusal_w = _smoothstep((v - 0.45) / 0.3)[None, :]
@@ -565,6 +594,165 @@ def _anterior_anatomy(fdi, frame, m_loc, offset, neighbors, prep_top, p, prep):
         stats = {**stats, **{k: round(float(getattr(placed.model, k)), 2)
                              for k in ("height", "md", "ll", "tip_u", "tip_w", "drop_m", "drop_d")}}
     return placed, source, stats
+
+
+def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, arch_orientation, prep_top, p, warnings):
+    """Premolar/molar from the anatomical cusp model, set into the patient's arch by rules.
+
+    * size: mesiodistal = the space between the neighbours (or the measured
+      contralateral width, or Wheeler); buccolingual in the textbook proportion
+      to the mesial neighbour's; implant crowns get a narrower occlusal table;
+    * height: cusp tips on the neighbours' occlusal level;
+    * buccolingual position: the supporting cusps over the antagonist's fossae
+      (cusp-fossa relation), close to the line of the neighbouring teeth;
+    * each cusp is then raised or lowered to the antagonist - supporting cusps
+      into contact, none into it - instead of the crown being cut flat.
+    """
+    from dataclasses import replace
+
+    from .anatomy_model import WHEELER, PlacedAnatomy
+    from .posterior_model import default_posterior, scaled
+
+    pos = min(fdi % 10, 7)
+    arch = "upper" if fdi // 10 in (1, 2, 5, 6) else "lower"
+    base = default_posterior(fdi)
+    info = {}
+    md = base.md
+    if neighbors is not None and neighbors.space is not None:
+        md, info["md_from"] = neighbors.space, "space between neighbours"
+    elif neighbors is not None and neighbors.contralateral is not None:
+        # the patient's own width, drawn towards the textbook (a scan crop can overstate it)
+        md = 0.5 * (float(np.clip(neighbors.contralateral.md_width, 0.9 * base.md, 1.12 * base.md)) + base.md)
+        info["md_from"] = "contralateral width"
+    else:
+        info["md_from"] = "textbook"
+    bl = base.bl * (md / base.md) ** 0.5
+    # neighbours in the local frame (mesial = +x)
+    nbs = []
+    if neighbors is not None:
+        for nb in neighbors.neighbors:
+            q = frame.to_local(nb.mesh.vertices)
+            nbs.append(q[q[:, 2] > q[:, 2].max() - 3.5])
+    mesial = [q for q in nbs if q[:, 0].mean() > 0]
+    if mesial and pos - 1 >= 4:
+        q = mesial[0]
+        bl_nb = float(np.percentile(q[:, 1], 98) - np.percentile(q[:, 1], 2))
+        rule = bl_nb * WHEELER[arch][pos][3] / WHEELER[arch][pos - 1][3]
+        if 0.8 * base.bl < rule < 1.25 * base.bl:
+            bl = 0.5 * (bl + rule)
+            info["bl_from"] = "mesial neighbour proportion"
+    if p.implant:
+        bl *= 0.9
+        info["implant_narrowed"] = True
+    model = scaled(base, md=md, bl=bl)
+
+    labial = 1.0
+    buccal_vec = None
+    if neighbors is not None and neighbors.buccal is not None:
+        buccal_vec = neighbors.buccal
+    elif arch_orientation is not None:
+        buccal_vec = np.asarray(arch_orientation[1], float)
+    if buccal_vec is not None:
+        labial = 1.0 if frame.to_local(frame.origin + buccal_vec)[1] >= 0 else -1.0
+    else:
+        warnings.append("buccal side unknown: cusp arrangement may be mirrored buccolingually")
+    shift = np.array([offset[0], labial * offset[1]])
+    if mesial and (neighbors is None or neighbors.space is None):
+        # free end: touch the mesial neighbour
+        q = mesial[0]
+        near = q[np.abs(q[:, 1] - offset[1]) < 3.0]
+        if len(near):
+            shift[0] = float(near[:, 0].min()) - md / 2 - p.contact_gap
+            info["md_position"] = "against the mesial neighbour"
+
+    fade = 0.55 * base.height  # the cervical line's course fades out by mid-crown
+    if p.follow_arch_line and nbs:
+        # the tooth stands in the row: its occlusal centre on the neighbours' line
+        shift[1] = labial * float(np.mean([np.median(q[:, 1]) for q in nbs]))
+        info["bl_position"] = "in line with the neighbours"
+    placed = PlacedAnatomy.on_margin(model, labial, shift, m_loc, fade=fade)
+    mm = placed.to_model(m_loc)
+    model = replace(model, md_cervix=min(float(np.ptp(mm[:, 0])) * 0.98, 0.95 * md),
+                    bl_cervix=min(float(np.ptp(mm[:, 1])) * 0.98, 0.95 * bl))
+    placed = PlacedAnatomy.on_margin(model, labial, shift, m_loc, fade=fade)
+    cz = float(placed.margin_z.mean())
+
+    # height: on the neighbours' occlusal level, else textbook
+    H = model.height
+    if nbs:
+        tops = [float(q[:, 2].max()) for q in nbs]
+        H = float(np.mean(tops)) - cz
+        info["height_from"] = "neighbours' cusp level"
+    need = prep_top + p.cement_gap + p.min_occlusal + 0.3 - cz  # cusp tips stand above the mean cervix
+    H = max(H, need, 0.6 * base.height)
+    placed.model = model = replace(model, height=H)
+
+    def local_tips(m, sh):
+        t = m.cusp_tips()
+        x, y = t[:, 0] + sh[0], labial * (t[:, 1] + sh[1] + m.tilt * t[:, 2])
+        return np.column_stack([x, y, placed.z_cervix + t[:, 2]])  # tips: above the mean cervix
+
+    if antagonist is not None:
+        ceil = _BelowAntagonist(None, antagonist, frame, m_loc, p.occlusal_clearance, reach=12.0)
+        func = np.array([c.functional for c in model.cusps])
+
+        def ceiling(xy):
+            i = np.clip(np.round((xy[:, 0] - ceil.x0) / ceil.res).astype(int), 0, ceil.ceiling.shape[0] - 1)
+            j = np.clip(np.round((xy[:, 1] - ceil.y0) / ceil.res).astype(int), 0, ceil.ceiling.shape[1] - 1)
+            return ceil.ceiling[i, j]
+
+        # cusp-fossa relation: each supporting cusp goes into the antagonist's fossa
+        # next to it - a valley between two antagonist cusps in the buccolingual
+        # section (not simply where the antagonist is farthest: embrasures, air)
+        tips = local_tips(model, shift)
+        ys = np.linspace(-3.0, 3.0, 61)
+        offsets = []
+        for (x_t, y_t, _), f in zip(tips, func):
+            if not f:
+                continue
+            c = ceiling(np.column_stack([np.full(len(ys), x_t), y_t + ys]))
+            if not np.isfinite(c).all():
+                continue
+            c = np.convolve(np.pad(c, 3, mode="edge"), np.ones(7) / 7, mode="valid")
+            cand = []
+            for i in range(5, len(ys) - 5):
+                if c[i] < c[max(i - 6, 0):i + 7].max():
+                    continue
+                # a fossa: the antagonist comes down again on both sides (its cusps)
+                if c[i] - c[:i].min() > 0.4 and c[i] - c[i + 1:].min() > 0.4:
+                    cand.append(ys[i])
+            if cand:
+                offsets.append(min(cand, key=abs))
+        best_s = float(np.clip(np.median(offsets), -p.cusp_fossa_max, p.cusp_fossa_max)) if offsets else 0.0
+        info["cusp_fossa_shift_mm"] = round(float(best_s), 2)
+        shift = shift + np.array([0.0, labial * best_s])  # local y -> model w
+        placed = PlacedAnatomy.on_margin(model, labial, shift, m_loc, fade=fade)
+        tips = local_tips(model, shift)
+        c = ceiling(tips[:, :2])
+        if np.isfinite(c[func]).any():
+            gap = c - tips[:, 2]
+            dz = float(np.nanmin(np.where(func & np.isfinite(gap), gap, np.nan)))
+            H = float(np.clip(H + dz, max(need, 0.6 * base.height), 1.8 * base.height))
+            model = replace(model, height=H)
+            tips = local_tips(model, shift)
+            gap = c - tips[:, 2]
+            cusps, moved = [], {}
+            for cusp, g, f in zip(model.cusps, gap, func):
+                dh = cusp.dh
+                if np.isfinite(g):
+                    if g < 0:  # would reach into the antagonist: lower this cusp (the rest is cut)
+                        dh += max(g, -1.0)
+                    elif f and g > 0.1:  # supporting cusp short of contact: bring it up
+                        dh += min(g - 0.05, 0.6)
+                moved[cusp.name] = round(float(dh - cusp.dh), 2)
+                cusps.append(replace(cusp, dh=dh))
+            top = max(c_.dh for c_ in cusps)
+            model = replace(model, height=H + top, cusps=tuple(replace(c_, dh=c_.dh - top) for c_ in cusps))
+            info["cusp_height_changes_mm"] = moved
+            info["height_from"] = "antagonist contact"
+    placed = PlacedAnatomy.on_margin(model, labial, shift, m_loc, fade=fade)
+    info.update(md=round(model.md, 2), bl=round(model.bl, 2), height=round(model.height, 2))
+    return placed, "anatomical rules (cusp model, set by neighbours and antagonist)", info
 
 
 class _BelowAntagonist:

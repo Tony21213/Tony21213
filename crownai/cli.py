@@ -39,6 +39,8 @@ def _add_design_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--md-dir", type=_vec, default=(1.0, 0.0, 0.0), help="mesiodistal direction (default 1,0,0)")
     p.add_argument("--ssm", type=Path, help="trained shape model (.npz) instead of the parametric library")
     p.add_argument("--library", type=Path, help="learning library folder: design with the anatomy learned from past cases")
+    p.add_argument("--posterior-anatomy", choices=("rules", "mirror"), default=d.posterior_anatomy,
+                   help="premolars/molars: rule-based cusp model (default) or the mirrored contralateral tooth")
     o = p.add_argument_group("functional occlusion (Slavicek sequential guidance)")
     o.add_argument("--slavicek", action="store_true",
                    help="centric contacts + no interference in protrusion / latero- / mediotrusion")
@@ -49,7 +51,8 @@ def _add_design_options(p: argparse.ArgumentParser) -> None:
 
 def _params(a) -> CrownParameters:
     return CrownParameters(cement_gap=a.cement_gap, margin_gap=a.margin_gap, min_axial=a.min_axial,
-                           min_occlusal=a.min_occlusal, occlusal_clearance=a.clearance)
+                           min_occlusal=a.min_occlusal, occlusal_clearance=a.clearance,
+                           posterior_anatomy=getattr(a, "posterior_anatomy", "rules"))
 
 
 def _occlusion(a):
