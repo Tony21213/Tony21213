@@ -198,7 +198,10 @@ def design_construction_case(folder: str | Path, tooth: int, *, learner=None, pa
 
     res = design_crown(die, tooth=tooth, margin=info.margin, antagonist=antagonist, axis=info.axis,
                        md_direction=info.md_direction, neighbors=neighbors, learner=learner,
-                       occlusion=occlusion, jaw=jaw_world, params=params)
+                       occlusion=occlusion, jaw=jaw_world, params=params,
+                       # the technician's mesial direction, the same one learn_construction_case
+                       # trains with - not the arch estimate from the neighbour analysis
+                       trust_md_direction=True)
     res.report["margin_source"] = "constructionInfo"
 
     ref_path = find_final_crown(folder, tooth) if compare_reference else None

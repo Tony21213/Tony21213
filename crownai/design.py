@@ -156,6 +156,7 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
                  axis=(0.0, 0.0, 1.0), md_direction=(1.0, 0.0, 0.0),
                  shape_model: ShapeModel | None = None, shape_coeffs=None,
                  learner=None, neighbors=None, occlusion=None, arch_orientation=None, jaw: Mesh | None = None,
+                 trust_md_direction: bool = False,
                  params: CrownParameters | None = None) -> CrownResult:
     """Design a full-contour anatomical crown on ``prep`` (a segmented die scan, mm).
 
@@ -171,7 +172,9 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     occlusal surface functionally against the ``antagonist``: centric
     contacts plus no interference along the simulated excursive movements.
     ``arch_orientation`` = (anterior, buccal) world vectors overrides the
-    orientation derived from ``neighbors``.  With ``jaw`` (the scan of the
+    orientation derived from ``neighbors``.  ``trust_md_direction`` keeps the
+    given ``md_direction`` (e.g. the technician's own from exocad) instead of
+    the one estimated from the arch - learning and design then share a frame.  With ``jaw`` (the scan of the
     crown's own jaw) the excursive paths are simulated from the patient's
     teeth themselves (relief-guided, see :func:`crownai.occlusion.guided_path`).
     """
@@ -185,7 +188,7 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     else:
         margin = order_margin(np.asarray(margin, dtype=np.float64), axis=axis)
         margin = _resample_loop(margin, p.n_theta)
-    if neighbors is not None:
+    if neighbors is not None and not trust_md_direction:
         md_direction = neighbors.md_direction
     frame = make_frame(margin.mean(axis=0), axis, md_direction)
     m_loc = frame.to_local(margin)

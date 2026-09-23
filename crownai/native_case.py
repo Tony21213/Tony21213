@@ -68,11 +68,28 @@ def locate_prep(jaw: Mesh, tooth: int, other_teeth: list[int] = (), axis=(0.0, 0
     if len(peaks) < 2:
         raise ValueError("not enough visible teeth on the scan to locate the preparation")
 
-    path_xy = peaks[_order_along_arch(peaks)]
+    order = _order_along_arch(peaks)
+    path_xy = peaks[order]
+    heights = hm.sample(path_xy)
+    # A prepared stump still stands out of the gum and can register as a "peak",
+    # but it is clearly lower than the crowns either side: take it out of the chain.
+    low = np.zeros(len(path_xy), bool)
+    for i in range(1, len(path_xy) - 1):
+        if np.nanmean([heights[i - 1], heights[i + 1]]) - heights[i] > 1.5:
+            low[i] = True
+    stumps = path_xy[low]
+    path_xy = path_xy[~low]
+    if len(path_xy) < 2:
+        raise ValueError("not enough visible teeth on the scan to locate the preparation")
     gaps = np.linalg.norm(np.diff(path_xy, axis=0), axis=1)
-    typical = float(np.median(gaps[gaps < 12.0])) if np.any(gaps < 12.0) else 9.0
-    k = int(np.argmax(gaps))
-    if gaps[k] < 1.4 * typical:
+    # Compare each gap with its neighbours, not a global median: molars are ~11 mm
+    # apart peak to peak, incisors ~5.5 mm - a missing tooth doubles the local spacing.
+    rel = np.empty(len(gaps))
+    for i in range(len(gaps)):
+        nb = [gaps[j] for j in (i - 1, i + 1) if 0 <= j < len(gaps)]
+        rel[i] = gaps[i] / max(float(np.mean(nb)) if nb else 9.0, 1e-6)
+    k = int(np.argmax(rel))
+    if rel[k] < 1.4:
         raise ValueError("no clear gap in the tooth chain - preparation not found automatically")
 
     missing = sorted({int(tooth), *(int(t) for t in other_teeth)})
@@ -99,15 +116,41 @@ def locate_prep(jaw: Mesh, tooth: int, other_teeth: list[int] = (), axis=(0.0, 0
         cum += w
     if center is None:
         raise ValueError(f"tooth {tooth} is not among the case's restored teeth")
+    # A visible stump in the gap is a better centre than the width-based split
+    # (neighbouring crowns differ in width, so the midpoint of their peaks drifts).
+    if len(stumps):
+        along = (stumps - p_before) @ unit
+        across = np.abs((stumps - p_before) @ np.array([-unit[1], unit[0]]))
+        inside = (along > 0) & (along < gap_len) & (across < 4.0)
+        if inside.sum() == len(ordered):
+            center = stumps[inside][np.argsort(along[inside])][ordered.index(int(tooth))]
 
-    z = hm.sample(center[None, :])[0]
-    if not np.isfinite(z):
-        z = float(np.nanmean(hm.H))
+    # Only the stump: the part inside the gap that stands out of the local gum level
+    # (the whole crop would put the "widest point", i.e. the margin, on its border).
     q = frame0.to_local(v)
-    keep_v = np.linalg.norm(q[:, :2] - center, axis=1) < radius + 1.5
+    r_xy = np.linalg.norm(q[:, :2] - center, axis=1)
+    ring = (r_xy > radius) & (r_xy < radius + 2.5)
+    if not ring.any():
+        raise ValueError("too little geometry around the estimated preparation")
+    gum_level = float(np.percentile(q[ring, 2], 30))
+    keep_v = (r_xy < radius) & (q[:, 2] > gum_level + 0.3)
     faces = jaw.faces[keep_v[jaw.faces].all(axis=1)]
     if len(faces) < 20:
-        raise ValueError("too little geometry around the estimated preparation")
+        raise ValueError("no preparation stump found in the gap")
     used, inv = np.unique(faces, return_inverse=True)
     patch = Mesh(jaw.vertices[used], inv.reshape(-1, 3))
-    return detect_margin(patch, axis=axis)
+    # keep the piece of surface the stump belongs to, not the flanks of the neighbours
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    f = patch.faces
+    e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    n = len(patch.vertices)
+    _, labels = connected_components(coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n)),
+                                     directed=False)
+    pq = frame0.to_local(patch.vertices)
+    top = int(np.argmin(np.linalg.norm(pq[:, :2] - center, axis=1) - 0.05 * pq[:, 2]))
+    keep = labels == labels[top]
+    f = f[keep[f].all(axis=1)]
+    used, inv = np.unique(f, return_inverse=True)
+    return detect_margin(Mesh(patch.vertices[used], inv.reshape(-1, 3)), axis=axis)
