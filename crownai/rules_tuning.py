@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -283,6 +284,14 @@ def _case_id(folder: Path, tooth: int) -> str:
     return hashlib.sha1(str(folder.resolve()).encode()).hexdigest()[:12] + f"/{tooth}"
 
 
+_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|\\\\)[^\s'\"]*")
+
+
+def _safe_error(exc: Exception) -> str:
+    """``str(exc)`` with any filesystem path redacted (case folder names are patient-identifying)."""
+    return _PATH_RE.sub("<path>", str(exc))[:200]
+
+
 def archive_crowns(root):
     """(folder, case, tooth, crown file) for every finished premolar/molar crown under ``root``."""
     from .exocad_project import find_final_crown, parse_construction_info
@@ -336,7 +345,7 @@ def tune_rules(root, out, *, fits_path=None, limit: int | None = None, holdout: 
                 crown = crop_to_margin(load_mesh(ref), info.margin, info.axis, radial_pad=2.5, depth=1.0)
                 f = fit_rules_to_crown(crown, info.margin, info.axis, info.md_direction, tooth)
             except Exception as exc:
-                f = {"key": profile_key(tooth), "tooth": int(tooth), "error": str(exc)[:200]}
+                f = {"key": profile_key(tooth), "tooth": int(tooth), "error": _safe_error(exc)}
             h = int(hashlib.sha1(cid.encode()).hexdigest(), 16) % 1000
             f.update(case_id=cid, holdout=h < holdout * 1000)
             done[cid] = f
@@ -386,7 +395,7 @@ def evaluate_profile(root, profile: dict, case_ids: list[str], limit: int = 8, l
                 cmp = compare_to_reference(res.outer[:, 4:].reshape(-1, 3), res.crown, ref, res.frame, top)
                 row[name] = cmp["reference_to_crown_mean_mm"]
         except Exception as exc:
-            row["error"] = str(exc)[:200]
+            row["error"] = _safe_error(exc)
         rows.append(row)
         log(f"  check {row}")
     ok = [r for r in rows if r.get("textbook") is not None and r.get("profile") is not None]

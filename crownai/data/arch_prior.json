@@ -1,0 +1,382 @@
+{
+  "source": "exocad DentalCAD 3.3 bundled tooth-shape libraries (library/metadata/*/upperjaw.xml, lowerjaw.xml)",
+  "warning": "orientation and adjacent-pair spacing only - NOT a per-tooth width table (tooth centres alone cannot give a single tooth width without contact-point data)",
+  "n_libraries_upper": 919,
+  "n_libraries_lower": 908,
+  "adjacent_pair_center_distance_mm": {
+    "18-17": {
+      "median_mm": 10.0,
+      "p10_mm": 8.98,
+      "p90_mm": 11.56,
+      "n": 919
+    },
+    "17-16": {
+      "median_mm": 10.44,
+      "p10_mm": 9.36,
+      "p90_mm": 12.27,
+      "n": 919
+    },
+    "16-15": {
+      "median_mm": 9.04,
+      "p10_mm": 8.38,
+      "p90_mm": 10.13,
+      "n": 919
+    },
+    "15-14": {
+      "median_mm": 7.1,
+      "p10_mm": 6.5,
+      "p90_mm": 8.06,
+      "n": 919
+    },
+    "14-13": {
+      "median_mm": 7.57,
+      "p10_mm": 6.91,
+      "p90_mm": 8.57,
+      "n": 919
+    },
+    "13-12": {
+      "median_mm": 7.1,
+      "p10_mm": 6.5,
+      "p90_mm": 8.53,
+      "n": 919
+    },
+    "12-11": {
+      "median_mm": 7.46,
+      "p10_mm": 6.79,
+      "p90_mm": 8.28,
+      "n": 919
+    },
+    "11-21": {
+      "median_mm": 8.64,
+      "p10_mm": 7.77,
+      "p90_mm": 10.64,
+      "n": 919
+    },
+    "21-22": {
+      "median_mm": 7.47,
+      "p10_mm": 6.8,
+      "p90_mm": 8.11,
+      "n": 919
+    },
+    "22-23": {
+      "median_mm": 7.1,
+      "p10_mm": 6.58,
+      "p90_mm": 8.53,
+      "n": 919
+    },
+    "23-24": {
+      "median_mm": 7.66,
+      "p10_mm": 6.9,
+      "p90_mm": 8.4,
+      "n": 919
+    },
+    "24-25": {
+      "median_mm": 7.16,
+      "p10_mm": 6.5,
+      "p90_mm": 8.13,
+      "n": 919
+    },
+    "25-26": {
+      "median_mm": 9.0,
+      "p10_mm": 8.35,
+      "p90_mm": 10.13,
+      "n": 919
+    },
+    "26-27": {
+      "median_mm": 10.32,
+      "p10_mm": 9.41,
+      "p90_mm": 12.27,
+      "n": 919
+    },
+    "27-28": {
+      "median_mm": 9.97,
+      "p10_mm": 8.91,
+      "p90_mm": 11.56,
+      "n": 919
+    },
+    "48-47": {
+      "median_mm": 11.22,
+      "p10_mm": 9.57,
+      "p90_mm": 11.63,
+      "n": 908
+    },
+    "47-46": {
+      "median_mm": 11.31,
+      "p10_mm": 10.27,
+      "p90_mm": 12.45,
+      "n": 908
+    },
+    "46-45": {
+      "median_mm": 9.61,
+      "p10_mm": 8.93,
+      "p90_mm": 10.9,
+      "n": 908
+    },
+    "45-44": {
+      "median_mm": 7.35,
+      "p10_mm": 6.86,
+      "p90_mm": 8.49,
+      "n": 908
+    },
+    "44-43": {
+      "median_mm": 7.25,
+      "p10_mm": 6.57,
+      "p90_mm": 8.32,
+      "n": 908
+    },
+    "43-42": {
+      "median_mm": 6.08,
+      "p10_mm": 5.55,
+      "p90_mm": 6.92,
+      "n": 908
+    },
+    "42-41": {
+      "median_mm": 5.55,
+      "p10_mm": 4.96,
+      "p90_mm": 6.15,
+      "n": 908
+    },
+    "41-31": {
+      "median_mm": 5.58,
+      "p10_mm": 4.73,
+      "p90_mm": 6.62,
+      "n": 908
+    },
+    "31-32": {
+      "median_mm": 5.55,
+      "p10_mm": 5.0,
+      "p90_mm": 6.09,
+      "n": 908
+    },
+    "32-33": {
+      "median_mm": 6.03,
+      "p10_mm": 5.55,
+      "p90_mm": 7.29,
+      "n": 908
+    },
+    "33-34": {
+      "median_mm": 7.25,
+      "p10_mm": 6.59,
+      "p90_mm": 8.09,
+      "n": 908
+    },
+    "34-35": {
+      "median_mm": 7.37,
+      "p10_mm": 6.86,
+      "p90_mm": 8.55,
+      "n": 908
+    },
+    "35-36": {
+      "median_mm": 9.58,
+      "p10_mm": 8.93,
+      "p90_mm": 10.95,
+      "n": 908
+    },
+    "36-37": {
+      "median_mm": 11.37,
+      "p10_mm": 10.41,
+      "p90_mm": 12.45,
+      "n": 908
+    },
+    "37-38": {
+      "median_mm": 11.15,
+      "p10_mm": 9.57,
+      "p90_mm": 11.63,
+      "n": 908
+    }
+  },
+  "occlusal_axis_tilt": {
+    "18": {
+      "median_tilt_from_arch_up_deg": 6.62,
+      "median_tangent_component": -0.089,
+      "median_lateral_component": 0.065,
+      "n": 919
+    },
+    "17": {
+      "median_tilt_from_arch_up_deg": 6.98,
+      "median_tangent_component": -0.077,
+      "median_lateral_component": 0.04,
+      "n": 919
+    },
+    "16": {
+      "median_tilt_from_arch_up_deg": 6.73,
+      "median_tangent_component": -0.086,
+      "median_lateral_component": 0.046,
+      "n": 919
+    },
+    "15": {
+      "median_tilt_from_arch_up_deg": 5.52,
+      "median_tangent_component": -0.016,
+      "median_lateral_component": -0.038,
+      "n": 919
+    },
+    "14": {
+      "median_tilt_from_arch_up_deg": 5.21,
+      "median_tangent_component": -0.006,
+      "median_lateral_component": -0.058,
+      "n": 919
+    },
+    "13": {
+      "median_tilt_from_arch_up_deg": 7.16,
+      "median_tangent_component": 0.031,
+      "median_lateral_component": 0.102,
+      "n": 919
+    },
+    "12": {
+      "median_tilt_from_arch_up_deg": 7.72,
+      "median_tangent_component": 0.017,
+      "median_lateral_component": 0.091,
+      "n": 919
+    },
+    "11": {
+      "median_tilt_from_arch_up_deg": 9.32,
+      "median_tangent_component": 0.013,
+      "median_lateral_component": 0.145,
+      "n": 919
+    },
+    "21": {
+      "median_tilt_from_arch_up_deg": 9.32,
+      "median_tangent_component": -0.005,
+      "median_lateral_component": 0.144,
+      "n": 919
+    },
+    "22": {
+      "median_tilt_from_arch_up_deg": 6.45,
+      "median_tangent_component": -0.006,
+      "median_lateral_component": 0.094,
+      "n": 919
+    },
+    "23": {
+      "median_tilt_from_arch_up_deg": 8.48,
+      "median_tangent_component": -0.046,
+      "median_lateral_component": 0.103,
+      "n": 919
+    },
+    "24": {
+      "median_tilt_from_arch_up_deg": 5.21,
+      "median_tangent_component": 0.01,
+      "median_lateral_component": -0.033,
+      "n": 919
+    },
+    "25": {
+      "median_tilt_from_arch_up_deg": 5.52,
+      "median_tangent_component": 0.027,
+      "median_lateral_component": -0.038,
+      "n": 919
+    },
+    "26": {
+      "median_tilt_from_arch_up_deg": 6.12,
+      "median_tangent_component": 0.079,
+      "median_lateral_component": 0.03,
+      "n": 919
+    },
+    "27": {
+      "median_tilt_from_arch_up_deg": 6.98,
+      "median_tangent_component": 0.077,
+      "median_lateral_component": 0.037,
+      "n": 919
+    },
+    "28": {
+      "median_tilt_from_arch_up_deg": 6.65,
+      "median_tangent_component": 0.098,
+      "median_lateral_component": 0.042,
+      "n": 919
+    },
+    "48": {
+      "median_tilt_from_arch_up_deg": 7.62,
+      "median_tangent_component": 0.015,
+      "median_lateral_component": 0.093,
+      "n": 908
+    },
+    "47": {
+      "median_tilt_from_arch_up_deg": 8.35,
+      "median_tangent_component": -0.026,
+      "median_lateral_component": 0.125,
+      "n": 908
+    },
+    "46": {
+      "median_tilt_from_arch_up_deg": 9.58,
+      "median_tangent_component": -0.019,
+      "median_lateral_component": 0.159,
+      "n": 908
+    },
+    "45": {
+      "median_tilt_from_arch_up_deg": 9.32,
+      "median_tangent_component": -0.046,
+      "median_lateral_component": 0.117,
+      "n": 908
+    },
+    "44": {
+      "median_tilt_from_arch_up_deg": 6.77,
+      "median_tangent_component": -0.018,
+      "median_lateral_component": 0.085,
+      "n": 908
+    },
+    "43": {
+      "median_tilt_from_arch_up_deg": 7.09,
+      "median_tangent_component": 0.022,
+      "median_lateral_component": -0.0,
+      "n": 908
+    },
+    "42": {
+      "median_tilt_from_arch_up_deg": 6.02,
+      "median_tangent_component": -0.009,
+      "median_lateral_component": -0.096,
+      "n": 908
+    },
+    "41": {
+      "median_tilt_from_arch_up_deg": 6.83,
+      "median_tangent_component": 0.012,
+      "median_lateral_component": -0.117,
+      "n": 908
+    },
+    "31": {
+      "median_tilt_from_arch_up_deg": 7.58,
+      "median_tangent_component": -0.015,
+      "median_lateral_component": -0.13,
+      "n": 908
+    },
+    "32": {
+      "median_tilt_from_arch_up_deg": 7.0,
+      "median_tangent_component": 0.009,
+      "median_lateral_component": -0.106,
+      "n": 908
+    },
+    "33": {
+      "median_tilt_from_arch_up_deg": 7.44,
+      "median_tangent_component": -0.028,
+      "median_lateral_component": 0.004,
+      "n": 908
+    },
+    "34": {
+      "median_tilt_from_arch_up_deg": 6.4,
+      "median_tangent_component": 0.023,
+      "median_lateral_component": 0.084,
+      "n": 908
+    },
+    "35": {
+      "median_tilt_from_arch_up_deg": 8.29,
+      "median_tangent_component": 0.045,
+      "median_lateral_component": 0.129,
+      "n": 908
+    },
+    "36": {
+      "median_tilt_from_arch_up_deg": 9.48,
+      "median_tangent_component": 0.019,
+      "median_lateral_component": 0.156,
+      "n": 908
+    },
+    "37": {
+      "median_tilt_from_arch_up_deg": 8.33,
+      "median_tangent_component": 0.031,
+      "median_lateral_component": 0.125,
+      "n": 908
+    },
+    "38": {
+      "median_tilt_from_arch_up_deg": 6.79,
+      "median_tangent_component": -0.015,
+      "median_lateral_component": 0.099,
+      "n": 908
+    }
+  }
+}
