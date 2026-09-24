@@ -156,19 +156,28 @@ def _load_ply_binary(data: bytes, offset: int, elements, endian: str) -> Mesh:
             if name == "vertex":
                 verts = np.column_stack([rec["x"], rec["y"], rec["z"]]).astype(np.float64)
         else:
-            # list property (faces): count/item types are usually uniform across rows, but not
-            # necessarily the same row length (fans/quads) - walk it row by row.
-            pname, count_type, item_type = props[0]
-            ct_dtype, ct_size = _PLY_TYPE[count_type]
-            it_dtype, it_size = _PLY_TYPE[item_type]
+            # a record with at least one list property (faces): every property must be walked in
+            # declaration order to keep the byte offset aligned, scalar or list, even ones we
+            # don't need - a face record commonly has a second list ("texcoord") right after
+            # "vertex_indices", and skipping it silently desyncs every record after the first.
             rows = []
             for _ in range(count):
-                (n,) = np.frombuffer(data, dtype=endian + ct_dtype, count=1, offset=offset)
-                offset += ct_size
-                idx = np.frombuffer(data, dtype=endian + it_dtype, count=int(n), offset=offset)
-                offset += it_size * int(n)
-                for k in range(1, int(n) - 1):
-                    rows.append((idx[0], idx[k], idx[k + 1]))
+                idx = None
+                for pname, ptype, item_type in props:
+                    if item_type is None:
+                        offset += _PLY_TYPE[ptype][1]
+                        continue
+                    ct_dtype, ct_size = _PLY_TYPE[ptype]
+                    it_dtype, it_size = _PLY_TYPE[item_type]
+                    (n,) = np.frombuffer(data, dtype=endian + ct_dtype, count=1, offset=offset)
+                    offset += ct_size
+                    n = int(n)
+                    if pname == "vertex_indices":
+                        idx = np.frombuffer(data, dtype=endian + it_dtype, count=n, offset=offset)
+                    offset += it_size * n
+                if name == "face" and idx is not None:
+                    for k in range(1, len(idx) - 1):
+                        rows.append((idx[0], idx[k], idx[k + 1]))
             if name == "face":
                 faces = np.array(rows, dtype=np.int64) if rows else np.zeros((0, 3), dtype=np.int64)
     if verts is None:

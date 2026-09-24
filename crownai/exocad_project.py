@@ -206,7 +206,11 @@ def design_construction_case(folder: str | Path, tooth: int, *, learner=None, pa
 
     ref_path = find_final_crown(folder, tooth) if compare_reference else None
     if ref_path is not None:
-        reference = load_mesh(ref_path)
+        # the reference file can be a multi-tooth waxup/splint (this lab names them
+        # "<t1>-<t2>-waxup_cad.stl"): crop to a cylinder around this tooth's margin so the
+        # comparison isn't polluted by neighbouring teeth in the same file (matches the crop
+        # learn_construction_case already applies before training on the same kind of file).
+        reference = crop_to_margin(load_mesh(ref_path), info.margin, info.axis, radial_pad=2.5, depth=1.0)
         top = res.frame.to_local(info.margin)[:, 2].max()
         res.report["reference"] = compare_to_reference(res.outer[:, 4:].reshape(-1, 3), res.crown,
                                                         reference, res.frame, top)
