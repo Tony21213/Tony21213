@@ -437,6 +437,23 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
             warnings.append(f"crown reaches {lift:.2f} mm into the antagonist clearance: "
                             "the preparation needs more occlusal reduction")
 
+    # A prep without real neighbour context (no jaw scan, or a genuinely edentulous
+    # gap either side) has nothing to anchor thickness-vs-antagonist trimming to; on
+    # rare cases those two constraints are locally irreconcilable (the die sits too
+    # close to the antagonist for the minimum wall thickness to fit at all), and the
+    # iterative push/trim above can leave a local spike instead of converging. A real
+    # crown surface is smooth from one ray to the next; check that rather than trust
+    # a "found a solution" that never actually cross-validated its own smoothness.
+    jump = np.linalg.norm(np.diff(outer, axis=0), axis=-1)
+    spike = jump.max() > max(1.5, 6.0 * float(np.median(jump)))
+    if spike:
+        raise ValueError(
+            "outer surface is not smooth (a local spike between adjacent rays, "
+            f"{jump.max():.2f} mm vs a typical {np.median(jump):.3f} mm step) - likely an "
+            "irreconcilable minimum-thickness-vs-antagonist-clearance conflict with no "
+            "neighbour anatomy to anchor the fit; check the preparation needs more "
+            "reduction, or provide real neighbour/jaw context instead of an isolated die")
+
     # 6. Stitch -------------------------------------------------------------------
     crown = _stitch(margin, inner, inner_pole, outer, outer_pole)
     loc = frame.to_local(crown.vertices)

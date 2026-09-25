@@ -87,13 +87,16 @@ _LOWER_SIZES = {1: (5.4, 5.9), 2: (5.9, 6.2), 3: (6.9, 7.5), 4: (7.0, 7.6), 5: (
                 6: (11.0, 10.3), 7: (10.5, 10.0)}
 
 
-def make_lower_arch(missing: int = 33, res: float = 0.3) -> tuple[Mesh, dict]:
-    """Height-field scan of a lower dental arch with one tooth missing.
+def make_lower_arch(missing: int | set[int] = 33, res: float = 0.3) -> tuple[Mesh, dict]:
+    """Height-field scan of a lower dental arch with one or more teeth missing.
 
-    Returns the jaw mesh (z up = occlusal) and, per FDI tooth, its crown
-    centre, arch tangent and size.  Teeth are rounded bumps 6 mm above a
-    gingival ridge, placed along a parabolic arch with their real widths.
+    ``missing`` is a single FDI number or a set of them (e.g. across both
+    quadrants, to test multi-tooth gap disambiguation). Returns the jaw mesh
+    (z up = occlusal) and, per FDI tooth, its crown centre, arch tangent and
+    size. Teeth are rounded bumps 6 mm above a gingival ridge, placed along a
+    parabolic arch with their real widths.
     """
+    missing = {missing} if isinstance(missing, int) else set(missing)
     # arch: y = c - k x^2, teeth laid out along its arc length from the midline
     k, c = 0.028, 22.0
     xs_fine = np.linspace(-30, 30, 6001)
@@ -117,7 +120,7 @@ def make_lower_arch(missing: int = 33, res: float = 0.3) -> tuple[Mesh, dict]:
     d_arch = np.abs(Y - (c - k * X ** 2)) / np.sqrt(1 + (2 * k * X) ** 2)
     Z = 2.0 * np.exp(-(d_arch / 6.0) ** 2)
     for fdi, t in teeth.items():
-        if fdi == missing:
+        if fdi in missing:
             continue
         rel = np.stack([X - t["center"][0], Y - t["center"][1]], -1)
         a = rel @ t["tangent"] / (t["md"] / 2)
