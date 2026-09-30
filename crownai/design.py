@@ -454,6 +454,33 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
             "neighbour anatomy to anchor the fit; check the preparation needs more "
             "reduction, or provide real neighbour/jaw context instead of an isolated die")
 
+    # The push/trim loop can also fail smoothly: the wall thins out gradually over
+    # several neighbouring rays instead of jumping, so no single step trips the
+    # check above, but the crown is still structurally collapsed there (looks
+    # pinched or torn, not like a tooth) - well past the finish-line ramp where
+    # some thinning is by design. A patch of several consecutive rays whose wall
+    # never even reaches half the locally required thickness, away from the
+    # margin, means the anatomy source could not be reconciled with the die and
+    # antagonist here at all - reject rather than ship a collapsed crown.
+    collapsed = (thick < np.maximum(0.5 * required, 0.05)) & (required > 0.3 * p.min_axial)
+    # longest run of consecutive theta rays with at least one collapsed point, wrapping around theta=0
+    bad_theta = np.flatnonzero(collapsed.any(axis=1))
+    worst_run = 0
+    if len(bad_theta):
+        wrapped = np.concatenate([bad_theta, bad_theta[:1] + collapsed.shape[0]])
+        run = 1
+        worst_run = 1
+        for a, b in zip(wrapped[:-1], wrapped[1:]):
+            run = run + 1 if b - a == 1 else 1
+            worst_run = max(worst_run, run)
+    if worst_run >= 5:
+        raise ValueError(
+            f"outer surface is structurally collapsed over {worst_run} consecutive rays "
+            "(wall thickness well under half the required minimum, away from the margin) - "
+            "the anatomy source does not fit this die/antagonist here; check the preparation "
+            "needs more reduction, or provide real neighbour/jaw context instead of an "
+            "isolated die")
+
     # 6. Stitch -------------------------------------------------------------------
     crown = _stitch(margin, inner, inner_pole, outer, outer_pole)
     loc = frame.to_local(crown.vertices)
