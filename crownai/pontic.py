@@ -248,9 +248,20 @@ def design_missing_tooth(jaw: Mesh, tooth: int, *, antagonist: Mesh | None = Non
         margin, die = virtual_site(jaw, tooth, center, axis, na.md_direction, hole=hole)
         na = analyze_neighbors(jaw, margin, axis, tooth=tooth)
     mirror = (params or CrownParameters()).posterior_anatomy == "mirror" or tooth % 10 <= 3
-    if mirror and na is not None and na.template is not None and antagonist is not None:
-        seated = _seat_on_antagonist(na.template, antagonist, axis)
-        na.template = seated
+    if na is not None and na.template is not None:
+        if mirror and antagonist is not None:
+            na.template = _seat_on_antagonist(na.template, antagonist, axis)
+        elif not mirror:
+            # design_crown prefers a mirrored template over the rules/learned
+            # anatomy whenever one is present, regardless of posterior_anatomy -
+            # but analyze_neighbors() finds and mirrors a contralateral tooth
+            # unconditionally, so a template can show up here even when the
+            # rules model was explicitly asked for. Without _seat_on_antagonist
+            # (only run in the mirror branch above) the raw mirrored geometry is
+            # not levelled to the patient's bite over a *virtual* site - it can
+            # sit anywhere, including failing to surround the die at all. Drop
+            # it so the requested anatomy source is actually used.
+            na.template = None
     res = design_crown(die, tooth=tooth, margin=margin, antagonist=antagonist, axis=axis, neighbors=na,
                        occlusion=occlusion, learner=learner, jaw=jaw, params=params)
     # the abutment is virtual: advice about reducing a preparation does not apply

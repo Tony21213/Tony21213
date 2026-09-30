@@ -46,6 +46,38 @@ from .margin import detect_margin, make_frame
 from .mesh import Mesh
 
 
+def _main_arch_cluster(peaks: np.ndarray, max_step: float = 20.0) -> np.ndarray:
+    """Indices of the largest group of peaks that are mutually reachable within ``max_step``.
+
+    A jaw scan can have a handful of spurious "peaks" from noise, scan-body
+    remnants or an unrelated bit of geometry, disconnected from the real row
+    of teeth by more than any real tooth-to-tooth gap. An unbounded
+    nearest-neighbour walk (the old :func:`_order_along_arch`) would bridge
+    straight across such a gap - silently splicing an unrelated point into
+    the middle of the arch and corrupting every gap measurement after it
+    (this shipped once: a 46 mm jump to a disconnected point produced a
+    bogus "gap" nearly 3x the real one, which a lone requested tooth's
+    largest-gap fallback then picked as its site instead of the real gap).
+    Restricting the walk to the largest connected component under a
+    generous max tooth-to-tooth step removes such points instead of
+    threading through them.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    n = len(peaks)
+    if n <= 2:
+        return np.arange(n)
+    d = np.linalg.norm(peaks[:, None, :] - peaks[None, :, :], axis=-1)
+    i, j = np.where((d > 0) & (d <= max_step))
+    n_comp, labels = connected_components(coo_matrix((np.ones(len(i)), (i, j)), shape=(n, n)),
+                                          directed=False)
+    if n_comp <= 1:
+        return np.arange(n)
+    sizes = np.bincount(labels)
+    return np.flatnonzero(labels == int(np.argmax(sizes)))
+
+
 def _order_along_arch(peaks: np.ndarray) -> list[int]:
     """Greedy nearest-neighbour walk through every peak, starting at one arch end.
 
@@ -74,6 +106,9 @@ def _arch_chain(jaw: Mesh, frame0, search_radius: float, resolution: float):
     hm = _HeightMap(jaw, frame0, search_radius, resolution)
     gum = float(np.nanpercentile(hm.H, 25)) + 2.0
     peaks = _peaks(hm, gum)
+    if len(peaks) < 2:
+        raise ValueError("not enough visible teeth on the scan to locate the preparation(s)")
+    peaks = peaks[_main_arch_cluster(peaks)]
     if len(peaks) < 2:
         raise ValueError("not enough visible teeth on the scan to locate the preparation(s)")
     path_xy = peaks[_order_along_arch(peaks)]
@@ -118,8 +153,16 @@ def _resolve_side(path_xy: np.ndarray, gaps: np.ndarray, rel: np.ndarray, candid
     run in opposite directions relative to "distance from the midline", and
     getting this backwards silently swaps which tooth a gap is assigned to.
     """
+    # A gap much wider than every requested tooth could plausibly need is not a
+    # dental gap at all - it is the greedy chain walk bridging across a break in
+    # the point cloud (scan noise, or a full horseshoe arch curving back close
+    # to itself in straight-line distance). Filtering by rel() alone does not
+    # catch this: a bogus bridge gap is often the single *largest* rel in the
+    # whole chain, so an isolated tooth's "just take the strongest gap"
+    # fallback below would otherwise confidently pick it over the real one.
+    max_plausible = max(28.0, 2.5 * sum(tooth_type_for_fdi(t).mesiodistal for t in teeth))
     ordered = candidate_idx if toward_midline > 0 else list(reversed(candidate_idx))
-    significant = [i for i in ordered if rel[i] >= 1.4]
+    significant = [i for i in ordered if rel[i] >= 1.4 and gaps[i] <= max_plausible]
     if not significant:
         raise ValueError(f"no clear gap found for teeth {teeth} - preparation(s) not found automatically")
     if len(significant) > len(teeth) > 1:
@@ -211,33 +254,25 @@ def _extract_margin(jaw: Mesh, frame0, stumps: np.ndarray, center: np.ndarray, r
     return detect_margin(Mesh(patch.vertices[used], inv.reshape(-1, 3)), axis=axis)
 
 
-def locate_preps(jaw: Mesh, teeth: list[int], axis=(0.0, 0.0, 1.0), md_direction=(1.0, 0.0, 0.0),
-                 search_radius: float = 45.0, resolution: float = 0.3) -> dict[int, np.ndarray]:
-    """Estimate the margin line of every tooth in ``teeth`` on one unsegmented arch scan.
+def _resolve_placements(jaw: Mesh, teeth: list[int], frame0, path_xy: np.ndarray, gaps: np.ndarray,
+                        rel: np.ndarray) -> dict[int, tuple[np.ndarray, float]]:
+    """Match every tooth in ``teeth`` to a gap in the arch chain (local xy centre, radius).
 
-    ``teeth`` may span at most two FDI quadrants (i.e. one jaw's worth). Each
-    quadrant's teeth are matched against the strongest gap(s) anywhere in the
-    chain independently (there is no reliable way to tell from geometry alone
-    which physical side of a symmetric jaw is which quadrant), and then - the
-    actual bug this function exists to catch - every quadrant's placement is
-    checked against every other's: two different quadrants landing on the
-    same physical spot is anatomically impossible and means the match is
-    wrong, not that both teeth really are there.
+    Shared by :func:`locate_preps` (which then extracts a margin from a real
+    stump at each spot) and :func:`locate_gap_centers` (which needs only the
+    site, for a tooth with no stump at all - an implant or pontic gap).
+    ``teeth`` may span at most two FDI quadrants (i.e. one jaw's worth). See
+    :func:`locate_preps` for why two quadrants are disambiguated against each
+    other rather than resolved independently.
     """
-    teeth = [int(t) for t in teeth]
     quadrants: dict[int, list[int]] = {}
     for t in teeth:
         quadrants.setdefault(t // 10, []).append(t)
     for q in quadrants:
         quadrants[q] = sorted(quadrants[q], key=lambda t: t % 10)
     if len(quadrants) > 2:
-        raise ValueError("locate_preps only supports teeth from at most two quadrants (one jaw) at a time")
+        raise ValueError("at most two quadrants (one jaw) can be resolved at a time")
 
-    v = jaw.vertices
-    frame0 = make_frame(0.5 * (v.min(0) + v.max(0)), axis, md_direction)
-    _, path_xy, stumps, gaps, rel = _arch_chain(jaw, frame0, search_radius, resolution)
-    # a tooth's own expected width, in arch-chain units: two placements this
-    # close together cannot belong to two different quadrants.
     min_sep = min(tooth_type_for_fdi(t).mesiodistal for t in teeth) * 0.75
 
     def _best(qteeth: list[int], candidates: list[int]) -> tuple[dict[int, tuple[np.ndarray, float]], float] | None:
@@ -292,7 +327,52 @@ def locate_preps(jaw: Mesh, teeth: list[int], axis=(0.0, 0.0, 1.0), md_direction
             if other_tooth != tooth and np.linalg.norm(center - other_center) < min_sep:
                 raise ValueError(f"tooth {tooth} and tooth {other_tooth} resolved to the same spot "
                                  f"on the arch - the gap detector cannot tell them apart here")
+    return placements
 
+
+def locate_gap_centers(jaw: Mesh, teeth: list[int], axis=(0.0, 0.0, 1.0), md_direction=(1.0, 0.0, 0.0),
+                       search_radius: float = 45.0, resolution: float = 0.3) -> dict[int, np.ndarray]:
+    """Find the world-space site (no margin) of every fully missing tooth in ``teeth``.
+
+    For a tooth with a real stump still in the scan, use :func:`locate_preps`
+    instead - it extracts an actual margin line there. This is for a tooth
+    with nothing at all in the gap (an edentulous ridge): only a rough centre
+    point is meaningful, which :func:`crownai.pontic.design_missing_tooth`
+    then builds a virtual abutment around. Same quadrant-disambiguation rules
+    as :func:`locate_preps` apply (see there).
+    """
+    teeth = [int(t) for t in teeth]
+    v = jaw.vertices
+    frame0 = make_frame(0.5 * (v.min(0) + v.max(0)), axis, md_direction)
+    hm, path_xy, _stumps, gaps, rel = _arch_chain(jaw, frame0, search_radius, resolution)
+    placements = _resolve_placements(jaw, teeth, frame0, path_xy, gaps, rel)
+    out = {}
+    for tooth, (center_xy, _radius) in placements.items():
+        z = hm.sample(center_xy[None, :])[0]
+        if not np.isfinite(z):
+            z = float(np.nanmean(hm.H))
+        out[tooth] = frame0.to_world(np.array([center_xy[0], center_xy[1], z]))
+    return out
+
+
+def locate_preps(jaw: Mesh, teeth: list[int], axis=(0.0, 0.0, 1.0), md_direction=(1.0, 0.0, 0.0),
+                 search_radius: float = 45.0, resolution: float = 0.3) -> dict[int, np.ndarray]:
+    """Estimate the margin line of every tooth in ``teeth`` on one unsegmented arch scan.
+
+    ``teeth`` may span at most two FDI quadrants (i.e. one jaw's worth). Each
+    quadrant's teeth are matched against the strongest gap(s) anywhere in the
+    chain independently (there is no reliable way to tell from geometry alone
+    which physical side of a symmetric jaw is which quadrant), and then - the
+    actual bug this function exists to catch - every quadrant's placement is
+    checked against every other's: two different quadrants landing on the
+    same physical spot is anatomically impossible and means the match is
+    wrong, not that both teeth really are there.
+    """
+    teeth = [int(t) for t in teeth]
+    v = jaw.vertices
+    frame0 = make_frame(0.5 * (v.min(0) + v.max(0)), axis, md_direction)
+    _, path_xy, stumps, gaps, rel = _arch_chain(jaw, frame0, search_radius, resolution)
+    placements = _resolve_placements(jaw, teeth, frame0, path_xy, gaps, rel)
     return {tooth: _extract_margin(jaw, frame0, stumps, center, radius, axis)
            for tooth, (center, radius) in placements.items()}
 
