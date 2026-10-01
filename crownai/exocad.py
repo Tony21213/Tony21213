@@ -111,7 +111,8 @@ def discover_case(folder: str | Path, prep_patterns=PREP_PATTERNS,
 
 
 def crop_to_margin(scan: Mesh, margin: np.ndarray, axis=(0.0, 0.0, 1.0),
-                   radial_pad: float = 1.0, depth: float = 3.0, height_cap: float | None = None) -> Mesh:
+                   radial_pad: float = 1.0, depth: float = 3.0, height_cap: float | None = None,
+                   inside_margin: bool = False) -> Mesh:
     """Cut the region of one preparation out of a full-arch scan.
 
     Keeps triangles inside a cylinder around the margin (plus ``radial_pad``)
@@ -123,6 +124,12 @@ def crop_to_margin(scan: Mesh, margin: np.ndarray, axis=(0.0, 0.0, 1.0),
     it. ``height_cap``, when given (e.g. the tooth's expected natural crown
     height + a couple mm), additionally excludes anything higher than that
     above the margin's own top, which a real prepared stump should not reach.
+
+    ``inside_margin``: keep only what lies within the margin line itself
+    (plus 0.4 mm), at each angle around the axis - a prepared stump always
+    tapers inside its finish line, a neighbouring tooth or the gum never does.
+    This is the die a crown is designed on; the plain cylinder (with its gum
+    collar) suits learning and comparison.
     """
     frame = make_frame(margin.mean(axis=0), axis)
     m = frame.to_local(margin)
@@ -132,6 +139,15 @@ def crop_to_margin(scan: Mesh, margin: np.ndarray, axis=(0.0, 0.0, 1.0),
     keep = (np.hypot(c[:, 0], c[:, 1]) <= r_max) & (c[:, 2] >= m[:, 2].min() - depth)
     if height_cap is not None:
         keep &= c[:, 2] <= m[:, 2].max() + height_cap
+    if inside_margin:
+        th_m = np.arctan2(m[:, 1], m[:, 0])
+        o = np.argsort(th_m)
+        th_s = np.concatenate([th_m[o] - 2 * np.pi, th_m[o], th_m[o] + 2 * np.pi])
+        r_s = np.tile(np.hypot(m[o, 0], m[o, 1]), 3)
+        z_s = np.tile(m[o, 2], 3)
+        th_c = np.arctan2(c[:, 1], c[:, 0])
+        keep &= np.hypot(c[:, 0], c[:, 1]) <= np.interp(th_c, th_s, r_s) + 0.4
+        keep &= c[:, 2] >= np.interp(th_c, th_s, z_s) - 0.5  # the stump, not the gum below its margin
     faces = scan.faces[keep]
     used, inv = np.unique(faces, return_inverse=True)
     cropped = Mesh(scan.vertices[used], inv.reshape(-1, 3))

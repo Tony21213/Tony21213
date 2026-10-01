@@ -119,3 +119,27 @@ def test_locate_prep_finds_the_gap_in_the_arch():
     scan = _merge(jaw, make_prep_at(t["center"], t["md"], t["bl"]))
     margin = locate_prep(scan, 35)
     assert np.linalg.norm(margin[:, :2].mean(0) - t["center"]) < 1.5
+
+
+def test_die_crop_keeps_the_stump_not_a_crowding_neighbour():
+    from crownai.exocad import crop_to_margin
+
+    # one continuous scan surface, as an intraoral scan is: gum, a prepared stump
+    # (finish line r = 4.8 at z = 0) and a tall neighbouring crown just outside it
+    x = np.arange(-9, 9.01, 0.2)
+    X, Y = np.meshgrid(x, x, indexing="ij")
+    r = np.hypot(X, Y)
+    stump = np.where(r <= 4.8, np.minimum(4.6, (4.8 - r) * 6.0), -np.inf)
+    neighbour = 9.0 - 4.0 * np.hypot(X - 6.6, Y)
+    Z = np.maximum.reduce([np.full(X.shape, -0.6), stump, neighbour])
+    n = len(x)
+    idx = np.arange(n * n).reshape(n, n)
+    a, b, c, d = idx[:-1, :-1].ravel(), idx[1:, :-1].ravel(), idx[1:, 1:].ravel(), idx[:-1, 1:].ravel()
+    scan = Mesh(np.column_stack([X.ravel(), Y.ravel(), Z.ravel()]),
+                np.concatenate([np.stack([a, b, c], 1), np.stack([a, c, d], 1)]))
+    th = np.linspace(0, 2 * np.pi, 64, endpoint=False)
+    margin = np.column_stack([4.8 * np.cos(th), 4.8 * np.sin(th), np.zeros_like(th)])
+    plain = crop_to_margin(scan, margin, radial_pad=1.0)
+    die = crop_to_margin(scan, margin, radial_pad=1.0, inside_margin=True)
+    assert plain.vertices[:, 2].max() > 5.5  # the cylinder picks the neighbour's flank up, above the stump
+    assert die.vertices[:, 2].max() <= 4.61  # the stump only

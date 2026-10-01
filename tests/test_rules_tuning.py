@@ -53,10 +53,11 @@ def test_fit_recovers_the_labs_rules(fit36):
     assert db["dh"] > -0.6  # raised from the textbook -0.7 towards the lab's -0.2
     # the supplemental groove is not a rule: it ends up in the secondary anatomy layer
     d = np.array(f["detail"])
-    g = np.linspace(-1, 1, 33)
-    col = int(np.argmin(np.abs(g - 0.45)))
-    assert d[col, 12:21].mean() < -0.12
-    assert abs(d[8, 12:21].mean()) < 0.1
+    g = np.linspace(-1, 1, len(d))
+    mid = np.abs(g) < 0.25  # buccolingually across the middle of the table
+    groove = d[int(np.argmin(np.abs(g - 0.45))), mid].mean()
+    elsewhere = d[int(np.argmin(np.abs(g + 0.45))), mid].mean()
+    assert groove < -0.08 and groove < elsewhere - 0.05
 
 
 def test_profile_is_the_median_and_is_applied(fit36):

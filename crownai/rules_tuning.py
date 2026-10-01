@@ -42,7 +42,8 @@ from .mesh import Mesh, raycast
 from .metrics import surface_samples
 from .posterior_model import PROFILE_FIELDS, _textbook_posterior, profile_key, scaled
 
-DETAIL_N = 33  # detail grid resolution over the occlusal table
+DETAIL_N = 45  # grid over the occlusal table (~0.25 mm on a molar: fissures must show)
+FIT_VERSION = 2  # fits from an older model are redone (2: carved fissures)
 
 
 def buccal_from_fdi(fdi: int, axis, mesial) -> np.ndarray:
@@ -193,11 +194,12 @@ def fit_rules_to_crown(crown: Mesh, margin: np.ndarray, axis, md_direction, toot
     uu, ww, zz = U[fit_pts], W[fit_pts], Z[fit_pts]
 
     n = len(base.cusps)
-    names = ("slope_in", "cusp_ridge_slope", "ridge_ratio", "fossa_depth", "marginal_drop", "mesial_ridge_extra")
+    names = ("slope_in", "cusp_ridge_slope", "ridge_ratio", "fossa_depth", "marginal_drop", "mesial_ridge_extra",
+             "fissure_depth", "fissure_width")
     x0 = [H] + [getattr(base, k) for k in names] + [c.dh for c in base.cusps] + [0.0] * (2 * n)
-    lo = [0.5 * H] + [0.35, 0.2, 1.0, 1.2, 0.3, -0.5] + [-3.0] * n + [-0.2] * (2 * n)
-    hi = [1.5 * H + 1] + [1.4, 1.2, 3.0, 5.0, 2.5, 1.0] + [0.5] * n + [0.2] * (2 * n)
-    sigma = [np.inf] + [0.2, 0.2, 0.5, 0.8, 0.5, 0.3] + [1.0] * n + [0.1] * (2 * n)
+    lo = [0.5 * H] + [0.35, 0.2, 1.0, 1.2, 0.3, -0.5, 0.0, 0.05] + [-3.0] * n + [-0.2] * (2 * n)
+    hi = [1.5 * H + 1] + [1.4, 1.2, 3.0, 5.0, 2.5, 1.0, 1.5, 1.0] + [0.5] * n + [0.2] * (2 * n)
+    sigma = [np.inf] + [0.2, 0.2, 0.5, 0.8, 0.5, 0.3, 0.5, 0.3] + [1.0] * n + [0.1] * (2 * n)
     shape0 = scaled(base, md=md, bl=bl)
 
     def build(x):
@@ -235,7 +237,7 @@ def fit_rules_to_crown(crown: Mesh, margin: np.ndarray, axis, md_direction, toot
     on_table = model.inside(np.stack([U, W + tilt * (occ - 0.01), occ - 0.01], axis=-1))
     detail = np.where(fit_pts & on_table, np.clip(np.nan_to_num(Z) - occ, -1.0, 1.0), 0.0)
 
-    fit = {"key": profile_key(tooth), "tooth": int(tooth),
+    fit = {"key": profile_key(tooth), "tooth": int(tooth), "version": FIT_VERSION,
            "md": md, "bl": bl, "bl_md_ratio": bl / md, "height": float(model.height),
            **{k: float(getattr(model, k)) for k in names},
            **{k: meas[k] for k in ("contact_m", "contact_d", "hc_b", "hc_l", "buccal_share", "squareness")
@@ -327,7 +329,8 @@ def tune_rules(root, out, *, fits_path=None, limit: int | None = None, holdout: 
         for line in fits_path.read_text().splitlines():
             if line.strip():
                 f = json.loads(line)
-                done[f["case_id"]] = f
+                if f.get("version") == FIT_VERSION:
+                    done[f["case_id"]] = f  # older fits are redone with the current model
     rng = random.Random(seed)
     items = list(archive_crowns(root))
     log(f"{len(items)} finished premolar/molar crowns found ({len(done)} already fitted)")
@@ -345,7 +348,8 @@ def tune_rules(root, out, *, fits_path=None, limit: int | None = None, holdout: 
                 crown = crop_to_margin(load_mesh(ref), info.margin, info.axis, radial_pad=2.5, depth=1.0)
                 f = fit_rules_to_crown(crown, info.margin, info.axis, info.md_direction, tooth)
             except Exception as exc:
-                f = {"key": profile_key(tooth), "tooth": int(tooth), "error": _safe_error(exc)}
+                f = {"key": profile_key(tooth), "tooth": int(tooth), "error": _safe_error(exc),
+                     "version": FIT_VERSION}
             h = int(hashlib.sha1(cid.encode()).hexdigest(), 16) % 1000
             f.update(case_id=cid, holdout=h < holdout * 1000)
             done[cid] = f

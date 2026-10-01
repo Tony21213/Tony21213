@@ -186,7 +186,7 @@ def design_construction_case(folder: str | Path, tooth: int, *, learner=None, pa
     # a crowded arch's crop cylinder can catch part of a still-connected neighbour
     # tooth well above where a real prepared stump would reach (see crop_to_margin)
     height_cap = tooth_type_for_fdi(tooth).height + 2.0
-    die = crop_to_margin(jaw_world, info.margin, info.axis, height_cap=height_cap)
+    die = crop_to_margin(jaw_world, info.margin, info.axis, height_cap=height_cap, inside_margin=True)
     ant_scan = case.antagonist_scan(tooth)
     antagonist = case.load_world(ant_scan) if ant_scan is not None else None
     neighbors = None

@@ -83,6 +83,10 @@ class PosteriorCrown:
     squareness: float = 3.4  # molars: boxy outline (rounded rectangle)
     tilt: float = 0.0  # buccal (+) / lingual (-) crown inclination, w per mm of z
     fissure_k: float = 5.0  # sharpness of the fissures (smooth-max of the cusp slopes)
+    # a technician carves the fissure as a narrow groove where two cusp slopes meet,
+    # however flat the cusps: its depth and width do not follow from the inclines
+    fissure_depth: float = 0.4  # mm below where the slopes meet
+    fissure_width: float = 0.25  # in mm of height difference between the two slopes (~ half width x slope)
     tip_u: float = 0.0  # for PlacedAnatomy.tip_local (centre of the occlusal table)
     tip_w: float = 0.0
     # learned secondary anatomy: mean difference between real crowns and the rule
@@ -144,11 +148,18 @@ class PosteriorCrown:
                 d = np.hypot(u - (a[0] + t * ab[0]), w - (a[1] + t * ab[1]))
                 crest = ha + (hb - ha) * t - 1.0 * np.sin(np.pi * t)
                 parts.append(crest - 0.9 * (np.sqrt(d * d + r * r) - r))
+        n_ridges = len(parts)
         parts.append(np.full(np.shape(u), self.height - self.fossa_depth))  # central fossa floor
         P = np.stack(parts)
         k = self.fissure_k
         m = P.max(axis=0)
         z = m + np.log(np.exp(k * (P - m)).sum(axis=0)) / k
+        if self.fissure_depth > 0 and n_ridges >= 2:
+            # fissure lines: where the two highest slopes (cusps, ridges) are level
+            top2 = np.sort(P[:n_ridges], axis=0)[-2:]
+            gap = top2[1] - top2[0]
+            z = z - self.fissure_depth * np.exp(-(gap / max(self.fissure_width, 1e-3)) ** 2) \
+                * np.clip((top2[0] - (self.height - self.fossa_depth)) / 0.3, 0, 1)  # not below the fossa floor
         if self.detail is not None:
             z = z + sample_grid(self.detail, u / (self.md / 2), w / (self.bl / 2))
         return z
@@ -209,7 +220,9 @@ def sample_grid(grid: np.ndarray, x, y) -> np.ndarray:
     v = (grid[i0, j0] * (1 - tx) * (1 - ty) + grid[i0 + 1, j0] * tx * (1 - ty)
          + grid[i0, j0 + 1] * (1 - tx) * ty + grid[i0 + 1, j0 + 1] * tx * ty)
     r = np.maximum(np.abs(x), np.abs(y))
-    return v * np.clip((1.15 - r) / 0.25, 0, 1)  # no detail beyond the occlusal table
+    # the detail is only learned inside 0.85 of the occlusal table: fade it out
+    # before that edge instead of stopping at it (a visible rectangular step)
+    return v * _smooth01((0.85 - r) / 0.25)
 
 
 # --------------------------------------------------------------------------
@@ -246,8 +259,8 @@ def profile_key(fdi: int) -> str:
 
 # scalar rule parameters a profile may override (all tooth-shape, none size or placement)
 PROFILE_FIELDS = ("slope_in", "slope_out", "cusp_ridge_slope", "ridge_ratio", "fossa_depth", "marginal_drop",
-                  "mesial_ridge_extra", "hc_b", "hc_l", "contact_m", "contact_d", "buccal_share",
-                  "squareness", "tilt")
+                  "mesial_ridge_extra", "fissure_depth", "fissure_width", "hc_b", "hc_l", "contact_m",
+                  "contact_d", "buccal_share", "squareness", "tilt")
 
 
 def default_posterior(fdi: int, profile: dict | None = None) -> PosteriorCrown:

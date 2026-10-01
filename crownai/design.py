@@ -45,6 +45,9 @@ class CrownParameters:
     posterior_anatomy: str = "rules"  # premolars/molars: "rules" (anatomical cusp model) or "mirror"
     implant: bool = False  # implant crown: narrower occlusal table (less lateral load), opt-in
     rules_profile: dict | None = None  # the lab's tuned rules (crownai tune-rules), per tooth type
+    crown_library: object | None = None  # crownai.crown_library.CrownLibrary: the lab's own crowns as templates
+    library_variant: int = 0  # 0 = closest library crown, 1 = next closest, ...
+    library_exclude: tuple = ()  # library ids not to use (e.g. the case being checked)
     follow_arch_line: bool = False  # no root to centre on (implant, pontic): line up with the neighbours
     cusp_fossa_max: float = 0.0  # opt-in: max buccolingual shift to put supporting cusps into antagonist fossae (mm)
     contact_gap: float = 0.0  # mm to the adjacent teeth at the contacts (negative = tight)
@@ -292,6 +295,14 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     else:
         v = (np.arange(p.n_v) / p.n_v) ** 1.5  # denser sampling near the margin
     center_loc = np.array([0.0, 0.0, m_loc[:, 2].mean() + 0.35 * (prep_top - m_loc[:, 2].mean())])
+    # the fan must start inside the stump: on a leaning or off-centre preparation the
+    # margin's centre can lie outside it at that height - use the stump's own section
+    q_die = frame.to_local(prep.vertices)
+    ring = q_die[np.abs(q_die[:, 2] - center_loc[2]) < 0.6]
+    if len(ring) >= 30:
+        c_xy = 0.5 * (np.percentile(ring[:, :2], 95, axis=0) + np.percentile(ring[:, :2], 5, axis=0))
+        if np.linalg.norm(c_xy) < 0.5 * np.hypot(m_loc[:, 0], m_loc[:, 1]).min():
+            center_loc[:2] = c_xy
     center = frame.to_world(center_loc)
     d0 = margin - center
     t_margin = np.linalg.norm(d0, axis=1)
@@ -367,6 +378,8 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
     outer_pole = center + pole_dir * _shape_radii(shape, frame, center, pole_dir[None, None])[0, 0]
     outer = _laplacian(outer, smoothing)
     outer, outer_pole = _smooth_top(outer, outer_pole, v, **({"start": 0.95, "iters": 4} if detailed else {}))
+    if detailed:
+        outer, outer_pole = _resample_occlusal(shape, frame, outer, outer_pole, v)
 
     # Thickness ramps up from the finish line over ``thickness_band`` (measured on the die).
     occlusal_w = _smoothstep((v - 0.45) / 0.3)[None, :]
@@ -641,6 +654,39 @@ def _anterior_anatomy(fdi, frame, m_loc, offset, neighbors, prep_top, p, prep):
     return placed, source, stats
 
 
+def _resample_occlusal(shape, frame, outer, pole, v, start: float = 0.6, span: float = 1.5, steps: int = 16):
+    """Occlusal table as a height field: keep each point's x, y and take the shape's top there.
+
+    Near the fan's pole neighbouring rays meet fine anatomy (fissures, secondary
+    grooves) at grazing angles and the sampled radii fan out into streaks; a
+    vertical look-up has no such singularity.  Blended in from ``start`` (fan
+    row parameter), so the side walls keep the ray sampling.
+    """
+    loc = frame.to_local(outer.reshape(-1, 3)).reshape(outer.shape)
+    rows = v > start
+    P = loc[:, rows]
+    lo = P[..., 2] - span
+    hi = P[..., 2] + span
+    ok = shape.inside(np.stack([P[..., 0], P[..., 1], lo], axis=-1)) & \
+        ~shape.inside(np.stack([P[..., 0], P[..., 1], hi], axis=-1))
+    for _ in range(steps):
+        mid = 0.5 * (lo + hi)
+        ins = shape.inside(np.stack([P[..., 0], P[..., 1], mid], axis=-1))
+        lo, hi = np.where(ins, mid, lo), np.where(ins, hi, mid)
+    w = _smoothstep((v[rows] - start) / 0.15)[None, :] * ok
+    P[..., 2] = P[..., 2] * (1 - w) + 0.5 * (lo + hi) * w
+    loc[:, rows] = P
+    pl = frame.to_local(pole)
+    lo, hi = np.array([pl[2] - span]), np.array([pl[2] + span])
+    if shape.inside(np.array([[pl[0], pl[1], lo[0]]]))[0]:
+        for _ in range(steps):
+            mid = 0.5 * (lo + hi)
+            ins = shape.inside(np.array([[pl[0], pl[1], mid[0]]]))
+            lo, hi = np.where(ins, mid, lo), np.where(ins, hi, mid)
+        pl[2] = 0.5 * (lo[0] + hi[0])
+    return frame.to_world(loc.reshape(-1, 3)).reshape(outer.shape), frame.to_world(pl)
+
+
 def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, arch_orientation, prep_top, p, warnings):
     """Premolar/molar from the anatomical cusp model, set into the patient's arch by rules.
 
@@ -737,6 +783,64 @@ def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, arch_or
     need = prep_top + p.cement_gap + p.min_occlusal + 0.3 - cz  # cusp tips stand above the mean cervix
     H = max(H, need, 0.6 * base.height)
     placed.model = model = replace(model, height=H)
+
+    if p.crown_library is not None:
+        from .crown_library import TemplateCrown
+        from .posterior_model import profile_key
+
+        md_known = info.get("md_from") == "space between neighbours"  # a hard limit; a contralateral width only steers the choice
+        md_hint = md if info.get("md_from") == "contralateral width" else None
+        # a crown on a preparation meets its finish line: the margin's size says which
+        # crown fits (not for a virtual implant/pontic margin)
+        cervix = None if p.follow_arch_line else (float(np.ptp(mm[:, 0])), float(np.ptp(mm[:, 1])))
+        src = p.crown_library.choose(profile_key(fdi), md if md_known else md_hint, bl if "bl_from" in info else None,
+                                     H if nbs else None, variant=p.library_variant, exclude=p.library_exclude,
+                                     cervix=cervix)
+        if src is not None:
+            if not nbs:
+                H = max(src.height, need)
+            # keep the real crown's proportions: scale it evenly to the case's space (or to
+            # the finish line when nothing else fixes the size), and only lean the
+            # buccolingual size towards the neighbour-based value - stretching one axis
+            # distorts the anatomy
+            if md_known:
+                su = md / src.md
+            elif cervix and src.cerv_md > 0:
+                su = float(np.clip(np.sqrt(cervix[0] / src.cerv_md * cervix[1] / src.cerv_bl), 0.92, 1.08))
+            else:
+                su = 1.0
+            sw = su * (float(np.clip(bl / (src.bl * su), 0.85, 1.15)) ** 0.5 if "bl_from" in info else 1.0)
+            lo_z, hi_z = max(need, 0.6 * base.height) / src.height, 1.35
+            tpl = TemplateCrown(src, su=su, sw=sw, sz=float(np.clip(H / src.height, lo_z, hi_z)))
+            info.update(library_crown=src.id, library_variant=p.library_variant)
+            if info.get("md_position") == "against the mesial neighbour":
+                shift[0] += 0.5 * (md - tpl.md)  # touch the neighbour with the crown's real width
+            if antagonist is not None:
+                # seat the real crown whole into contact: scale its height until the first
+                # point of its occlusal surface touches the antagonist (no cusp is cut)
+                ceil = _BelowAntagonist(None, antagonist, frame, m_loc, p.occlusal_clearance, reach=12.0)
+                g = np.linspace(-1, 1, 41)
+                GU, GW = np.meshgrid(g * tpl.md / 2, g * tpl.bl / 2, indexing="ij")
+                for _ in range(3):
+                    zt = tpl.top_at(GU, GW)
+                    ok = np.isfinite(zt) & (zt > 0.5 * tpl.height)
+                    x, y = GU[ok] + shift[0], labial * (GW[ok] + shift[1])
+                    i = np.clip(np.round((x - ceil.x0) / ceil.res).astype(int), 0, ceil.ceiling.shape[0] - 1)
+                    j = np.clip(np.round((y - ceil.y0) / ceil.res).astype(int), 0, ceil.ceiling.shape[1] - 1)
+                    gap = ceil.ceiling[i, j] - (cz + zt[ok])
+                    gap = gap[np.isfinite(gap)]
+                    if not len(gap):
+                        break
+                    dz = float(gap.min())
+                    tpl.sz = float(np.clip(tpl.sz * (tpl.height + dz) / tpl.height, lo_z, hi_z))
+                    if abs(dz) < 0.02:
+                        break
+                info["height_from"] = "antagonist contact"
+            placed = PlacedAnatomy.on_margin(tpl, labial, shift, m_loc, fade=fade)
+            info.update(md=round(tpl.md, 2), bl=round(tpl.bl, 2), height=round(tpl.height, 2),
+                        height_scale=round(tpl.sz, 3))
+            return placed, "lab crown library (closest real crown, fitted to the case)", info
+        warnings.append(f"crown library has no {profile_key(fdi)} crowns: rules used")
 
     def local_tips(m, sh):
         t = m.cusp_tips()

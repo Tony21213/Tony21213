@@ -42,6 +42,10 @@ def _add_design_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--posterior-anatomy", choices=("rules", "mirror"), default=d.posterior_anatomy,
                    help="premolars/molars: rule-based cusp model (default) or the mirrored contralateral tooth")
     p.add_argument("--rules-profile", type=Path, help="the lab's tuned rules (from crownai tune-rules)")
+    p.add_argument("--crown-library", type=Path,
+                   help="the lab's crown library (from crownai build-library): real crowns as templates")
+    p.add_argument("--library-variant", type=int, default=0,
+                   help="0 = closest library crown, 1 = next closest, ... (browse variants)")
     o = p.add_argument_group("functional occlusion (Slavicek sequential guidance)")
     o.add_argument("--slavicek", action="store_true",
                    help="centric contacts + no interference in protrusion / latero- / mediotrusion")
@@ -54,7 +58,16 @@ def _params(a) -> CrownParameters:
     return CrownParameters(cement_gap=a.cement_gap, margin_gap=a.margin_gap, min_axial=a.min_axial,
                            min_occlusal=a.min_occlusal, occlusal_clearance=a.clearance,
                            posterior_anatomy=getattr(a, "posterior_anatomy", "rules"),
-                           rules_profile=_rules_profile(a))
+                           rules_profile=_rules_profile(a), crown_library=_crown_library(a),
+                           library_variant=getattr(a, "library_variant", 0))
+
+
+def _crown_library(a):
+    if getattr(a, "crown_library", None) is None:
+        return None
+    from .crown_library import CrownLibrary
+
+    return CrownLibrary(a.crown_library)
 
 
 def _rules_profile(a):
@@ -279,6 +292,21 @@ def cmd_tune_rules(a) -> int:
     return 0
 
 
+def cmd_build_library(a) -> int:
+    from .crown_library import build_library
+
+    build_library(a.root, a.out, limit=a.limit)
+    print(f"design with --crown-library {a.out}")
+    return 0
+
+
+def cmd_check_library(a) -> int:
+    from .crown_library import check_library
+
+    check_library(a.root, a.library, n=a.n, rules_profile=_rules_profile(a))
+    return 0
+
+
 def cmd_learn_webview(a) -> int:
     from .learning import CrownLearner
     from .webview import learn_from_webview
@@ -435,6 +463,21 @@ def main(argv=None) -> int:
     p.add_argument("--eval", type=int, default=8, help="held-out crowns to design with/without the profile")
     p.add_argument("--min-cases", type=int, default=5, help="crowns needed before a tooth type gets a profile")
     p.set_defaults(func=cmd_tune_rules)
+
+    p = sub.add_parser("build-library",
+                       help="build a crown library from the lab's finished premolar/molar crowns (exocad archive)")
+    p.add_argument("root", type=Path, help="archive folder; every case with a .constructionInfo is used")
+    p.add_argument("--out", type=Path, default=Path("lab_library"))
+    p.add_argument("--limit", type=int, help="use at most this many crowns (random sample)")
+    p.set_defaults(func=cmd_build_library)
+
+    p = sub.add_parser("check-library",
+                       help="design archive crowns with the library (never their own crown) vs the rules")
+    p.add_argument("root", type=Path)
+    p.add_argument("--library", required=True, type=Path)
+    p.add_argument("--n", type=int, default=12, help="crowns to check")
+    p.add_argument("--rules-profile", type=Path, help="also compare the rules with this lab profile")
+    p.set_defaults(func=cmd_check_library)
 
     p = sub.add_parser("learn-webview", help="learn the technician's wax-ups from exocad webview HTML files")
     p.add_argument("files", type=Path, nargs="+")
