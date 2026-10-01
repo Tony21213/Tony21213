@@ -1,16 +1,20 @@
 """Генерация сот в модели, экспортированной из exocad.
 
-Модель делается полой: снаружи остаётся стенка заданной толщины, а полость
-разбивается на шестигранные ячейки, открытые со стороны основания. Это
-экономит материал при печати и уменьшает деформации.
+Пользователь выбирает плоские наружные грани модели (как в Materialise
+Magics), и каждая выбранная грань превращается в открытые соты: шестигранные
+ячейки идут от грани вглубь модели, а от остальной поверхности их отделяет
+стенка заданной толщины. Это экономит материал при печати и уменьшает
+деформации.
 
-Полость строится послойно: каждый горизонтальный срез модели сужается на
-толщину стенки (с учётом соседних срезов, чтобы стенка выдерживалась и на
-наклонных участках), пересекается с сеткой шестигранников и вычитается из
-модели. Наружная поверхность модели при этом не меняется.
+Для каждой грани модель поворачивается так, чтобы грань оказалась внизу, и
+полость строится послойно: каждый срез сужается на толщину стенки (с учётом
+соседних срезов, чтобы стенка выдерживалась и на наклонных участках),
+пересекается с сеткой шестигранников и вычитается из модели. Наружная
+поверхность модели при этом не меняется.
 
 Использование:
-    python honeycomb.py model.stl model_honeycomb.stl --wall 1.2 --cell 5 --inner-wall 1.2
+    python honeycomb.py model.stl --list-planes
+    python honeycomb.py model.stl out.stl --planes 1,3 --wall 1.2 --cell 5 --inner-wall 1.2
 """
 
 import argparse
@@ -35,24 +39,85 @@ class HoneycombParams:
     wall: float = 1.2  # толщина наружной стенки, мм
     cell: float = 5.0  # размер ячейки между параллельными гранями, мм
     inner_wall: float = 1.2  # толщина стенок между ячейками, мм
-    max_height: float | None = None  # высота сот над основанием; None — на всю модель
+    depth: float | None = None  # глубина сот от грани; None — насколько позволяет модель
     perf_diameter: float = 0.0  # диаметр перфорации внутренних стенок; 0 — без неё
-    perf_height: float | None = None  # высота центра перфорации над основанием
-    open_side: str = "bottom"  # с какой стороны открыты соты: bottom или top
+    perf_height: float | None = None  # расстояние от грани до центра перфорации
     layer: float = 0.2  # шаг послойного построения, мм
 
     def validate(self):
         for name in ("wall", "cell", "inner_wall", "layer"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} должен быть больше нуля")
-        if self.max_height is not None and self.max_height <= 0:
-            raise ValueError("max_height должен быть больше нуля")
+        if self.depth is not None and self.depth <= 0:
+            raise ValueError("depth должен быть больше нуля")
         if self.perf_diameter < 0:
             raise ValueError("perf_diameter не может быть отрицательным")
         if self.perf_diameter >= self.cell + self.inner_wall:
             raise ValueError("perf_diameter должен быть меньше шага ячеек")
-        if self.open_side not in ("bottom", "top"):
-            raise ValueError("open_side должен быть bottom или top")
+
+
+@dataclass
+class Plane:
+    """Плоская наружная грань: точки x с dot(x, normal) == offset, normal смотрит наружу."""
+
+    normal: np.ndarray
+    offset: float
+    area: float = 0.0
+    center: np.ndarray | None = None
+
+    def to_base(self) -> np.ndarray:
+        """Матрица 4×4, которая кладёт грань в плоскость z = 0, а модель — выше неё."""
+        m = trimesh.geometry.align_vectors(self.normal, (0.0, 0.0, -1.0))
+        m[2, 3] += self.offset
+        return m
+
+
+def find_planes(model: Manifold, min_area: float = 10.0) -> list[Plane]:
+    """Плоские наружные грани модели, на которых можно открыть соты, по убыванию площади."""
+    mesh = model.to_mesh()
+    verts = mesh.vert_properties[:, :3].astype(np.float64)
+    tris = verts[mesh.tri_verts]
+    cross = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+    double_area = np.linalg.norm(cross, axis=1)
+    keep = double_area > 1e-12
+    normals = cross[keep] / double_area[keep, None]
+    areas = double_area[keep] / 2
+    centers = tris[keep].mean(axis=1)
+    offsets = np.einsum("ij,ij->i", normals, centers)
+
+    # Треугольники одной плоскости: одинаковые нормаль и смещение (с допуском).
+    key = np.c_[np.round(normals, 3), np.round(offsets, 2)]
+    _, group = np.unique(key, axis=0, return_inverse=True)
+    group = group.reshape(-1)
+    group_area = np.bincount(group, areas)
+
+    planes = []
+    for g in np.argsort(-group_area):
+        if group_area[g] < 1.0:
+            break
+        sel = group == g
+        w = areas[sel]
+        normal = (normals[sel] * w[:, None]).sum(axis=0)
+        normal /= np.linalg.norm(normal)
+        offset = float((offsets[sel] * w).sum() / w.sum())
+        center = (centers[sel] * w[:, None]).sum(axis=0) / w.sum()
+        # Округление могло разбить одну плоскость на несколько групп — объединяем.
+        for pl in planes:
+            if pl.normal @ normal > 0.9999 and abs(pl.offset - offset) < 0.02:
+                total = pl.area + w.sum()
+                pl.center = (pl.center * pl.area + center * w.sum()) / total
+                pl.area = total
+                break
+        else:
+            planes.append(Plane(normal, offset, float(w.sum()), center))
+
+    # Наружная грань — та, за плоскость которой модель нигде не выходит.
+    planes = [pl for pl in planes if pl.area >= min_area and (verts @ pl.normal).max() - pl.offset < 0.02]
+    return sorted(planes, key=lambda pl: -pl.area)
+
+
+def bottom_plane(model: Manifold) -> Plane:
+    return Plane(np.array([0.0, 0.0, -1.0]), -model.bounding_box()[2])
 
 
 def load_model(path: str) -> Manifold:
@@ -125,9 +190,9 @@ def _same(a: CrossSection, b: CrossSection) -> bool:
 
 
 def build_cavity(model: Manifold, p: HoneycombParams) -> Manifold:
-    """Полость с сотами для модели, у которой открытая сторона — нижняя (минимум Z)."""
+    """Полость с сотами для модели, у которой открытая грань лежит внизу (минимум Z)."""
     xmin, ymin, z0, xmax, ymax, ztop = model.bounding_box()
-    z_end = ztop if p.max_height is None else min(ztop, z0 + p.max_height)
+    z_end = ztop if p.depth is None else min(ztop, z0 + p.depth)
     h = p.layer
     n_layers = math.ceil((z_end - z0) / h)
     reach = math.ceil(p.wall / h + 0.5)  # сколько соседних срезов влияет на слой
@@ -200,31 +265,69 @@ def build_cavity(model: Manifold, p: HoneycombParams) -> Manifold:
     return Manifold.batch_boolean(pieces, OpType.Add)
 
 
-def make_honeycomb(model: Manifold, p: HoneycombParams) -> Manifold:
+def make_honeycomb(model: Manifold, p: HoneycombParams, planes: list[Plane] | None = None) -> Manifold:
+    """Открывает соты на каждой из граней planes (по умолчанию — на дне модели)."""
     p.validate()
-    flip = p.open_side == "top"
-    if flip:
-        model = model.mirror((0, 0, 1))
-    cavity = build_cavity(model, p)
-    if cavity.is_empty():
-        raise ValueError("Модель слишком тонкая для сот с такими параметрами")
-    result = model - cavity
-    if flip:
-        result = result.mirror((0, 0, 1))
-    return result
+    if not planes:
+        planes = [bottom_plane(model)]
+
+    cavities = []
+    for n, plane in enumerate(planes, 1):
+        to_base = plane.to_base()
+        cavity = build_cavity(model.transform(to_base[:3]), p)
+        if cavity.is_empty():
+            raise ValueError(f"Грань {n}: модель слишком тонкая для сот с такими параметрами")
+        cavities.append(cavity.transform(np.linalg.inv(to_base)[:3]))
+    # Полость возвращается в исходные координаты, поэтому поверхность модели остаётся нетронутой.
+    return model - Manifold.batch_boolean(cavities, OpType.Add)
+
+
+def print_planes(planes: list[Plane]):
+    if not planes:
+        print("Плоских наружных граней не найдено")
+        return
+    print(" №   площадь, мм²   нормаль               центр, мм")
+    for n, pl in enumerate(planes, 1):
+        nx, ny, nz = pl.normal
+        cx, cy, cz = pl.center
+        print(f"{n:2}   {pl.area:11.1f}   ({nx:5.2f} {ny:5.2f} {nz:5.2f})   ({cx:6.1f} {cy:6.1f} {cz:6.1f})")
+
+
+def select_planes(model: Manifold, spec: str) -> list[Plane]:
+    spec = spec.strip().lower()
+    if spec == "bottom":
+        return [bottom_plane(model)]
+    planes = find_planes(model)
+    if not planes:
+        raise ValueError("у модели нет плоских наружных граней")
+    if spec == "auto":
+        return planes[:1]
+    try:
+        numbers = [int(x) for x in spec.split(",") if x.strip()]
+    except ValueError:
+        raise ValueError(f"не понял --planes {spec!r}: нужны номера граней через запятую, auto или bottom")
+    bad = [n for n in numbers if not 1 <= n <= len(planes)]
+    if bad or not numbers:
+        raise ValueError(f"нет граней с номерами {bad or spec}; всего граней: {len(planes)} (см. --list-planes)")
+    return [planes[n - 1] for n in dict.fromkeys(numbers)]
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Генерация сот в модели (STL из exocad)")
     parser.add_argument("input", help="исходная модель (STL, PLY, OBJ)")
-    parser.add_argument("output", help="куда сохранить результат (STL)")
+    parser.add_argument("output", nargs="?", help="куда сохранить результат (STL)")
+    parser.add_argument("--list-planes", action="store_true", help="показать плоские грани модели и выйти")
+    parser.add_argument(
+        "--planes",
+        default="bottom",
+        help="грани под соты: номера из --list-planes через запятую, auto (самая большая) или bottom (дно, по умолчанию)",
+    )
     parser.add_argument("--wall", type=float, default=1.2, help="толщина наружной стенки, мм (1.2)")
     parser.add_argument("--cell", type=float, default=5.0, help="размер ячейки, мм (5)")
     parser.add_argument("--inner-wall", type=float, default=1.2, help="толщина внутренних стенок, мм (1.2)")
-    parser.add_argument("--max-height", type=float, help="высота сот над основанием, мм (по умолчанию — вся модель)")
+    parser.add_argument("--depth", type=float, help="глубина сот от грани, мм (по умолчанию — насколько позволяет модель)")
     parser.add_argument("--perf-diameter", type=float, default=0.0, help="диаметр перфорации внутренних стенок, мм (0 — без неё)")
-    parser.add_argument("--perf-height", type=float, help="высота центра перфорации над основанием, мм")
-    parser.add_argument("--open-side", choices=("bottom", "top"), default="bottom", help="сторона открытых сот по оси Z (bottom)")
+    parser.add_argument("--perf-height", type=float, help="расстояние от грани до центра перфорации, мм")
     parser.add_argument("--layer", type=float, default=0.2, help="шаг построения, мм (0.2)")
     args = parser.parse_args(argv)
 
@@ -232,16 +335,20 @@ def main(argv=None):
         wall=args.wall,
         cell=args.cell,
         inner_wall=args.inner_wall,
-        max_height=args.max_height,
+        depth=args.depth,
         perf_diameter=args.perf_diameter,
         perf_height=args.perf_height,
-        open_side=args.open_side,
         layer=args.layer,
     )
+    if not args.list_planes and not args.output:
+        parser.error("укажите файл результата")
     started = time.perf_counter()
     try:
         model = load_model(args.input)
-        result = make_honeycomb(model, params)
+        if args.list_planes:
+            print_planes(find_planes(model))
+            return 0
+        result = make_honeycomb(model, params, select_planes(model, args.planes))
     except ValueError as e:
         print(f"Ошибка: {e}", file=sys.stderr)
         return 1
