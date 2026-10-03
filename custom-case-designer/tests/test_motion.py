@@ -325,3 +325,19 @@ def test_aesthetic_mounting_with_asymmetric_condyles():
     early = opening.transforms[: len(opening.transforms) // 3]
     for p in (points["condyle_right"], points["condyle_left"]):
         assert np.abs(mo.track(early, p) - p).max() < 1e-6
+
+
+def test_average_articulator_from_scans_only():
+    """Только сканы: окклюзионная плоскость и «вперёд» — по дуге, мыщелки — по Бонвиллю и Балквиллу."""
+    lower = lower_arch()
+    upper = apply(ANAT_TO_CASE, apply(CASE_TO_ANAT, lower) + [0, 1.5, 9])
+    a = mo.anatomy_average(lower, upper)
+    R = a.frame[:3, :3] @ ANAT_TO_CASE[:3, :3]  # оси оценки в анатомической системе
+    assert R[1] @ [0, 1, 0] > 0.999 and R[2] @ [0, 0, 1] > 0.999  # вперёд и вверх найдены
+    inc = apply(CASE_TO_ANAT, a.points["incisal"][None])[0]
+    for side, sign in (("right", 1), ("left", -1)):
+        c = apply(CASE_TO_ANAT, a.points[f"condyle_{side}"][None])[0]
+        assert np.linalg.norm(c - inc) == pytest.approx(mo.BONWILL_MM, abs=1e-6)
+        assert np.sign(c[0] - inc[0]) == sign and c[2] > inc[2]  # справа — справа, мыщелки выше резцов
+    with pytest.raises(ValueError, match="где верх"):
+        mo.anatomy_average(lower)

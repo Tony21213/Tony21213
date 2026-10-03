@@ -59,6 +59,9 @@ ISS_FIT_MM = 1.5  # угол Беннетта — по участку после
 GUIDE_CHORD_MM = 3.0  # углы ведения зубами — по первым 3 мм пути резцовой точки
 TOP_SHARE = 0.03  # резцовая точка ищется среди самых «верхних» 3% вершин модели
 INCISAL_TILT_DEG = 30.0  # «верх» для поиска резцов наклонён вперёд: так впереди резцы, а не моляры
+BONWILL_MM = 100.0  # сторона треугольника Бонвилля: мыщелок — мыщелок и мыщелок — резцовая точка
+BALKWILL_DEG = 25.0  # угол Балквилла: между треугольником Бонвилля и окклюзионной плоскостью
+CUSP_SHARE = 0.05  # окклюзионная плоскость — по самым высоким 5% точек нижних зубов
 
 KINDS = {"opening": "открывание", "protrusion": "протрузия", "laterotrusion_right": "латеротрузия вправо",
          "laterotrusion_left": "латеротрузия влево", "chewing": "жевание", "other": "другое"}
@@ -644,6 +647,69 @@ def estimate_anatomy(case: MotionCase, lower: np.ndarray | None = None, incisal=
     points = {"incisal": incisal, "condyle_right": hinge + icd / 2 * x, "condyle_left": hinge - icd / 2 * x}
     return Anatomy(_frame(hinge, x, y, z), points, source + "; горизонталь — шарнирная ось и резцовая точка",
                    rms)
+
+
+def arch_axes(vertices: np.ndarray, up) -> tuple[np.ndarray, np.ndarray]:
+    """Окклюзионная плоскость и направление вперёд по зубной дуге.
+
+    Плоскость — по вершинам бугров (самые высокие точки вдоль up). Вперёд —
+    к вершине дуги: в плоскости подбирается ось, вдоль которой вершины бугров
+    лучше всего ложатся на параболу, и её вершина — резцы.
+    """
+    up = np.asarray(up, float) / np.linalg.norm(up)
+    h = vertices @ up
+    tips = vertices[h >= np.quantile(h, 1 - CUSP_SHARE)]
+    c = tips.mean(0)
+    normal = np.linalg.svd(tips - c, full_matrices=False)[2][2]
+    normal = normal if normal @ up > 0 else -normal
+    u = np.cross(normal, [1.0, 0, 0] if abs(normal[0]) < 0.9 else [0, 1.0, 0])
+    u /= np.linalg.norm(u)
+    w = np.cross(normal, u)
+    p2 = np.c_[(tips - c) @ u, (tips - c) @ w]
+    best = None
+    for a in np.radians(np.arange(0.0, 180.0, 1.0)):
+        d, e = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+        x, y = p2 @ e, p2 @ d
+        A = np.c_[np.ones_like(x), x, x ** 2]
+        coef = np.linalg.lstsq(A, y, rcond=None)[0]
+        err = float(np.mean((A @ coef - y) ** 2))
+        if best is None or err < best[0]:
+            best = (err, d if coef[2] < 0 else -d)
+    anterior = best[1][0] * u + best[1][1] * w
+    return normal, anterior / np.linalg.norm(anterior)
+
+
+def anatomy_average(lower: np.ndarray, upper: np.ndarray | None = None, lower_normals: np.ndarray | None = None,
+                    incisal=None, side: float = BONWILL_MM, icd: float = BONWILL_MM,
+                    balkwill_deg: float = BALKWILL_DEG) -> Anatomy:
+    """Средний артикулятор по одним сканам: треугольник Бонвилля и угол Балквилла.
+
+    Когда нет ни КТ, ни записи движений. Вверх — от нижних зубов к верхним
+    (или по нормалям скана нижней челюсти, если верхнего нет); окклюзионная
+    плоскость и направление вперёд — по зубной дуге; резцовая точка — на
+    нижних резцах. Мыщелки — в вершинах равностороннего треугольника Бонвилля
+    со стороной 100 мм, плоскость которого наклонена к окклюзионной на угол
+    Балквилла (25°). Горизонталь анализа — окклюзионная плоскость.
+    """
+    lower = np.asarray(lower, float)
+    if upper is not None:
+        up = np.asarray(upper, float).mean(0) - lower.mean(0)
+    elif lower_normals is not None:
+        up = np.asarray(lower_normals, float).sum(0)
+    else:
+        raise ValueError("нужен скан верхней челюсти или нормали скана нижней, чтобы понять, где верх")
+    z, y = arch_axes(lower, up)
+    if incisal is None:
+        incisal = _incisal(lower, y, z, INCISAL_TILT_DEG)
+    incisal = np.asarray(incisal, float)
+    x = np.cross(y, z)
+    back = np.sqrt(side ** 2 - (icd / 2) ** 2)
+    b = np.radians(balkwill_deg)
+    hinge = incisal - y * back * np.cos(b) + z * back * np.sin(b)
+    points = {"incisal": incisal, "condyle_right": hinge + icd / 2 * x, "condyle_left": hinge - icd / 2 * x}
+    return Anatomy(_frame(hinge, x, y, z), points,
+                   f"средние значения: треугольник Бонвилля {side:g} мм, угол Балквилла {balkwill_deg:g}°; "
+                   "горизонталь — окклюзионная плоскость")
 
 
 def anatomy_from_ct(landmarks: dict, plane: str, case_to_ct: np.ndarray, lower: np.ndarray | None = None,
