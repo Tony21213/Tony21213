@@ -39,6 +39,8 @@ def _catalogue() -> dict[str, Structure]:
         "oropharynx": Structure("Ротоглотка", "#2A5E9E"),
         "hypopharynx": Structure("Гортаноглотка", "#244F85"),
         "soft_palate": Structure("Мягкое нёбо", "#EFA18E"),
+        "auditory_canal_right": Structure("Слуховой проход правый", "#9C7BE0"),
+        "auditory_canal_left": Structure("Слуховой проход левый", "#9C7BE0"),
         "hard_palate": Structure("Твёрдое нёбо", "#E3B49A"),
         "teeth/implant": Structure("Импланты", "#8E9399", None),
         "teeth/crown": Structure("Коронки (ортопедические)", "#EDF2F7", None),

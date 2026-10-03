@@ -24,5 +24,6 @@ export const icons = {
   side: s('<path d="M5 5h14v14H5z"/><path d="M5 12h14"/>'),
   top: s('<path d="M5 5h14v14H5z"/><path d="M12 5v14"/>'),
   warn: s('<path d="M12 4 2.5 20h19L12 4Z"/><path d="M12 10v4.5M12 17.5v.01"/>'),
+  target: s('<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="1.6"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4"/>'),
   chevron: s('<path d="m9 6 6 6-6 6"/>'),
 };

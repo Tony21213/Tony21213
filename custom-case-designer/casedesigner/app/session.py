@@ -13,6 +13,8 @@ import uuid
 import numpy as np
 import trimesh
 
+from .. import articulators as arts
+from .. import landmarks as lmk
 from ..fusion import CaseCT, Registration, Scan, deviation_colors, export_case
 from ..learning import AlignmentMemory
 from ..register import apply
@@ -35,7 +37,8 @@ GROUPS = [
     ("Зубы", ("upper_teeth", "lower_teeth", "teeth/", "pulp/")),
     ("Каналы", ("mandibular_canal", "incisive_canal", "lingual_canal")),
     ("Пазухи и дыхательные пути", ("maxillary_sinus", "frontal_sinus", "nasal_cavity", "pharynx", "nasopharynx",
-                                   "oropharynx", "hypopharynx", "soft_palate")),
+                                   "oropharynx", "hypopharynx", "soft_palate", "auditory_canal_right",
+                                   "auditory_canal_left")),
 ]
 
 
@@ -68,6 +71,9 @@ class Session:
         self.scans: dict[str, dict] = {}
         self.structures: dict[str, trimesh.Trimesh] = {}
         self._sections = {}
+        self.landmarks: dict[str, np.ndarray] = {}
+        self.suggested: set[str] = set()  # предложены программой и ещё не подтверждены врачом
+        self.articulators_path = os.path.join(os.path.dirname(self.memory.path), "articulators.json")
 
     # --- КТ -----------------------------------------------------------------
     def load_ct(self, path: str, progress=None) -> dict:
@@ -81,6 +87,7 @@ class Session:
             lo, hi = case.levels.hard, case.levels.dense
             self.window = ((lo + hi) / 2, max(hi - lo, 1.0) * 2.5)
             self.structures, self._sections = {}, {}
+            self.landmarks, self.suggested = {}, set()
             for item in self.scans.values():
                 item.update(reg=None, auto=None, transform=None)
         return self.ct_info()
@@ -284,8 +291,66 @@ class Session:
         mesh = self.case.surfaces(step=2)["ct_teeth"]
         return mesh_bytes(mesh.vertices, mesh.faces)
 
+    # --- ориентиры и плоскости ----------------------------------------------
+    def landmarks_info(self) -> dict:
+        planes = []
+        for key, p in lmk.PLANES.items():
+            missing = lmk.missing(self.landmarks, key)
+            planes.append({"key": key, "name": p["name"], "ready": not missing, "missing": missing})
+        return {
+            "landmarks": [{"key": l.key, "name": l.name, "hint": l.hint,
+                           "point": self.landmarks[l.key].round(2).tolist() if l.key in self.landmarks else None,
+                           "suggested": l.key in self.suggested} for l in lmk.LANDMARKS],
+            "planes": planes, "angles": lmk.plane_angles(self.landmarks),
+            "articulators": [{"key": a.key, "name": a.name, "maker": a.maker, "plane": a.plane,
+                              "calibrated": a.calibrated} for a in arts.load(self.articulators_path)],
+        }
+
+    def set_landmark(self, key: str, point) -> dict:
+        if key not in lmk.BY_KEY:
+            raise ValueError(f"нет такого ориентира: {key}")
+        with self.lock:
+            if point is None:
+                self.landmarks.pop(key, None)
+            else:
+                self.landmarks[key] = np.asarray(point, float)
+            self.suggested.discard(key)
+        return self.landmarks_info()
+
+    def suggest_landmarks(self) -> dict:
+        """Предложить мыщелки и порионы по сегментации (не трогая поставленные врачом)."""
+        found = {}
+        if "mandible" in self.structures:
+            found.update(lmk.suggest_condyles(self.structures["mandible"].vertices))
+        mid_x = float(np.median(self.structures["mandible"].vertices[:, 0])) if "mandible" in self.structures else 0.0
+        for side, key in (("right", "Po_R"), ("left", "Po_L")):
+            canal = self.structures.get(f"auditory_canal_{side}")
+            if canal is not None:
+                found.update(lmk.suggest_porion(canal.vertices, key, mid_x))
+        if not found:
+            raise ValueError("нечего предложить: сначала сегментируйте КТ (нужны нижняя челюсть и слуховые проходы)")
+        with self.lock:
+            for key, point in found.items():
+                if key not in self.landmarks or key in self.suggested:
+                    self.landmarks[key] = np.asarray(point, float)
+                    self.suggested.add(key)
+        return self.landmarks_info()
+
+    def reference(self, kind: str) -> tuple[np.ndarray, str]:
+        """Матрица «КТ → система» и её название: plane:<плоскость> или articulator:<ключ>."""
+        what, _, key = kind.partition(":")
+        if what == "plane":
+            return lmk.reference_frame(self.landmarks, key), lmk.PLANES[key]["name"]
+        if what == "articulator":
+            art = next((a for a in arts.load(self.articulators_path) if a.key == key), None)
+            if art is None:
+                raise ValueError(f"нет такого артикулятора: {key}")
+            return arts.articulator_frame(self.landmarks, art), f"{art.maker} {art.name}"
+        raise ValueError(f"неизвестная система координат: {kind}")
+
     # --- экспорт ------------------------------------------------------------
-    def export(self, out_dir: str, bite: str = "scan", frame: str = "exocad", include: list[str] | None = None) -> dict:
+    def export(self, out_dir: str, bite: str = "scan", frame: str = "exocad", include: list[str] | None = None,
+               reference: str | None = None) -> dict:
         self._require_ct()
         regs = [item["reg"] for item in self.scans.values() if item["reg"] is not None]
         if not regs:
@@ -298,10 +363,12 @@ class Session:
                 meshes[key] = Mesh(np.asarray(mesh.vertices), np.asarray(mesh.faces))
         if not self.structures:  # без сегментации — хотя бы зубы из КТ по плотности (как в 3D)
             meshes["ct_teeth"] = self.case.surfaces(step=1)["ct_teeth"]
-        report = export_case(out_dir, regs, meshes, bite=bite, frame=frame, ct=self.case)
+        matrix, name = self.reference(reference) if frame == "reference" else (None, "")
+        report = export_case(out_dir, regs, meshes, bite=bite, frame=frame, ct=self.case, reference=matrix,
+                             reference_name=name)
         return {"out_dir": out_dir, "files": sorted(report["files"]), "notes": report["notes"],
-                "bite": report["ct_bite_vs_scans"]}
+                "bite": report["ct_bite_vs_scans"], "frame": report["frame"]}
 
     def state(self) -> dict:
         return {"ct": self.ct_info(), "scans": [self.scan_info(s) for s in self.scans],
-                "models_dir": self.models_dir, **self.structures_info()}
+                "models_dir": self.models_dir, **self.structures_info(), **self.landmarks_info()}

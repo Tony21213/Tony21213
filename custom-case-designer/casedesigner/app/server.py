@@ -159,10 +159,18 @@ def make_handler(session: Session, jobs: Jobs):
                                                                            progress))
             if len(p) >= 3 and p[0] == "structures" and p[-1] == "mesh":
                 return self.binary(s.structure_mesh("/".join(p[1:-1])))
+            if p == ["landmarks"]:
+                if method == "POST":
+                    b = self.body()
+                    return self.json(s.set_landmark(b["key"], b.get("point")))
+                return self.json(s.landmarks_info())
+            if p == ["landmarks", "suggest"] and method == "POST":
+                return self.json(s.suggest_landmarks())
             if p == ["export"] and method == "POST":
                 b = self.body()
                 return self.job("Экспорт", lambda progress: s.export(b["out_dir"], b.get("bite", "scan"),
-                                                                      b.get("frame", "exocad"), b.get("include")))
+                                                                      b.get("frame", "exocad"), b.get("include"),
+                                                                      b.get("reference")))
             self.json({"error": f"нет такого запроса: {method} /api/{'/'.join(p)}"}, 404)
 
     return Handler

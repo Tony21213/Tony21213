@@ -24,6 +24,12 @@
     ],
     "hypopharynx": [
       "hypopharynx"
+    ],
+    "auditory_canal_right": [
+      "auditory_canal_right"
+    ],
+    "auditory_canal_left": [
+      "auditory_canal_left"
     ]
   },
   "license": "Apache-2.0",

@@ -8,6 +8,7 @@ const STEPS = [
   { id: 'data', title: 'Данные', icon: 'data' },
   { id: 'align', title: 'Совмещение', icon: 'align' },
   { id: 'structures', title: 'Структуры', icon: 'layers' },
+  { id: 'landmarks', title: 'Ориентиры', icon: 'target' },
   { id: 'export', title: 'Экспорт', icon: 'export' },
 ];
 const JAWS = { upper: 'Верхняя', lower: 'Нижняя' };
@@ -20,6 +21,7 @@ const state = {
   step: 'data', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
   gizmo: null, stepMm: 0.1, stepDeg: 0.5, modelsDir: null, exportOpts: { bite: 'scan', frame: 'exocad' },
   exported: null, busy: false, groupsOpen: new Set(['Зубы']),
+  landmarks: [], planes: [], angles: {}, articulators: [], lmSel: 'Po_R', refPlane: 'frankfurt', refArt: null,
 };
 
 const app = {
@@ -30,6 +32,8 @@ const app = {
     slices.forEach((s) => s.refresh());
   },
   visibleKeys: () => [...state.scans.filter((s) => s.transform).map((s) => s.id), ...state.visible],
+  landmarkPoints: () => state.landmarks.filter((l) => l.point).map((l) => ({ ...l, selected: l.key === state.lmSel })),
+  placeLandmark: (p) => { if (state.step === 'landmarks') setLandmark(state.lmSel, p, true); },
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -118,6 +122,7 @@ async function openCt(kind) {
     for (const s of state.scans) { s.transform = null; s.registered = false; viewer.setVisible(s.id, false); }
     for (const s of state.structures) viewer.remove(s.key);
     state.structures = []; state.visible.clear();
+    applyLandmarks(await get('landmarks'));
     await Promise.all(slices.map((s) => s.setCt(state.ct)));
     app.setCursor(app.cursor);
     viewer.setMesh('ct_teeth', await mesh('ct/surface'), { color: '#e9e2d2', opacity: 0.9 });
@@ -250,8 +255,40 @@ async function doExport() {
   const paths = await choose('out', 'Папка для результата');
   if (!paths) return;
   await busy('Экспорт для exocad', async (progress) => {
-    state.exported = await run('export', { out_dir: paths[0], ...state.exportOpts, include: [...state.visible] }, progress);
+    const o = state.exportOpts;
+    const ref = o.frame === 'plane' ? `plane:${state.refPlane}` : o.frame === 'articulator' ? `articulator:${state.refArt}` : null;
+    state.exported = await run('export', { out_dir: paths[0], bite: o.bite, frame: ref ? 'reference' : o.frame, reference: ref,
+      include: [...state.visible] }, progress);
   });
+}
+
+function applyLandmarks(info) {
+  state.landmarks = info.landmarks;
+  state.planes = info.planes;
+  state.angles = info.angles;
+  state.articulators = info.articulators;
+  state.refArt ??= info.articulators[0]?.key;
+  for (const l of info.landmarks) {
+    if (l.point) viewer.setMarker(l.key, l.point, l.suggested ? '#f5b84b' : '#3ecf8e');
+    else viewer.remove(`lm:${l.key}`);
+  }
+  slices.forEach((v) => v.draw());
+}
+
+async function setLandmark(key, point, advance = false) {
+  const info = await post('landmarks', { key, point }).catch((e) => toast(e.message));
+  if (!info) return;
+  applyLandmarks(info);
+  if (advance && point) {  // к следующей непоставленной точке
+    const next = info.landmarks.find((l) => !l.point);
+    if (next) state.lmSel = next.key;
+  }
+  render();
+}
+
+async function suggestLandmarks() {
+  const info = await post('landmarks/suggest').catch((e) => toast(e.message));
+  if (info) { applyLandmarks(info); render(); }
 }
 
 // ---------- панели ----------
@@ -369,19 +406,47 @@ function renderExport() {
       <div class="seg"><button data-bite="scan" class="${o.bite === 'scan' ? 'on' : ''}">Прикус сканов</button><button data-bite="ct" class="${o.bite === 'ct' ? 'on' : ''}">Как на КТ</button></div>
       <p class="muted" style="margin:8px 2px 0;font-size:12px">${o.bite === 'scan' ? 'Нижняя челюсть, нижние зубы и канал из КТ переезжают к нижнему скану.' : 'Всё стоит как на КТ; сканы переносятся на свои челюсти.'}</p>
       <div class="label">Система координат</div>
-      <div class="seg"><button data-frame="exocad" class="${o.frame === 'exocad' ? 'on' : ''}">Сканера (exocad)</button>
-        <button data-frame="dicom" class="${o.frame === 'dicom' ? 'on' : ''}" ${o.bite === 'scan' ? 'disabled' : ''}>DICOM</button></div></div>
+      <div class="seg"><button data-frame="exocad" class="${o.frame === 'exocad' ? 'on' : ''}">Сканера</button>
+        <button data-frame="plane" class="${o.frame === 'plane' ? 'on' : ''}">Плоскость</button>
+        <button data-frame="articulator" class="${o.frame === 'articulator' ? 'on' : ''}">Артикулятор</button>
+        <button data-frame="dicom" class="${o.frame === 'dicom' ? 'on' : ''}" ${o.bite === 'scan' ? 'disabled' : ''}>DICOM</button></div>
+      ${o.frame === 'plane' ? `<select data-refplane style="width:100%;margin-top:8px">${state.planes.map((p) => `<option value="${p.key}" ${p.key === state.refPlane ? 'selected' : ''} ${p.ready ? '' : 'disabled'}>${p.name}${p.ready ? '' : ' — нет точек'}</option>`).join('')}</select>` : ''}
+      ${o.frame === 'articulator' ? `<select data-refart style="width:100%;margin-top:8px">${state.articulators.map((a) => `<option value="${a.key}" ${a.key === state.refArt ? 'selected' : ''}>${a.maker} ${a.name}${a.calibrated ? '' : ' (не откалиброван)'}</option>`).join('')}</select>
+        <p class="muted" style="margin:8px 2px 0;font-size:11.5px">По монтажной плоскости артикулятора. Без калибровки по образцу из exocad положение относительно его столика приблизительное.</p>` : ''}
+      ${o.frame === 'plane' || o.frame === 'articulator' ? '<p class="muted" style="margin:8px 2px 0;font-size:11.5px">Начало — середина шарнирной оси (мыщелки), Z — вверх по нормали плоскости, X — вправо пациента, Y — вперёд.</p>' : ''}</div>
     <button class="btn primary wide" data-a="export" ${ready ? '' : 'disabled'}>${icons.export}Экспортировать</button>
     ${ready ? '' : '<p class="muted" style="margin:8px 2px">Сначала совместите хотя бы один скан.</p>'}${result}`;
 }
 
-const RENDER = { data: renderData, align: renderAlign, structures: renderStructures, export: renderExport };
+function renderLandmarks() {
+  const planes = state.planes.map((p) => `<div class="row" style="margin-top:6px">
+      <span class="badge ${p.ready ? 'ok' : ''}">${p.ready ? 'готова' : 'нет точек'}</span><span class="grow">${p.name}</span></div>
+      ${p.ready ? '' : `<div class="muted" style="font-size:11px;margin:2px 0 0 4px">нужно: ${p.missing.join(', ')}</div>`}`).join('');
+  const angles = Object.entries(state.angles).map(([k, v]) => `<span>${k.replace('/', ' / ')}</span><b>${fmt(v, 1)}°</b>`).join('');
+  const rows = state.landmarks.map((l) => {
+    const st = l.point ? (l.suggested ? 'warn' : 'ok') : '';
+    return `<div class="scan-row ${l.key === state.lmSel ? 'sel' : ''}" data-lm="${l.key}" title="${l.hint}">
+      <i class="dot" style="background:${st === 'ok' ? 'var(--ok)' : st === 'warn' ? 'var(--warn)' : 'var(--line-2)'}"></i>
+      <span class="name">${l.name}${l.suggested ? ' <span class="badge warn">проверьте</span>' : ''}</span>
+      ${l.point ? `<button class="btn icon ghost" data-lmgo="${l.key}" title="Показать на срезах">${icons.eye}</button>
+      <button class="btn icon ghost" data-lmdel="${l.key}" title="Убрать">${icons.trash}</button>` : ''}</div>`;
+  }).join('');
+  return `<h2>Ориентиры и плоскости</h2><p class="lead">Точки для Франкфуртской горизонтали, HIP, плоскости Кемпера и шарнирной оси. Выберите точку и дважды щёлкните её место на срезе.</p>
+    <div class="row" style="margin-bottom:10px"><button class="btn primary grow" data-lmplace>${icons.target}В перекрестие</button>
+      <button class="btn grow" data-lmsuggest ${state.structures.length ? '' : 'disabled'} title="Мыщелки и порионы по сегментации">${icons.refine}Предложить</button></div>
+    <div class="card">${rows}</div>
+    <div class="card"><div class="card-head">${icons.layers}<h3>Плоскости</h3></div>${planes}
+      ${angles ? `<div class="label">Углы между плоскостями</div><div class="kv">${angles}</div>` : ''}</div>`;
+}
+
+const RENDER = { data: renderData, align: renderAlign, structures: renderStructures, landmarks: renderLandmarks, export: renderExport };
 
 function render() {
   const done = {
     data: !!state.ct && state.scans.length > 0,
     align: state.scans.length > 0 && state.scans.every((s) => s.registered),
     structures: state.structures.length > 0,
+    landmarks: state.planes.some((p) => p.ready),
     export: !!state.exported,
   };
   $('#rail').innerHTML = STEPS.map((s) => `<button class="step ${s.id === state.step ? 'active' : ''} ${done[s.id] ? 'done' : ''}" data-step="${s.id}">
@@ -402,6 +467,15 @@ function render() {
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
+  const lm = e.target.closest('[data-lm],[data-lmgo],[data-lmdel],[data-lmplace],[data-lmsuggest]');
+  if (lm && !lm.disabled) {
+    const d = lm.dataset;
+    if (d.lmgo) { app.setCursor([...state.landmarks.find((l) => l.key === d.lmgo).point]); return; }
+    if (d.lmdel) return setLandmark(d.lmdel, null);
+    if ('lmplace' in d) return setLandmark(state.lmSel, [...app.cursor], true);
+    if ('lmsuggest' in d) return suggestLandmarks();
+    if (d.lm) { state.lmSel = d.lm; return render(); }
+  }
   const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-registerall],[data-gizmo],[data-nudge],[data-refine],[data-reset],[data-accept],[data-toggle],[data-groupcheck],[data-group],[data-bite],[data-frame],[data-view],[data-heat]');
   if (!t || t.disabled) return;
   const d = t.dataset;
@@ -422,7 +496,12 @@ document.addEventListener('click', async (e) => {
   }
   if (d.group) { state.groupsOpen.has(d.group) ? state.groupsOpen.delete(d.group) : state.groupsOpen.add(d.group); return render(); }
   if (d.bite) { state.exportOpts.bite = d.bite; if (d.bite === 'scan') state.exportOpts.frame = 'exocad'; return render(); }
-  if (d.frame) { state.exportOpts.frame = d.frame; return render(); }
+  if (d.frame) {
+    if ((d.frame === 'plane' || d.frame === 'articulator') && !state.planes.some((p) => p.ready))
+      toast('Сначала поставьте ориентиры (шаг «Ориентиры»): нужна хотя бы одна плоскость и оба мыщелка', 'info');
+    state.exportOpts.frame = d.frame;
+    return render();
+  }
   if (d.view) return viewer.fit(d.view);
   if ('heat' in d) { state.heat = !state.heat; for (const s of state.scans) await showScan(s); return render(); }
   if (d.select && !e.target.closest('select,button')) {
@@ -440,6 +519,8 @@ document.addEventListener('change', (e) => {
   if (d.jaw) setJaw(d.jaw, e.target.value);
   if ('stepmm' in d) state.stepMm = Number(e.target.value);
   if ('stepdeg' in d) state.stepDeg = Number(e.target.value);
+  if ('refplane' in d) state.refPlane = e.target.value;
+  if ('refart' in d) state.refArt = e.target.value;
 });
 
 document.addEventListener('keydown', (e) => {
@@ -454,6 +535,7 @@ document.addEventListener('keydown', (e) => {
 (async () => {
   const s = await get('state');
   state.modelsDir = s.models_dir;
+  applyLandmarks(s);
   render();
   if (s.ct) {
     state.ct = s.ct;
@@ -477,6 +559,7 @@ document.addEventListener('keydown', (e) => {
     }));
     viewer.setVisible('ct_teeth', false);
   }
+  applyLandmarks(s);
   if (s.ct) app.setCursor(app.cursor);
   viewer.fit('front');
   render();

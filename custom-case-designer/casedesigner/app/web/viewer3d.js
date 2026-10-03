@@ -142,6 +142,21 @@ export class Viewer3D {
     mesh.material.needsUpdate = true;
   }
 
+  // Ориентир: маленькая сфера поверх всего.
+  setMarker(key, point, color) {
+    const id = `lm:${key}`;
+    let m = this.objects.get(id);
+    if (!m) {
+      m = new THREE.Mesh(new THREE.SphereGeometry(1.2, 20, 14),
+        new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 }));
+      m.renderOrder = 10;
+      this.scene.add(m);
+      this.objects.set(id, m);
+    }
+    m.material.color.set(color);
+    m.position.set(...point);
+  }
+
   setVisible(key, on) {
     const mesh = this.objects.get(key);
     if (mesh) mesh.visible = on;

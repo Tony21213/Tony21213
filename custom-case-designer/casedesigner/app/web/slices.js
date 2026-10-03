@@ -27,6 +27,10 @@ export class SliceView {
     new ResizeObserver(() => this.draw()).observe(el);
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     this.canvas.addEventListener('click', (e) => this.onClick(e));
+    this.canvas.addEventListener('dblclick', (e) => {
+      const p = this.geometry && this.toWorld(e.offsetX, e.offsetY);
+      if (p) this.app.placeLandmark(p);
+    });
   }
 
   async setCt(info) {
@@ -125,6 +129,20 @@ export class SliceView {
         ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
       }
       ctx.stroke();
+    }
+    // ориентиры рядом с плоскостью среза
+    for (const l of this.app.landmarkPoints?.() || []) {
+      const d = Math.abs(l.point[g.normal_axis] - this.pos);
+      if (d > 3) continue;
+      const [px, py] = this.toCanvas(l.point[g.u_axis], l.point[g.v_axis]);
+      ctx.globalAlpha = 1 - d / 4;
+      ctx.fillStyle = l.suggested ? '#f5b84b' : '#3ecf8e';
+      ctx.strokeStyle = l.selected ? '#ffffff' : 'rgba(0,0,0,.6)';
+      ctx.lineWidth = l.selected ? 2 : 1;
+      ctx.beginPath(); ctx.arc(px, py, l.selected ? 5 : 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.font = '11px "Segoe UI", system-ui';
+      ctx.fillText(l.key.replace('_', ' '), px + 7, py - 6);
+      ctx.globalAlpha = 1;
     }
     // перекрестие: положения двух других срезов
     const cur = this.app.cursor;
