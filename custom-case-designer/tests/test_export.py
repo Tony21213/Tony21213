@@ -45,17 +45,45 @@ def test_export_in_ct_frame(tmp_path, jaw_ct, two_scans):
     assert saved["scans"]["upper"]["jaw"] == "upper"
 
 
-def test_export_in_scan_frame(tmp_path, jaw_ct, two_scans):
+def test_exocad_frame_separate_scans(tmp_path, jaw_ct, two_scans):
+    """Сканы выгружены каждый в своих координатах: первый остаётся как есть, второй ставится по КТ."""
     regs, truth = two_scans
     surfaces = jaw_ct.surfaces(step=2)
-    export_case(str(tmp_path), regs, surfaces, frame="scan")
-    # Первый скан остаётся на месте, остальное переносится в его координаты.
+    report = export_case(str(tmp_path), regs, surfaces)
     upper, lower = regs
     assert np.abs(load(tmp_path / "upper.stl") - per_triangle(upper.scan.vertices, upper.scan.faces)).max() < 1e-4
     to_scan = np.linalg.inv(upper.transform)
     teeth = surfaces["ct_teeth"]
     assert np.abs(load(tmp_path / "ct_teeth.stl") - per_triangle(apply(to_scan, teeth.vertices), teeth.faces)).max() < 1e-3
     assert np.abs(load(tmp_path / "lower.stl") - per_triangle(apply(to_scan, truth["lower"]), lower.scan.faces)).max() < 0.2
+    assert report["scans"]["lower"]["placement"] == "ct"
+
+
+def shared_session(jaw_ct, lower_offset=(0.0, 0.0, 0.0)):
+    """Оба скана из одной сессии сканера: общие координаты, прикус со сканера."""
+    pose = phantom.scan_pose(4)
+    regs = []
+    for jaw, offset in (("upper", (0.0, 0.0, 0.0)), ("lower", lower_offset)):
+        verts, faces = phantom.make_scan(jaw)
+        regs.append(jaw_ct.register(Scan(jaw, apply(pose, verts + offset), faces), jaw=jaw))
+    return regs
+
+
+def test_exocad_frame_shared_session(tmp_path, jaw_ct):
+    regs = shared_session(jaw_ct)
+    report = export_case(str(tmp_path), regs)
+    for reg in regs:  # оба скана — ровно как пришли со сканера
+        assert np.abs(load(tmp_path / f"{reg.jaw}.stl") - per_triangle(reg.scan.vertices, reg.scan.faces)).max() < 1e-4
+    lower = report["scans"]["lower"]
+    assert lower["placement"] == "scanner" and lower["scanner_vs_ct_mm"] < 0.05 and not lower["warnings"]
+
+
+def test_exocad_frame_bite_mismatch_warns(tmp_path, jaw_ct):
+    regs = shared_session(jaw_ct, lower_offset=(0.0, 0.0, -0.3))  # прикус на сканере ошибся на 0.3 мм
+    lower = export_case(str(tmp_path), regs)["scans"]["lower"]
+    assert lower["placement"] == "scanner"
+    assert lower["scanner_vs_ct_mm"] == pytest.approx(0.3, abs=0.05)
+    assert any("Прикус" in w for w in lower["warnings"])
 
 
 def test_cli(tmp_path):
@@ -70,6 +98,6 @@ def test_cli(tmp_path):
 
     out = tmp_path / "out"
     assert main(["register", str(tmp_path / "ct.nii.gz"), "--scan", str(tmp_path / "lower_scan.stl"),
-                 "--jaw", "lower_scan=lower", "-o", str(out)]) == 0
+                 "--jaw", "lower_scan=lower", "--frame", "ct", "-o", str(out)]) == 0
     assert np.abs(load(out / "lower_scan.stl") - per_triangle(verts, faces)).max() < 0.15
     assert main(["register", str(tmp_path / "ct.nii.gz"), "--scan", "missing.stl", "-o", str(out)]) == 1

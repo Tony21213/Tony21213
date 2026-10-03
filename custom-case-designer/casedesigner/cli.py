@@ -92,7 +92,12 @@ def cmd_register(args):
         meshes.update(_segment(vol, args))
     if args.ct_surfaces:
         meshes.update(ct.surfaces())
-    export_case(args.out, registrations, meshes, frame=args.frame)
+    report = export_case(args.out, registrations, meshes, frame=args.frame)
+    for name, info in report["scans"].items():
+        if info.get("placement") == "ct":
+            print(f"{name}: скан был в своей системе координат — поставлен по КТ")
+        for warning in info["warnings"][len(next(r for r in registrations if r.scan.name == name).warnings):]:
+            print(f"  ВНИМАНИЕ: {warning}")
     print(f"Готово за {time.perf_counter() - started:.0f} с: {args.out}")
 
 
@@ -115,8 +120,9 @@ def main(argv=None):
                      help="какая это челюсть (по умолчанию определяется сама)")
     reg.add_argument("--pairs", action="append", metavar="СКАН=ФАЙЛ",
                      help="пары точек для начального положения, если автоматика не справилась")
-    reg.add_argument("--frame", choices=("ct", "scan"), default="ct",
-                     help="система координат результата: ct — DICOM, scan — первого скана")
+    reg.add_argument("--frame", choices=("exocad", "ct"), default="exocad",
+                     help="система координат результата: exocad — координаты сканов, в которых их открывает "
+                          "exocad (по умолчанию); ct — пациента из DICOM")
     reg.add_argument("--ct-surfaces", action="store_true", help="также выгрузить зубы и кость из КТ (по порогам)")
     reg.add_argument("-o", "--out", required=True, help="папка результата")
     reg.add_argument("--memory", help="файл памяти совмещений: выученные поправки для аппаратов КТ")

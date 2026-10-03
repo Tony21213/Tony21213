@@ -178,23 +178,35 @@ def deviation_colors(deviation: np.ndarray) -> np.ndarray:
     return colors
 
 
+# Сканы одной сессии сканера стоят в общей системе координат: если по КТ второй скан
+# оказывается в пределах этого расстояния от своего исходного положения, координаты общие.
+SAME_FRAME_MM = 2.0
+# Прикус по сканеру и по КТ расходится больше этого — предупреждаем.
+BITE_WARN_MM = 0.2
+
+
 def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict[str, Mesh] | None = None,
-                frame: str = "ct") -> dict:
+                frame: str = "exocad") -> dict:
     """Пишет все сетки в одной системе координат и файл с матрицами.
 
     ct_meshes — сетки из КТ (структуры сегментации или поверхности по порогам),
     ключ — путь файла без расширения, например "mandible" или "teeth/tooth_36".
 
-    frame="ct" — координаты пациента из DICOM (мм, LPS);
-    frame="scan" — координаты первого скана: удобно, когда дальше работа
-    идёт в CAD, где этот скан уже открыт.
+    frame="exocad" — координаты сканов, как они пришли со сканера: в них же
+    сканы открывает exocad, поэтому выгруженные КТ и сегменты встают там
+    рядом со сканами на свои места. Сканы пишутся без изменений, КТ — через
+    совмещение с первым сканом. Если сканы из одной сессии (общие
+    координаты, прикус со сканера), прикус сверяется с КТ; если каждый скан
+    в своих координатах, остальные ставятся по КТ.
+    frame="ct" — координаты пациента из DICOM (мм, LPS).
     """
-    if frame not in ("ct", "scan"):
-        raise ValueError("frame должен быть ct или scan")
+    if frame not in ("exocad", "ct"):
+        raise ValueError("frame должен быть exocad или ct")
     if not registrations:
         raise ValueError("нет совмещённых сканов")
+    ref = registrations[0]
+    to_out = np.linalg.inv(ref.transform) if frame == "exocad" else np.eye(4)
     os.makedirs(out_dir, exist_ok=True)
-    to_out = np.eye(4) if frame == "ct" else np.linalg.inv(registrations[0].transform)
 
     written = {}
 
@@ -207,25 +219,42 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
         mesh.export(path)
         written[name + suffix] = source_to_out
 
+    scans = {}
     for reg in registrations:
+        info = {"jaw": reg.jaw, "scan_to_ct": reg.transform.round(9).tolist(), "fit": reg.stats,
+                "edge_shift_mm": round(reg.edge_shift, 4), "warnings": list(reg.warnings),
+                "segments": [vars(s) for s in reg.segments]}
         M = to_out @ reg.transform
+        if frame == "exocad" and reg is not ref:
+            # Где скан оказался бы по КТ относительно опорного — против того, где он стоит сам.
+            gap = float(np.linalg.norm(apply(M, reg.scan.vertices) - reg.scan.vertices, axis=1).max())
+            info["scanner_vs_ct_mm"] = round(gap, 4)
+            if gap <= SAME_FRAME_MM:
+                M = np.eye(4)  # общие координаты со сканера — скан остаётся как есть
+                info["placement"] = "scanner"
+                if gap > BITE_WARN_MM:
+                    info["warnings"].append(
+                        f"Прикус по сканеру и по КТ расходится на {gap:.2f} мм: проверьте регистрацию "
+                        "прикуса на сканере или совмещение со КТ.")
+            else:
+                info["placement"] = "ct"  # скан был в своих координатах — поставлен по КТ
+        elif frame == "exocad":
+            M = np.eye(4)
+            info["placement"] = "scanner"
         write(reg.scan.name, reg.scan.vertices, reg.scan.faces, M)
         write(reg.scan.name + "_deviation", reg.scan.vertices, reg.scan.faces, M,
               deviation_colors(reg.deviation), suffix=".ply")
+        scans[reg.scan.name] = info
     for name, mesh in (ct_meshes or {}).items():
         if len(mesh.faces):
             write(name, mesh.vertices, mesh.faces, to_out)
 
     report = {
-        "frame": "DICOM patient coordinates, mm (LPS)" if frame == "ct"
-                 else f"coordinates of scan {registrations[0].scan.name}, mm",
+        "frame": f"scanner coordinates of {ref.scan.name} (as opened in exocad), mm" if frame == "exocad"
+                 else "DICOM patient coordinates, mm (LPS)",
+        "ct_to_output": to_out.round(9).tolist(),
         "files": {name: {"source_to_output": M.round(9).tolist()} for name, M in written.items()},
-        "scans": {
-            reg.scan.name: {"jaw": reg.jaw, "scan_to_ct": reg.transform.round(9).tolist(), "fit": reg.stats,
-                            "edge_shift_mm": round(reg.edge_shift, 4), "warnings": reg.warnings,
-                            "segments": [vars(s) for s in reg.segments]}
-            for reg in registrations
-        },
+        "scans": scans,
     }
     with open(os.path.join(out_dir, "case.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
