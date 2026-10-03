@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Custom Case Designer</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark"></div>Custom Case Designer</div>
+    <div class="case-chip" id="caseChip">Кейс не открыт</div>
+    <div class="spacer"></div>
+    <div class="job" id="job">
+      <div class="spinner"></div>
+      <div class="text"><div class="title"></div><div class="msg"></div><div class="bar"><i></i></div></div>
+    </div>
+  </header>
+
+  <nav class="rail" id="rail"></nav>
+
+  <main class="main">
+    <section class="view v3d" id="view3d">
+      <div class="view-label"><b>3D</b></div>
+      <div class="view-tools" id="tools3d"></div>
+      <div class="legend" id="legend" hidden></div>
+      <div class="empty" id="empty3d"></div>
+    </section>
+    <section class="view" data-axis="axial"></section>
+    <section class="view" data-axis="coronal"></section>
+    <section class="view" data-axis="sagittal"></section>
+  </main>
+
+  <aside class="panel" id="panel"></aside>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

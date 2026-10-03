@@ -3,16 +3,23 @@ name = "custom-case-designer"
 version = "0.1.0"
 description = "КТ, сканы челюстей и сегментация в единых координатах"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "scipy>=1.10", "scikit-image>=0.21", "SimpleITK>=2.3", "trimesh>=4.0", "onnxruntime>=1.17"]
+dependencies = ["numpy>=1.24", "scipy>=1.10", "scikit-image>=0.21", "SimpleITK>=2.3", "trimesh>=4.0", "onnxruntime>=1.17", "pillow>=10"]
+
+[project.gui-scripts]
+custom-case-designer = "casedesigner.app.main:main"
 
 [project.optional-dependencies]
+app = ["pywebview>=5"]
 test = ["pytest", "onnx"]
 
 [project.scripts]
 casedesigner = "casedesigner.cli:main"
 
 [tool.setuptools]
-packages = ["casedesigner"]
+packages = ["casedesigner", "casedesigner.app"]
+
+[tool.setuptools.package-data]
+"casedesigner.app" = ["web/*", "web/vendor/three/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
