@@ -22,6 +22,7 @@ class Volume:
     spacing: np.ndarray  # размер вокселя по осям индекса x, y, z, мм
     origin: np.ndarray  # центр вокселя (0, 0, 0) в мм пациента
     direction: np.ndarray  # 3×3, столбцы — направления осей индекса в мм пациента
+    device: str = ""  # производитель и модель аппарата из DICOM, если есть
 
     @property
     def index_to_world(self) -> np.ndarray:
@@ -61,7 +62,17 @@ class Volume:
         return np.linalg.solve(self.index_to_world[:3, :3].T, g.T).T
 
 
-def _from_sitk(image: sitk.Image) -> Volume:
+DEVICE_TAGS = ("0008|0070", "0008|1090")  # Manufacturer, Manufacturer's Model Name
+
+
+def _device(get) -> str:
+    """«Производитель Модель» из тегов DICOM; get(tag) возвращает значение или None."""
+    return " ".join(v.strip() for v in (get(t) for t in DEVICE_TAGS) if v and v.strip())
+
+
+def _from_sitk(image: sitk.Image, device: str | None = None) -> Volume:
+    if device is None:
+        device = _device(lambda t: image.GetMetaData(t) if image.HasMetaDataKey(t) else None)
     if image.GetDimension() == 4:
         size = list(image.GetSize())
         size[3] = 0
@@ -78,6 +89,7 @@ def _from_sitk(image: sitk.Image) -> Volume:
         spacing=spacing,
         origin=np.array(image.GetOrigin(), float),
         direction=np.array(image.GetDirection(), float).reshape(3, 3),
+        device=device,
     )
 
 
@@ -92,22 +104,24 @@ def _largest_series(folder: str):
     return best
 
 
-def _read_dicom_folder(folder: str) -> sitk.Image:
+def _read_dicom_folder(folder: str) -> Volume:
     files = _largest_series(folder)
     if not files:
         raise ValueError(f"{folder}: DICOM-серия не найдена")
     if len(files) == 1:
-        return sitk.ReadImage(files[0])  # многокадровый .dcm
+        return _from_sitk(sitk.ReadImage(files[0]))  # многокадровый .dcm
     reader = sitk.ImageSeriesReader()
     reader.SetFileNames(files)
-    return reader.Execute()
+    reader.MetaDataDictionaryArrayUpdateOn()
+    image = reader.Execute()
+    return _from_sitk(image, _device(lambda t: reader.GetMetaData(0, t) if reader.HasMetaDataKey(0, t) else None))
 
 
 def load_volume(path) -> Volume:
     """КТ из папки DICOM, одного .dcm, .zip или NIfTI/MHA/NRRD."""
     path = os.fspath(path)
     if os.path.isdir(path):
-        return _from_sitk(_read_dicom_folder(path))
+        return _read_dicom_folder(path)
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
     if zipfile.is_zipfile(path):
@@ -119,11 +133,11 @@ def load_volume(path) -> Volume:
                         os.makedirs(os.path.dirname(target), exist_ok=True)
                         with z.open(member) as src, open(target, "wb") as dst:
                             dst.write(src.read())
-            return _from_sitk(_read_dicom_folder(tmp))
+            return _read_dicom_folder(tmp)
     if path.lower().endswith(VOLUME_SUFFIXES):
         return _from_sitk(sitk.ReadImage(path))
     # Один файл DICOM: многокадровый — читаем как есть, срез серии — берём всю папку.
     image = sitk.ReadImage(path)
     if image.GetDimension() >= 3 and min(image.GetSize()[:3]) > 1:
         return _from_sitk(image)
-    return _from_sitk(_read_dicom_folder(os.path.dirname(os.path.abspath(path))))
+    return _read_dicom_folder(os.path.dirname(os.path.abspath(path)))

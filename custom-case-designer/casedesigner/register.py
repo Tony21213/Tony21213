@@ -107,6 +107,21 @@ def axis_angle(axis: np.ndarray, angle: float) -> np.ndarray:
     return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * K @ K
 
 
+# Доля точек скана на коронках, ниже которой положение по центру дуги считается неудачным.
+PARTIAL_SCORE = 0.3
+
+
+def _spread(points: np.ndarray, k: int, seed: int = 0) -> np.ndarray:
+    """k точек, равномерно разбросанных по набору (выбор самой дальней от уже выбранных)."""
+    rng = np.random.default_rng(seed)
+    chosen = [points[rng.integers(len(points))]]
+    d = np.linalg.norm(points - chosen[0], axis=1)
+    for _ in range(k - 1):
+        chosen.append(points[np.argmax(d)])
+        d = np.minimum(d, np.linalg.norm(points - chosen[-1], axis=1))
+    return np.array(chosen)
+
+
 def occlusal_init(src: np.ndarray, src_normals: np.ndarray, target: Target, occlusal: np.ndarray,
                   angle_step: float = 15.0, seed: int = 0):
     """Грубое совмещение скана с коронками одной челюсти без пар точек.
@@ -115,23 +130,78 @@ def occlusal_init(src: np.ndarray, src_normals: np.ndarray, target: Target, occl
     нормаль смотрит туда же, куда жевательные поверхности. Скан поворачивается
     этой стороной к челюсти в КТ (occlusal — направление её жевательных
     поверхностей), затем перебирается поворот вокруг этой оси, и каждый
-    вариант уточняется коротким ICP по коронкам. Возвращает лучшую матрицу
-    и долю точек скана, легших на коронки.
+    вариант уточняется коротким ICP по коронкам. Если скан меньше дуги
+    (квадрант, сегмент), перебирается и место на дуге. Возвращает лучшую
+    матрицу и долю точек скана, легших на коронки.
     """
     rng = np.random.default_rng(seed)
     pick = rng.choice(len(src), min(len(src), 4000), replace=False)
     sub = src[pick]
     view = src_normals.sum(axis=0)
+    view /= np.linalg.norm(view)
     R0 = rotation_between(view, occlusal)
-    src_top = src[src_normals @ (view / np.linalg.norm(view)) > 0.5].mean(axis=0)
-    tgt_top = target.points[target.normals @ occlusal > 0.5].mean(axis=0)
+    src_top = src[src_normals @ view > 0.5].mean(axis=0)
+    tgt_top = target.points[target.normals @ occlusal > 0.5]
 
-    best = (-1.0, np.eye(4))
-    for angle in np.arange(0.0, 360.0, angle_step):
-        R = axis_angle(occlusal, np.radians(angle)) @ R0
-        T0 = rigid(R, tgt_top - R @ src_top)
-        T, _ = icp(sub, target, T0, schedule=((6.0, 10), (3.0, 10), (1.5, 10), (0.8, 10)), keep=0.7)
-        score = fit_score(sub, target, T)
-        if score > best[0]:
-            best = (score, T)
+    def search(centres, best):
+        for centre in centres:
+            for angle in np.arange(0.0, 360.0, angle_step):
+                R = axis_angle(occlusal, np.radians(angle)) @ R0
+                T0 = rigid(R, centre - R @ src_top)
+                T, _ = icp(sub, target, T0, schedule=((6.0, 10), (3.0, 10), (1.5, 10), (0.8, 10)), keep=0.7)
+                score = fit_score(sub, target, T)
+                if score > best[0]:
+                    best = (score, T)
+        return best
+
+    best = search(tgt_top.mean(axis=0)[None], (-1.0, np.eye(4)))
+    # Скан меньше дуги (квадрант, сегмент) или плохо лёг по центру — пробуем разные места на дуге.
+    # Габарит скана завышен десной, поэтому порог мягкий.
+    flat = np.eye(3) - np.outer(occlusal, occlusal)
+    span = lambda pts: np.ptp(pts @ flat.T, axis=0).max()
+    if span(apply(rigid(R0, np.zeros(3)), src)) < 0.85 * span(tgt_top) or best[0] < PARTIAL_SCORE:
+        best = search(_spread(tgt_top, 10, seed), best)
     return best[1], best[0]
+
+
+def edge_offset(src: np.ndarray, target: Target, T: np.ndarray, prior: float = 0.0, prior_weight: float = 0.0,
+                max_dist: float = 0.3, iterations: int = 30, keep: float = 0.9):
+    """Сдвиг границы коронок вдоль нормали, найденный вместе с положением скана.
+
+    Если граница на КТ лежит на b мм снаружи настоящей поверхности, отклонение
+    точки скана от неё — около −b. Обычный ICP частично прячет это сдвигом
+    скана; здесь b — седьмой неизвестный рядом с поворотом и сдвигом:
+    r + (p × n)·ω + n·t + b → 0. Нормали коронок смотрят во все стороны,
+    поэтому b отделим от сдвига.
+
+    prior и prior_weight — выученный для аппарата сдвиг и его вес в
+    «точках скана»: на неполном скане (b хуже отделяется от сдвига) он
+    удерживает оценку. Возвращает (b, матрицу при этом b).
+    """
+    T = T.copy()
+    b = float(prior)
+    for _ in range(iterations):
+        p = apply(T, src)
+        dist, j = target.tree.query(p, distance_upper_bound=max_dist)
+        idx = np.flatnonzero(np.isfinite(dist))
+        if len(idx) < 7:
+            break
+        q, n = target.points[j[idx]], target.normals[j[idx]]
+        r = np.einsum("ij,ij->i", p[idx] - q, n)  # отклонение без учёта сдвига границы
+        if keep < 1:
+            sel = np.abs(r + b) <= np.quantile(np.abs(r + b), keep)
+            idx, q, n, r = idx[sel], q[sel], n[sel], r[sel]
+        A = np.hstack([np.cross(p[idx], n), n, np.ones((len(idx), 1))])
+        rhs = -r
+        if prior_weight > 0:
+            w = np.sqrt(prior_weight)
+            A = np.vstack([A, [0, 0, 0, 0, 0, 0, w]])
+            rhs = np.append(rhs, w * prior)
+        x = np.linalg.lstsq(A, rhs, rcond=None)[0]
+        omega, t, b = x[:3], x[3:6], float(x[6])
+        angle = np.linalg.norm(omega)
+        R = axis_angle(omega, angle) if angle > 1e-12 else np.eye(3)
+        T = rigid(R, t) @ T
+        if angle < 1e-7 and np.linalg.norm(t) < 1e-7:
+            break
+    return b, T

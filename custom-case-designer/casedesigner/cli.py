@@ -13,6 +13,7 @@ import numpy as np
 import trimesh
 
 from .fusion import JAWS, CaseCT, Scan, export_case
+from .learning import AlignmentMemory
 from .segment import Segmenter
 from .volume import load_volume
 
@@ -67,7 +68,11 @@ def cmd_register(args):
 
     print("Читаю КТ…")
     vol = load_volume(args.ct)
-    ct = CaseCT(vol)
+    memory = AlignmentMemory(args.memory) if args.memory else None
+    prior = memory.prior(vol.device) if memory else (0.0, 0.0)
+    if prior[1]:
+        print(f"Аппарат {vol.device or 'не указан'}: выученный сдвиг границы эмали {prior[0]:+.3f} мм")
+    ct = CaseCT(vol, *prior)
     registrations = []
     for path in args.scan:
         scan = Scan.load(path)
@@ -77,6 +82,10 @@ def cmd_register(args):
         print(f"{scan.name}: {reg.jaw} челюсть, на коронках {100 * s['matched_fraction']:.0f}% точек, "
               f"отклонение в среднем {s.get('mean_mm', float('nan')):.3f} мм, "
               f"90% точек ближе {s.get('p90_mm', float('nan')):.3f} мм")
+        for warning in reg.warnings:
+            print(f"  ВНИМАНИЕ: {warning}")
+        if memory and args.accept:
+            memory.record(vol.device, reg, reg)
         registrations.append(reg)
     meshes = {}
     if args.models:
@@ -110,6 +119,9 @@ def main(argv=None):
                      help="система координат результата: ct — DICOM, scan — первого скана")
     reg.add_argument("--ct-surfaces", action="store_true", help="также выгрузить зубы и кость из КТ (по порогам)")
     reg.add_argument("-o", "--out", required=True, help="папка результата")
+    reg.add_argument("--memory", help="файл памяти совмещений: выученные поправки для аппаратов КТ")
+    reg.add_argument("--accept", action="store_true",
+                     help="результат проверен и принят — запомнить его в --memory для обучения")
     _segment_options(reg, required=False)
     reg.set_defaults(func=cmd_register)
 

@@ -93,8 +93,12 @@ def gum_sdf(p):
 
 
 @functools.lru_cache(maxsize=None)
-def make_volume(spacing=0.3, rotation_deg=10.0, noise=25.0, blur=0.6, seed=0) -> Volume:
-    """КЛКТ фантома: повёрнутая сетка вокселей с ненулевым началом координат."""
+def make_volume(spacing=0.3, rotation_deg=10.0, noise=25.0, blur=0.6, seed=0, tooth_dilation=0.0) -> Volume:
+    """КЛКТ фантома: повёрнутая сетка вокселей с ненулевым началом координат.
+
+    tooth_dilation — на сколько мм граница зубов на КТ лежит снаружи настоящей
+    (так ведут себя некоторые аппараты); скан при этом строится по настоящей.
+    """
     from scipy import ndimage
 
     a = np.radians(rotation_deg)
@@ -112,7 +116,7 @@ def make_volume(spacing=0.3, rotation_deg=10.0, noise=25.0, blur=0.6, seed=0) ->
     img = AIR + (SOFT - AIR) * occ(np.minimum(gum_sdf(world), gum_sdf(up)))
     b = occ(np.minimum(bone_sdf(world), bone_sdf(up)))
     img = img * (1 - b) + BONE * b
-    t = occ(np.minimum(teeth_sdf(world), teeth_sdf(up, UPPER_VARIANT)))
+    t = occ(np.minimum(teeth_sdf(world), teeth_sdf(up, UPPER_VARIANT)) - tooth_dilation)
     img = img * (1 - t) + TOOTH * t
     img = ndimage.gaussian_filter(img.reshape(vol.data.shape), blur)
     img += np.random.default_rng(seed).normal(0, noise, img.shape)
