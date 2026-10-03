@@ -6,3 +6,4 @@ trimesh>=4.0
 onnxruntime>=1.17  # на Windows для видеокарты: onnxruntime-directml
 pillow>=10
 pywebview>=5  # окно приложения; без него интерфейс открывается в браузере
+matplotlib>=3.7  # необязательно: картинка анализа движений (motion -o)

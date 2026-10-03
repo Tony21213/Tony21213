@@ -2,9 +2,11 @@
 
     python -m casedesigner register КТ --scan upper.stl --scan lower.stl --models модели -o результат
     python -m casedesigner segment КТ --models модели -o результат
+    python -m casedesigner motion выгрузка_P-ART.zip -o отчёт
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -12,6 +14,7 @@ import time
 import numpy as np
 import trimesh
 
+from . import motion
 from .fusion import JAWS, CaseCT, Scan, export_case
 from .learning import AlignmentMemory
 from .segment import Segmenter
@@ -102,6 +105,53 @@ def cmd_register(args):
     print(f"Готово за {time.perf_counter() - started:.0f} с: {args.out}")
 
 
+def cmd_motion(args):
+    case = motion.read_case(args.case)
+    print(f"Кейс: {case.source}, файлов: {len(case.files)}")
+    for f in case.files:
+        role = f" — {f['role']}" if f.get("role") else ""
+        note = f": {f['note']}" if f.get("note") else ""
+        print(f"  [{f['kind']}] {f['path']}{role}{note}")
+    if args.inspect:
+        for rel, _size, read in motion._entries(args.case):  # структура XML без значений — ею можно делиться
+            if os.path.splitext(rel)[1].lower() in (".xml", ".jawmotion", ".matrix4", ".dentalproject"):
+                data = read()
+                if motion._is_xml(data):
+                    print(f"\nСтруктура {os.path.splitext(rel)[1]}:")
+                    print("\n".join("  " + line for line in motion.describe_xml(data)))
+        return
+    for note in case.notes:
+        print(f"ВНИМАНИЕ: {note}")
+    if not case.recordings:
+        return
+    lower = None
+    if args.lower:
+        lower = np.asarray(trimesh.load_mesh(args.lower, process=False).vertices, float)
+    anatomy = motion.estimate_anatomy(case, lower=lower, incisal=args.incisal, icd=args.icd)
+    report = motion.analyze_case(case, anatomy)
+    print(f"\nСистема координат: {anatomy.source}")
+    if anatomy.hinge_rms_mm is not None:
+        print(f"Шарнирная ось: в начале открывания смещается в среднем на {anatomy.hinge_rms_mm:.2f} мм")
+    for r in report["recordings"]:
+        inc = r["incisal"]
+        extra = f", ведение {inc['guidance_deg']}°" if inc.get("guidance_deg") is not None else ""
+        print(f"  {r['name']}: {r['kind_name']}, {r['frames']} кадров, резцовая точка до {inc['max_mm']} мм{extra}")
+    s = report["articulator"]
+    print("Для артикулятора: " + ", ".join(f"{k} = {v}" for k, v in s.items() if v is not None))
+    for note in report["notes"]:
+        print(f"Примечание: {note}")
+    if args.out:
+        os.makedirs(args.out, exist_ok=True)
+        with open(os.path.join(args.out, "motion.json"), "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        motion.write_paths_csv(os.path.join(args.out, "paths.csv"), case, anatomy)
+        try:
+            motion.plot(case, anatomy, os.path.join(args.out, "motion.png"), report)
+            print(f"Отчёт: {args.out} (motion.json, paths.csv, motion.png)")
+        except ImportError:
+            print(f"Отчёт: {args.out} (motion.json, paths.csv); для картинки установите matplotlib")
+
+
 def _segment_options(parser, required):
     parser.add_argument("--models", required=required,
                         help="папка моделей сегментации (подпапки с model.onnx и model.json)")
@@ -140,6 +190,17 @@ def main(argv=None):
     seg.add_argument("-o", "--out", required=True, help="папка результата")
     _segment_options(seg, required=True)
     seg.set_defaults(func=cmd_segment)
+
+    mot = sub.add_parser("motion", help="записи движений нижней челюсти (P-ART и др.): разобрать и проанализировать")
+    mot.add_argument("case", help="выгрузка: папка, архив .zip или файл движения (.xml, .jawMotion, .csv)")
+    mot.add_argument("--inspect", action="store_true",
+                     help="только состав и структура XML — без значений, имён и дат (можно прислать для разбора формата)")
+    mot.add_argument("--lower", help="модель нижней челюсти, если её нет в выгрузке или имя не распознано")
+    mot.add_argument("--incisal", nargs=3, type=float, metavar=("X", "Y", "Z"),
+                     help="резцовая точка в координатах моделей (по умолчанию ищется на модели)")
+    mot.add_argument("--icd", type=float, default=motion.ICD_MM, help="межмыщелковое расстояние, мм (100)")
+    mot.add_argument("-o", "--out", help="папка отчёта: motion.json, paths.csv, motion.png")
+    mot.set_defaults(func=cmd_motion)
 
     args = parser.parse_args(argv)
     try:
