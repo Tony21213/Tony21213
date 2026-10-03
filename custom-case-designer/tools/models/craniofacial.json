@@ -1,0 +1,22 @@
+{
+  "name": "craniofacial",
+  "title": "Нижняя челюсть целиком, череп, лобные пазухи (TotalSegmentator craniofacial_structures, КТ)",
+  "orientation": "RAS",
+  "region": {
+    "around": "whole"
+  },
+  "outputs": {
+    "mandible": [
+      "mandible"
+    ],
+    "skull": [
+      "skull"
+    ],
+    "frontal_sinus": [
+      "sinus_frontal"
+    ]
+  },
+  "license": "Apache-2.0",
+  "attribution": "Wasserthal J. et al., TotalSegmentator (2023); An innovative AI-based dual segmentation application for head surgery, Int J Oral Maxillofac Surg (2025), https://www.ijoms.com/article/S0901-5027(25)01499-7/fulltext",
+  "priority": 1
+}

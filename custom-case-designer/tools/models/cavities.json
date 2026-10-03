@@ -1,0 +1,32 @@
+{
+  "name": "cavities",
+  "title": "Полость носа, мягкое и твёрдое нёбо, отделы глотки (TotalSegmentator head_glands_cavities, КТ)",
+  "orientation": "RAS",
+  "region": {
+    "around": "whole"
+  },
+  "outputs": {
+    "nasal_cavity": [
+      "nasal_cavity_left",
+      "nasal_cavity_right"
+    ],
+    "soft_palate": [
+      "soft_palate"
+    ],
+    "hard_palate": [
+      "hard_palate"
+    ],
+    "nasopharynx": [
+      "nasopharynx"
+    ],
+    "oropharynx": [
+      "oropharynx"
+    ],
+    "hypopharynx": [
+      "hypopharynx"
+    ]
+  },
+  "license": "Apache-2.0",
+  "attribution": "Wasserthal J. et al., TotalSegmentator (2023); https://www.mdpi.com/2072-6694/16/2/415",
+  "priority": 3
+}

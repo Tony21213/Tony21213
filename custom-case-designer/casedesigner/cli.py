@@ -36,15 +36,15 @@ def load_pairs(path: str):
     return rows[:, :3], rows[:, 3:]
 
 
-def _progress(done, total):
-    print(f"\r  окно {done}/{total}", end="" if done < total else "\n", flush=True)
+def _progress(model, done, total):
+    print(f"\r  {model}: окно {done}/{total}", end="" if done < total else "\n", flush=True)
 
 
 def _segment(vol, args) -> dict:
-    segmenter = Segmenter.from_folder(args.models, device=args.device)
-    print("Сегментация…")
-    result = segmenter.run(vol, teeth=not args.no_teeth, smooth=args.smooth, progress=_progress)
-    print("Найдено: " + ", ".join(sorted(result.meshes)))
+    segmenter = Segmenter(args.models, device=args.device, only=args.only)
+    print("Сегментация: " + ", ".join(m.title for m in segmenter.models))
+    result = segmenter.run(vol, smooth=args.smooth, progress=_progress)
+    print(f"Найдено структур: {len(result.meshes)}")
     return result.meshes
 
 
@@ -104,8 +104,8 @@ def cmd_register(args):
 
 def _segment_options(parser, required):
     parser.add_argument("--models", required=required,
-                        help="папка моделей сегментации: anatomy/ и, если есть, teeth/")
-    parser.add_argument("--no-teeth", action="store_true", help="без второго прохода по отдельным зубам")
+                        help="папка моделей сегментации (подпапки с model.onnx и model.json)")
+    parser.add_argument("--only", nargs="+", metavar="МОДЕЛЬ", help="запустить только эти модели (по имени)")
     parser.add_argument("--device", choices=("auto", "gpu", "cpu"), default="auto", help="на чём считать (auto)")
     parser.add_argument("--smooth", type=int, default=10, help="итераций сглаживания поверхностей (10)")
 
