@@ -8,7 +8,8 @@ import numpy as np
 import trimesh
 
 from .register import Target, apply, fit_score, icp, kabsch, occlusal_init
-from .surface import Surface, extract_surface
+from .segment import Mesh
+from .surface import extract_surface
 from .teeth import OCCLUSAL, Levels, crown_surface, split_jaws
 
 JAWS = ("upper", "lower")
@@ -89,12 +90,11 @@ class CaseCT:
         deviation = surface_deviation(apply(T, scan.vertices), target)
         return Registration(scan, jaw, T, deviation, deviation_stats(deviation))
 
-    def surfaces(self, step: int = 1) -> dict:
-        """Поверхности КТ по порогам: зубы и кость (до появления сегментации)."""
-        return {
-            "ct_teeth": extract_surface(self.vol, self.levels.dense, step=step),
-            "ct_bone": extract_surface(self.vol, self.levels.hard, step=max(step, 2)),
-        }
+    def surfaces(self, step: int = 1) -> dict[str, Mesh]:
+        """Поверхности КТ по порогам плотности: зубы и кость — когда нет моделей сегментации."""
+        teeth = extract_surface(self.vol, self.levels.dense, step=step)
+        bone = extract_surface(self.vol, self.levels.hard, step=max(step, 2))
+        return {"ct_teeth": Mesh(teeth.points, teeth.faces), "ct_bone": Mesh(bone.points, bone.faces)}
 
 
 def surface_deviation(points: np.ndarray, target: Target) -> np.ndarray:
@@ -131,9 +131,12 @@ def deviation_colors(deviation: np.ndarray) -> np.ndarray:
     return colors
 
 
-def export_case(out_dir: str, registrations: list[Registration], ct_surfaces: dict | None = None,
+def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict[str, Mesh] | None = None,
                 frame: str = "ct") -> dict:
     """Пишет все сетки в одной системе координат и файл с матрицами.
+
+    ct_meshes — сетки из КТ (структуры сегментации или поверхности по порогам),
+    ключ — путь файла без расширения, например "mandible" или "teeth/tooth_36".
 
     frame="ct" — координаты пациента из DICOM (мм, LPS);
     frame="scan" — координаты первого скана: удобно, когда дальше работа
@@ -149,7 +152,8 @@ def export_case(out_dir: str, registrations: list[Registration], ct_surfaces: di
     written = {}
 
     def write(name, vertices, faces, source_to_out, colors=None, suffix=".stl"):
-        path = os.path.join(out_dir, name + suffix)
+        path = os.path.join(out_dir, *name.split("/")) + suffix
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         mesh = trimesh.Trimesh(apply(source_to_out, vertices), faces, process=False)
         if colors is not None:
             mesh.visual.vertex_colors = colors
@@ -161,9 +165,9 @@ def export_case(out_dir: str, registrations: list[Registration], ct_surfaces: di
         write(reg.scan.name, reg.scan.vertices, reg.scan.faces, M)
         write(reg.scan.name + "_deviation", reg.scan.vertices, reg.scan.faces, M,
               deviation_colors(reg.deviation), suffix=".ply")
-    for name, surf in (ct_surfaces or {}).items():
-        if isinstance(surf, Surface) and surf.faces is not None and len(surf.faces):
-            write(name, surf.points, surf.faces, to_out)
+    for name, mesh in (ct_meshes or {}).items():
+        if len(mesh.faces):
+            write(name, mesh.vertices, mesh.faces, to_out)
 
     report = {
         "frame": "DICOM patient coordinates, mm (LPS)" if frame == "ct"

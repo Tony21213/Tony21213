@@ -1,15 +1,19 @@
 """Командная строка Custom Case Designer.
 
-    python -m casedesigner register КТ --scan upper.stl --scan lower.stl -o результат
+    python -m casedesigner register КТ --scan upper.stl --scan lower.stl --models модели -o результат
+    python -m casedesigner segment КТ --models модели -o результат
 """
 
 import argparse
+import os
 import sys
 import time
 
 import numpy as np
+import trimesh
 
 from .fusion import JAWS, CaseCT, Scan, export_case
+from .segment import Segmenter
 from .volume import load_volume
 
 
@@ -31,6 +35,28 @@ def load_pairs(path: str):
     return rows[:, :3], rows[:, 3:]
 
 
+def _progress(done, total):
+    print(f"\r  окно {done}/{total}", end="" if done < total else "\n", flush=True)
+
+
+def _segment(vol, args) -> dict:
+    segmenter = Segmenter.from_folder(args.models, device=args.device)
+    print("Сегментация…")
+    result = segmenter.run(vol, teeth=not args.no_teeth, smooth=args.smooth, progress=_progress)
+    print("Найдено: " + ", ".join(sorted(result.meshes)))
+    return result.meshes
+
+
+def cmd_segment(args):
+    started = time.perf_counter()
+    meshes = _segment(load_volume(args.ct), args)
+    for name, mesh in meshes.items():
+        path = os.path.join(args.out, *name.split("/")) + ".stl"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        trimesh.Trimesh(mesh.vertices, mesh.faces, process=False).export(path)
+    print(f"Готово за {time.perf_counter() - started:.0f} с: {args.out} (координаты пациента DICOM, мм)")
+
+
 def cmd_register(args):
     started = time.perf_counter()
     jaws = _parse_assignments(args.jaw, "--jaw")
@@ -40,7 +66,8 @@ def cmd_register(args):
             raise ValueError(f"--jaw: челюсть должна быть upper или lower, а не {jaw!r}")
 
     print("Читаю КТ…")
-    ct = CaseCT(load_volume(args.ct))
+    vol = load_volume(args.ct)
+    ct = CaseCT(vol)
     registrations = []
     for path in args.scan:
         scan = Scan.load(path)
@@ -51,9 +78,21 @@ def cmd_register(args):
               f"отклонение в среднем {s.get('mean_mm', float('nan')):.3f} мм, "
               f"90% точек ближе {s.get('p90_mm', float('nan')):.3f} мм")
         registrations.append(reg)
-    surfaces = ct.surfaces() if args.ct_surfaces else None
-    export_case(args.out, registrations, surfaces, frame=args.frame)
+    meshes = {}
+    if args.models:
+        meshes.update(_segment(vol, args))
+    if args.ct_surfaces:
+        meshes.update(ct.surfaces())
+    export_case(args.out, registrations, meshes, frame=args.frame)
     print(f"Готово за {time.perf_counter() - started:.0f} с: {args.out}")
+
+
+def _segment_options(parser, required):
+    parser.add_argument("--models", required=required,
+                        help="папка моделей сегментации: anatomy/ и, если есть, teeth/")
+    parser.add_argument("--no-teeth", action="store_true", help="без второго прохода по отдельным зубам")
+    parser.add_argument("--device", choices=("auto", "gpu", "cpu"), default="auto", help="на чём считать (auto)")
+    parser.add_argument("--smooth", type=int, default=10, help="итераций сглаживания поверхностей (10)")
 
 
 def main(argv=None):
@@ -71,12 +110,19 @@ def main(argv=None):
                      help="система координат результата: ct — DICOM, scan — первого скана")
     reg.add_argument("--ct-surfaces", action="store_true", help="также выгрузить зубы и кость из КТ (по порогам)")
     reg.add_argument("-o", "--out", required=True, help="папка результата")
+    _segment_options(reg, required=False)
     reg.set_defaults(func=cmd_register)
+
+    seg = sub.add_parser("segment", help="сегментировать КТ и выгрузить структуры в STL")
+    seg.add_argument("ct", help="КТ: папка DICOM, .dcm, .zip, .nii.gz, .mha, .nrrd")
+    seg.add_argument("-o", "--out", required=True, help="папка результата")
+    _segment_options(seg, required=True)
+    seg.set_defaults(func=cmd_segment)
 
     args = parser.parse_args(argv)
     try:
         args.func(args)
-    except (ValueError, FileNotFoundError) as e:
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
         print(f"Ошибка: {e}", file=sys.stderr)
         return 1
     return 0

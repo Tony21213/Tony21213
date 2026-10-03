@@ -39,7 +39,7 @@ def test_export_in_ct_frame(tmp_path, jaw_ct, two_scans):
         assert np.abs(load(tmp_path / f"{jaw}.stl") - per_triangle(truth[jaw], faces)).max() < 0.15
         assert (tmp_path / f"{jaw}_deviation.ply").exists()
     teeth = surfaces["ct_teeth"]
-    assert np.abs(load(tmp_path / "ct_teeth.stl") - per_triangle(teeth.points, teeth.faces)).max() < 1e-4
+    assert np.abs(load(tmp_path / "ct_teeth.stl") - per_triangle(teeth.vertices, teeth.faces)).max() < 1e-4
     saved = json.loads((tmp_path / "case.json").read_text(encoding="utf-8"))
     assert saved == json.loads(json.dumps(report))
     assert saved["scans"]["upper"]["jaw"] == "upper"
@@ -54,7 +54,7 @@ def test_export_in_scan_frame(tmp_path, jaw_ct, two_scans):
     assert np.abs(load(tmp_path / "upper.stl") - per_triangle(upper.scan.vertices, upper.scan.faces)).max() < 1e-4
     to_scan = np.linalg.inv(upper.transform)
     teeth = surfaces["ct_teeth"]
-    assert np.abs(load(tmp_path / "ct_teeth.stl") - per_triangle(apply(to_scan, teeth.points), teeth.faces)).max() < 1e-3
+    assert np.abs(load(tmp_path / "ct_teeth.stl") - per_triangle(apply(to_scan, teeth.vertices), teeth.faces)).max() < 1e-3
     assert np.abs(load(tmp_path / "lower.stl") - per_triangle(apply(to_scan, truth["lower"]), lower.scan.faces)).max() < 0.2
 
 

@@ -12,19 +12,29 @@ Custom Case Designer использует следующие открытые б
 | [SimpleITK](https://simpleitk.org) | чтение DICOM, NIfTI, MHA, NRRD | Apache-2.0 |
 | [trimesh](https://trimesh.org) | чтение и запись STL/PLY/OBJ | MIT |
 
-## Сегментация (планируется)
+## Сегментация
 
-Модели сегментации будут подключаться только с открытыми лицензиями,
-разрешающими использование в приложении, с указанием авторства здесь и в
-окне «О программе». Кандидаты:
+Модели сегментации подключаются только с лицензиями, разрешающими
+использование в приложении, с указанием авторства здесь и в окне «О
+программе». Найденные модели, их лицензии, авторы и ограничения — в
+[docs/models.md](docs/models.md). Основные:
 
+- **TotalSegmentator** (задачи `teeth`, `craniofacial_structures`,
+  `head_glands_cavities`) — Apache-2.0. Wasserthal J. et al.,
+  "TotalSegmentator: Robust Segmentation of 104 Anatomic Structures in CT
+  Images", *Radiology: Artificial Intelligence* (2023).
+  https://github.com/wasserth/TotalSegmentator
+  - модель `teeth` обучена на наборе данных **ToothFairy3** (CC BY-NC-SA):
+    Bolelli F. et al., "Segmenting Maxillofacial Structures in CBCT
+    Volumes", CVPR 2025.
+- **ToothSeg** — веса CC BY 4.0, код Apache-2.0. Isensee F., van Nistelrooij N.,
+  Krämer L., Vinayahalingam S. et al. (2025). https://github.com/MIC-DKFZ/ToothSeg,
+  https://zenodo.org/records/14893540. Обучено на **ToothFairy2** (CC BY-SA).
 - **DentalSegmentator** — CC BY 4.0. Dot G. et al., "DentalSegmentator:
   robust open source deep learning-based CT and CBCT image segmentation",
   *Journal of Dentistry* (2024). https://doi.org/10.5281/zenodo.10829675
-- **nnU-Net** (метод обучения) — Apache-2.0. Isensee F. et al., *Nature
-  Methods* 18, 203–211 (2021).
-- Открытые наборы данных для дообучения: **ToothFairy2** (CC BY-SA 4.0),
-  **DentVoxel** (CC BY 4.0) — с соблюдением условий этих лицензий.
+- **nnU-Net** (архитектура и обучение всех моделей выше) — Apache-2.0.
+  Isensee F. et al., *Nature Methods* 18, 203–211 (2021).
 
 Код и веса OdentAI не используются: для них не указана лицензия,
 разрешающая переиспользование.
