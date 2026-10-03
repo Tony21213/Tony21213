@@ -9,6 +9,8 @@ import trimesh
 
 from .quality import Segment, check_scan
 from .register import Target, apply, edge_offset, fit_score, icp, kabsch, occlusal_init
+from .scan_teeth import crown_candidates
+from .structures import jaw_of
 from .segment import Mesh
 from .surface import extract_surface
 from .teeth import OCCLUSAL, Levels, crown_surface, split_jaws
@@ -36,6 +38,13 @@ class Scan:
     @property
     def normals(self) -> np.ndarray:
         return np.asarray(trimesh.Trimesh(self.vertices, self.faces, process=False).vertex_normals)
+
+    @property
+    def crowns(self) -> np.ndarray:
+        """Маска вершин, которые могут быть коронками (scan_teeth.crown_candidates)."""
+        if getattr(self, "_crowns", None) is None:
+            self._crowns = crown_candidates(self.vertices, self.normals)
+        return self._crowns
 
 
 @dataclass
@@ -77,7 +86,7 @@ class CaseCT:
         return Target(crowns.points, crowns.normals)
 
     def _nearest_jaw(self, scan: Scan, T: np.ndarray, jaws=JAWS) -> str:
-        scores = {j: fit_score(scan.vertices, self.coarse[j], T, tol=1.5) for j in jaws}
+        scores = {j: fit_score(scan.vertices[scan.crowns], self.coarse[j], T, tol=1.5) for j in jaws}
         return max(scores, key=scores.get)
 
     def register(self, scan: Scan, jaw: str | None = None, pairs=None, start: np.ndarray | None = None) -> Registration:
@@ -92,6 +101,7 @@ class CaseCT:
         if jaw is not None and jaw not in JAWS:
             raise ValueError(f"челюсть должна быть upper или lower, а не {jaw!r}")
         jaws = (jaw,) if jaw else JAWS
+        crowns = scan.vertices[scan.crowns]
         if start is not None:
             T0 = np.asarray(start, float)
             jaw = jaw or self._nearest_jaw(scan, T0)
@@ -99,15 +109,16 @@ class CaseCT:
             T0 = kabsch(*pairs)
             jaw = self._nearest_jaw(scan, T0, jaws)
         else:
-            normals = scan.normals
-            found = {j: occlusal_init(scan.vertices, normals, self.coarse[j], OCCLUSAL[j]) for j in jaws}
+            normals = scan.normals[scan.crowns]
+            found = {j: occlusal_init(crowns, normals, self.coarse[j], OCCLUSAL[j]) for j in jaws}
             jaw = max(found, key=lambda j: found[j][1])
             T0 = found[jaw][0]
 
-        target = self.fine_crowns(apply(T0, scan.vertices))
-        T, _used = icp(scan.vertices, target, T0, schedule=FINE_SCHEDULE, keep=0.9)
+        # Совмещаются только коронки: кандидаты на скане и коронки на КТ.
+        target = self.fine_crowns(apply(T0, crowns))
+        T, _used = icp(crowns, target, T0, schedule=FINE_SCHEDULE, keep=0.9)
         # Последний шаг: положение вместе со сдвигом границы эмали (см. register.edge_offset).
-        shift, T = edge_offset(scan.vertices, target, T, self.edge_prior, self.prior_weight)
+        shift, T = edge_offset(crowns, target, T, self.edge_prior, self.prior_weight)
         return self._result(scan, jaw, T, target, shift)
 
     def evaluate(self, scan: Scan, transform: np.ndarray, jaw: str | None = None) -> Registration:
@@ -118,7 +129,7 @@ class CaseCT:
         """
         T = np.asarray(transform, float)
         jaw = jaw or self._nearest_jaw(scan, T)
-        target = self.fine_crowns(apply(T, scan.vertices))
+        target = self.fine_crowns(apply(T, scan.vertices[scan.crowns]))
         reg = self._result(scan, jaw, T, target, self.edge_prior)
         reg.edge_shift = self.edge_prior - reg.stats.get("signed_mean_mm", 0.0)
         return reg
@@ -127,7 +138,8 @@ class CaseCT:
         """Отклонения скана от коронок с учётом сдвига границы эмали."""
         corrected = Target(target.points - shift * target.normals, target.normals)
         deviation = surface_deviation(apply(T, scan.vertices), corrected)
-        segments, warnings = check_scan(scan.vertices, T, deviation, corrected, jaw)
+        # Участки дуги проверяются только по коронкам: нёбо и глубокая десна их не портят.
+        segments, warnings = check_scan(scan.vertices[scan.crowns], T, deviation[scan.crowns], corrected, jaw)
         return Registration(scan, jaw, T, deviation, deviation_stats(deviation), float(shift), segments, warnings)
 
     def surfaces(self, step: int = 1) -> dict[str, Mesh]:
@@ -178,82 +190,172 @@ def deviation_colors(deviation: np.ndarray) -> np.ndarray:
     return colors
 
 
-# Сканы одной сессии сканера стоят в общей системе координат: если по КТ второй скан
-# оказывается в пределах этого расстояния от своего исходного положения, координаты общие.
-SAME_FRAME_MM = 2.0
-# Прикус по сканеру и по КТ расходится больше этого — предупреждаем.
-BITE_WARN_MM = 0.2
+# Сканы одной сессии сканера стоят в прикусе: столько точек коронок верхнего скана
+# должно оказаться не дальше CONTACT_MM от нижнего, чтобы считать их сомкнутыми.
+CONTACT_MM = 1.5
+CONTACT_SHARE = 0.003
+# Часть сетки целиком относится к одной челюсти, если к ней ближе такая доля вершин.
+JAW_MAJORITY = 0.85
+
+
+def in_occlusion(upper: Scan, lower: Scan) -> bool:
+    """Сканы в общих координатах и сомкнуты (прикус со сканера)?
+
+    Сканы одной сессии сканера лежат в прикусе: бугры верхних зубов касаются
+    нижних. Сканы, выгруженные по отдельности, стоят где попало и не касаются.
+    """
+    from scipy.spatial import cKDTree
+
+    a, b = upper.vertices[upper.crowns], lower.vertices[lower.crowns]
+    dist, _ = cKDTree(b).query(a, distance_upper_bound=CONTACT_MM)
+    return bool(np.isfinite(dist).mean() >= CONTACT_SHARE)
+
+
+def split_by_jaw(mesh: Mesh, ct: "CaseCT") -> dict[str, Mesh]:
+    """Делит сетку из КТ на части верхней и нижней челюсти (импланты, поверхности по порогам).
+
+    Каждая вершина относится к челюсти, чьи коронки ближе. Связная часть
+    сетки целиком уходит к челюсти большинства своих вершин; если явного
+    большинства нет (например, сомкнутые зубы слились), делится по граням.
+    """
+    d_up, _ = ct.coarse["upper"].tree.query(mesh.vertices)
+    d_lo, _ = ct.coarse["lower"].tree.query(mesh.vertices)
+    lower_v = d_lo < d_up
+    parts = trimesh.graph.connected_component_labels(
+        trimesh.Trimesh(mesh.vertices, mesh.faces, process=False).face_adjacency, node_count=len(mesh.faces))
+    face_lower = lower_v[mesh.faces].mean(axis=1) > 0.5
+    for part in np.unique(parts):
+        sel = parts == part
+        share = lower_v[np.unique(mesh.faces[sel])].mean()
+        if share >= JAW_MAJORITY or share <= 1 - JAW_MAJORITY:
+            face_lower[sel] = share > 0.5
+    out = {}
+    for jaw, mask in (("upper", ~face_lower), ("lower", face_lower)):
+        if mask.any():
+            faces = mesh.faces[mask]
+            used = np.unique(faces)
+            remap = np.full(len(mesh.vertices), -1)
+            remap[used] = np.arange(len(used))
+            out[jaw] = Mesh(mesh.vertices[used], remap[faces])
+    return out
+
+
+def _rotation_deg(T: np.ndarray) -> float:
+    return float(np.degrees(np.arccos(np.clip((np.trace(T[:3, :3]) - 1) / 2, -1, 1))))
 
 
 def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict[str, Mesh] | None = None,
-                frame: str = "exocad") -> dict:
+                bite: str = "scan", frame: str = "exocad", ct: "CaseCT | None" = None) -> dict:
     """Пишет все сетки в одной системе координат и файл с матрицами.
 
     ct_meshes — сетки из КТ (структуры сегментации или поверхности по порогам),
     ключ — путь файла без расширения, например "mandible" или "teeth/tooth_36".
+    С какой челюстью двигается структура — structures.jaw_of; смешанные
+    (импланты, поверхности по порогам) делятся по челюстям (split_by_jaw, нужен ct).
 
-    frame="exocad" — координаты сканов, как они пришли со сканера: в них же
-    сканы открывает exocad, поэтому выгруженные КТ и сегменты встают там
-    рядом со сканами на свои места. Сканы пишутся без изменений, КТ — через
-    совмещение с первым сканом. Если сканы из одной сессии (общие
-    координаты, прикус со сканера), прикус сверяется с КТ; если каждый скан
-    в своих координатах, остальные ставятся по КТ.
-    frame="ct" — координаты пациента из DICOM (мм, LPS).
+    bite — чей прикус:
+      "scan" (по умолчанию) — прикус сканов. Сканы стоят как пришли со
+      сканера, структуры каждой челюсти из КТ переезжают к скану своей
+      челюсти: нижняя челюсть, нижние зубы, канал — к нижнему скану,
+      остальное — к верхнему. Прикус на КТ (часто с приоткрытым ртом) не важен;
+      «ct» — статическое наложение на КТ: всё стоит как на КТ, сканы
+      переносятся на свои челюсти в КТ.
+    frame — система координат: "exocad" — сканера (в них сканы открывает
+    exocad; опорный скан — верхний, если есть), "dicom" — пациента из DICOM
+    (только для bite="ct").
     """
-    if frame not in ("exocad", "ct"):
-        raise ValueError("frame должен быть exocad или ct")
+    if bite not in ("scan", "ct"):
+        raise ValueError("bite должен быть scan или ct")
+    if frame not in ("exocad", "dicom"):
+        raise ValueError("frame должен быть exocad или dicom")
+    if bite == "scan" and frame == "dicom":
+        raise ValueError("прикус сканов задаётся в координатах сканера: для DICOM выберите bite=ct")
     if not registrations:
         raise ValueError("нет совмещённых сканов")
-    ref = registrations[0]
-    to_out = np.linalg.inv(ref.transform) if frame == "exocad" else np.eye(4)
-    os.makedirs(out_dir, exist_ok=True)
 
+    by_jaw = {}
+    for reg in registrations:
+        by_jaw.setdefault(reg.jaw, reg)
+    ref = by_jaw.get("upper", registrations[0])
+    to_out = np.linalg.inv(ref.transform) if frame == "exocad" else np.eye(4)
+    notes = []
+
+    # Где стоит каждый скан: в прикусе сканов — где пришёл со сканера, иначе — на своей челюсти в КТ.
+    placement = {}
+    for reg in registrations:
+        on_ct = to_out @ reg.transform
+        placement[id(reg)] = on_ct
+        if frame == "exocad" and reg is ref:
+            placement[id(reg)] = np.eye(4)
+        elif bite == "scan" and frame == "exocad":
+            if in_occlusion(ref.scan, reg.scan) or in_occlusion(reg.scan, ref.scan):
+                placement[id(reg)] = np.eye(4)
+            else:
+                notes.append(f"{reg.scan.name}: скан не в прикусе с {ref.scan.name} (выгружен отдельно) — "
+                             "поставлен по КТ, прикус взят с КТ.")
+
+    # Структуры челюсти из КТ ставятся туда же, куда поставлен скан этой челюсти.
+    jaw_transform = {jaw: placement[id(r)] @ np.linalg.inv(r.transform) for jaw, r in by_jaw.items()}
+    for jaw in JAWS:
+        jaw_transform.setdefault(jaw, to_out)
+
+    bite_report = None
+    if "upper" in by_jaw and "lower" in by_jaw and frame == "exocad":
+        lower = by_jaw["lower"]
+        # Насколько нижняя челюсть на КТ стоит иначе, чем на сканах (относительно верхней).
+        diff = np.linalg.inv(placement[id(lower)]) @ (to_out @ lower.transform)
+        moved = np.linalg.norm(apply(diff, lower.scan.vertices[lower.scan.crowns]) -
+                               lower.scan.vertices[lower.scan.crowns], axis=1)
+        bite_report = {"lower_jaw_on_ct_vs_scans_mean_mm": round(float(moved.mean()), 3),
+                       "max_mm": round(float(moved.max()), 3), "rotation_deg": round(_rotation_deg(diff), 2)}
+
+    os.makedirs(out_dir, exist_ok=True)
     written = {}
 
-    def write(name, vertices, faces, source_to_out, colors=None, suffix=".stl"):
+    def write(name, parts, colors=None, suffix=".stl"):
+        """parts — [(вершины, грани, матрица)]: части одной сетки могут двигаться по-разному."""
+        verts, faces, offset = [], [], 0
+        for v, f, M in parts:
+            verts.append(apply(M, v))
+            faces.append(f + offset)
+            offset += len(v)
         path = os.path.join(out_dir, *name.split("/")) + suffix
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        mesh = trimesh.Trimesh(apply(source_to_out, vertices), faces, process=False)
+        mesh = trimesh.Trimesh(np.vstack(verts), np.vstack(faces), process=False)
         if colors is not None:
             mesh.visual.vertex_colors = colors
         mesh.export(path)
-        written[name + suffix] = source_to_out
+        written[name + suffix] = [M.round(9).tolist() for _v, _f, M in parts]
 
     scans = {}
     for reg in registrations:
-        info = {"jaw": reg.jaw, "scan_to_ct": reg.transform.round(9).tolist(), "fit": reg.stats,
-                "edge_shift_mm": round(reg.edge_shift, 4), "warnings": list(reg.warnings),
-                "segments": [vars(s) for s in reg.segments]}
-        M = to_out @ reg.transform
-        if frame == "exocad" and reg is not ref:
-            # Где скан оказался бы по КТ относительно опорного — против того, где он стоит сам.
-            gap = float(np.linalg.norm(apply(M, reg.scan.vertices) - reg.scan.vertices, axis=1).max())
-            info["scanner_vs_ct_mm"] = round(gap, 4)
-            if gap <= SAME_FRAME_MM:
-                M = np.eye(4)  # общие координаты со сканера — скан остаётся как есть
-                info["placement"] = "scanner"
-                if gap > BITE_WARN_MM:
-                    info["warnings"].append(
-                        f"Прикус по сканеру и по КТ расходится на {gap:.2f} мм: проверьте регистрацию "
-                        "прикуса на сканере или совмещение со КТ.")
-            else:
-                info["placement"] = "ct"  # скан был в своих координатах — поставлен по КТ
-        elif frame == "exocad":
-            M = np.eye(4)
-            info["placement"] = "scanner"
-        write(reg.scan.name, reg.scan.vertices, reg.scan.faces, M)
-        write(reg.scan.name + "_deviation", reg.scan.vertices, reg.scan.faces, M,
+        M = placement[id(reg)]
+        write(reg.scan.name, [(reg.scan.vertices, reg.scan.faces, M)])
+        write(reg.scan.name + "_deviation", [(reg.scan.vertices, reg.scan.faces, M)],
               deviation_colors(reg.deviation), suffix=".ply")
-        scans[reg.scan.name] = info
+        scans[reg.scan.name] = {
+            "jaw": reg.jaw, "scan_to_ct": reg.transform.round(9).tolist(),
+            "placement": "scanner" if np.allclose(M, np.eye(4)) else "ct",
+            "fit": reg.stats, "edge_shift_mm": round(reg.edge_shift, 4), "warnings": list(reg.warnings),
+            "segments": [vars(s) for s in reg.segments]}
+
     for name, mesh in (ct_meshes or {}).items():
-        if len(mesh.faces):
-            write(name, mesh.vertices, mesh.faces, to_out)
+        if not len(mesh.faces):
+            continue
+        jaw = jaw_of(name)
+        if jaw is not None or bite == "ct" or ct is None:
+            write(name, [(mesh.vertices, mesh.faces, jaw_transform[jaw or "upper"])])
+        else:
+            write(name, [(m.vertices, m.faces, jaw_transform[j]) for j, m in split_by_jaw(mesh, ct).items()])
 
     report = {
+        "bite": "scans" if bite == "scan" else "ct",
         "frame": f"scanner coordinates of {ref.scan.name} (as opened in exocad), mm" if frame == "exocad"
                  else "DICOM patient coordinates, mm (LPS)",
-        "ct_to_output": to_out.round(9).tolist(),
-        "files": {name: {"source_to_output": M.round(9).tolist()} for name, M in written.items()},
+        "ct_to_output": {jaw: M.round(9).tolist() for jaw, M in jaw_transform.items()},
+        "ct_bite_vs_scans": bite_report,
+        "notes": notes,
+        "files": {name: {"source_to_output": Ms} for name, Ms in written.items()},
         "scans": scans,
     }
     with open(os.path.join(out_dir, "case.json"), "w", encoding="utf-8") as f:

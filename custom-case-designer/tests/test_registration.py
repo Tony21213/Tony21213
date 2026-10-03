@@ -52,3 +52,14 @@ def test_kabsch_recovers_rigid_motion():
     with pytest.raises(ValueError):
         kabsch(src[:2], src[:2])
     assert np.allclose(rigid(np.eye(3), np.zeros(3)), np.eye(4))
+
+
+def test_upper_scan_with_palate(jaw_ct):
+    """Нёбо на скане верхней челюсти не мешает: совмещаются только коронки."""
+    verts, faces = phantom.make_scan("upper", palate=True)
+    reg = jaw_ct.register(Scan("upper", apply(phantom.scan_pose(3), verts), faces))
+    assert reg.jaw == "upper"
+    assert true_error(reg, verts).max() < 0.02
+    assert reg.warnings == []
+    # Нёбо — не коронки: кандидатов в коронки заметно меньше половины точек скана.
+    assert reg.scan.crowns.mean() < 0.6

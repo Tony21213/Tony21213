@@ -92,12 +92,35 @@ def gum_sdf(p):
     return np.maximum(_arch_distance(p) - 7.5, np.maximum(p[:, 2] - 3.5, -16 - p[:, 2]))
 
 
+def palate_sdf(p):
+    """Нёбо: свод внутри дуги, в центре на 12 мм глубже десны (в кадре нижней челюсти)."""
+    r2 = (p[:, 0] / 20.0) ** 2 + (p[:, 1] / 18.0) ** 2
+    inside = (r2 < 1) & (p[:, 1] > -4)
+    vault = 3.5 - 12.0 * np.clip(1 - r2, 0, 1)
+    return np.where(inside, np.maximum(p[:, 2] - vault, -16 - p[:, 2]), 10.0)
+
+
+# Ось «суставов» фантома: вокруг неё открывается рот (позади и выше зубов).
+HINGE_POINT = np.array([0.0, -15.0, 25.0])
+
+
+def jaw_opening(degrees: float) -> np.ndarray:
+    """Нижняя челюсть, повёрнутая вокруг оси суставов — как на КТ с приоткрытым ртом."""
+    from casedesigner.register import axis_angle
+
+    R = axis_angle(np.array([1.0, 0.0, 0.0]), -np.radians(degrees))  # «+» — рот открывается, челюсть вниз
+    return rigid(R, HINGE_POINT - R @ HINGE_POINT)
+
+
 @functools.lru_cache(maxsize=None)
-def make_volume(spacing=0.3, rotation_deg=10.0, noise=25.0, blur=0.6, seed=0, tooth_dilation=0.0) -> Volume:
+def make_volume(spacing=0.3, rotation_deg=10.0, noise=25.0, blur=0.6, seed=0, tooth_dilation=0.0,
+                open_deg=0.0) -> Volume:
     """КЛКТ фантома: повёрнутая сетка вокселей с ненулевым началом координат.
 
     tooth_dilation — на сколько мм граница зубов на КТ лежит снаружи настоящей
     (так ведут себя некоторые аппараты); скан при этом строится по настоящей.
+    open_deg — рот на КТ приоткрыт: нижняя челюсть повёрнута (jaw_opening),
+    а сканы по-прежнему в прикусе.
     """
     from scipy import ndimage
 
@@ -113,10 +136,14 @@ def make_volume(spacing=0.3, rotation_deg=10.0, noise=25.0, blur=0.6, seed=0, to
     h = spacing  # ширина размытия границы при «частичном объёме»
     occ = lambda f: np.clip(0.5 - f / h, 0, 1)
     up = _mirror(world)
-    img = AIR + (SOFT - AIR) * occ(np.minimum(gum_sdf(world), gum_sdf(up)))
-    b = occ(np.minimum(bone_sdf(world), bone_sdf(up)))
+    low = world
+    if open_deg:
+        inv = np.linalg.inv(jaw_opening(open_deg))
+        low = world @ inv[:3, :3].T + inv[:3, 3]
+    img = AIR + (SOFT - AIR) * occ(np.minimum(gum_sdf(low), gum_sdf(up)))
+    b = occ(np.minimum(bone_sdf(low), bone_sdf(up)))
     img = img * (1 - b) + BONE * b
-    t = occ(np.minimum(teeth_sdf(world), teeth_sdf(up, UPPER_VARIANT)) - tooth_dilation)
+    t = occ(np.minimum(teeth_sdf(low), teeth_sdf(up, UPPER_VARIANT)) - tooth_dilation)
     img = img * (1 - t) + TOOTH * t
     img = ndimage.gaussian_filter(img.reshape(vol.data.shape), blur)
     img += np.random.default_rng(seed).normal(0, noise, img.shape)
@@ -124,19 +151,26 @@ def make_volume(spacing=0.3, rotation_deg=10.0, noise=25.0, blur=0.6, seed=0, to
     return vol
 
 
-def make_scan(jaw="lower", resolution=0.15, seed=1):
-    """Скан челюсти: коронки и десна, только видимая со стороны прикуса часть, в мм фантома."""
-    lo, hi = np.array([-30.0, -6.0, -4.0]), np.array([30.0, 30.0, 11.0])
+def make_scan(jaw="lower", resolution=0.15, seed=1, palate=False):
+    """Скан челюсти: коронки и десна, только видимая со стороны прикуса часть, в мм фантома.
+
+    palate=True — скан захватывает нёбо (как обычно у верхней челюсти).
+    """
+    lo, hi = np.array([-30.0, -6.0, -10.0 if palate else -4.0]), np.array([30.0, 30.0, 11.0])
     shape = np.ceil((hi - lo) / resolution).astype(int) + 1
     grid = np.stack(np.meshgrid(*[lo[i] + resolution * np.arange(shape[i]) for i in range(3)], indexing="ij"), -1)
     p = grid.reshape(-1, 3)
     variant = UPPER_VARIANT if jaw == "upper" else 0
-    f = np.minimum(teeth_sdf(p, variant), gum_sdf(p)).reshape(shape)
+    gum = gum_sdf(p)
+    if palate:
+        gum = np.minimum(gum, palate_sdf(p))
+    f = np.minimum(teeth_sdf(p, variant), gum).reshape(shape)
     verts, faces, normals, _ = measure.marching_cubes(f, 0.0, spacing=(resolution,) * 3)
     verts += lo
     tri_n = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
     # Сканер видит то, что обращено к нему (со стороны прикуса), и десну до переходной складки.
-    visible = (tri_n[:, 2] > -0.2 * np.linalg.norm(tri_n, axis=1)) & (verts[faces].mean(axis=1)[:, 2] > -1.0)
+    floor = -9.0 if palate else -1.0
+    visible = (tri_n[:, 2] > -0.2 * np.linalg.norm(tri_n, axis=1)) & (verts[faces].mean(axis=1)[:, 2] > floor)
     faces = faces[visible]
     used = np.unique(faces)
     remap = np.full(len(verts), -1)

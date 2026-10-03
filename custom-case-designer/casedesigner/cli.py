@@ -92,12 +92,13 @@ def cmd_register(args):
         meshes.update(_segment(vol, args))
     if args.ct_surfaces:
         meshes.update(ct.surfaces())
-    report = export_case(args.out, registrations, meshes, frame=args.frame)
-    for name, info in report["scans"].items():
-        if info.get("placement") == "ct":
-            print(f"{name}: скан был в своей системе координат — поставлен по КТ")
-        for warning in info["warnings"][len(next(r for r in registrations if r.scan.name == name).warnings):]:
-            print(f"  ВНИМАНИЕ: {warning}")
+    report = export_case(args.out, registrations, meshes, bite=args.bite, frame=args.frame, ct=ct)
+    for note in report["notes"]:
+        print(note)
+    if report["ct_bite_vs_scans"]:
+        b = report["ct_bite_vs_scans"]
+        print(f"Прикус на КТ отличается от сканов: нижняя челюсть смещена в среднем на "
+              f"{b['lower_jaw_on_ct_vs_scans_mean_mm']:.2f} мм, повёрнута на {b['rotation_deg']:.1f}°")
     print(f"Готово за {time.perf_counter() - started:.0f} с: {args.out}")
 
 
@@ -120,9 +121,12 @@ def main(argv=None):
                      help="какая это челюсть (по умолчанию определяется сама)")
     reg.add_argument("--pairs", action="append", metavar="СКАН=ФАЙЛ",
                      help="пары точек для начального положения, если автоматика не справилась")
-    reg.add_argument("--frame", choices=("exocad", "ct"), default="exocad",
-                     help="система координат результата: exocad — координаты сканов, в которых их открывает "
-                          "exocad (по умолчанию); ct — пациента из DICOM")
+    reg.add_argument("--bite", choices=("scan", "ct"), default="scan",
+                     help="прикус: scan — сканов, структуры нижней челюсти из КТ переезжают к нижнему скану "
+                          "(по умолчанию); ct — статическое наложение на КТ")
+    reg.add_argument("--frame", choices=("exocad", "dicom"), default="exocad",
+                     help="система координат: exocad — сканера, в них сканы открывает exocad (по умолчанию); "
+                          "dicom — пациента из DICOM (только с --bite ct)")
     reg.add_argument("--ct-surfaces", action="store_true", help="также выгрузить зубы и кость из КТ (по порогам)")
     reg.add_argument("-o", "--out", required=True, help="папка результата")
     reg.add_argument("--memory", help="файл памяти совмещений: выученные поправки для аппаратов КТ")
