@@ -379,6 +379,47 @@ def load(path: str) -> Scene:
 
 # --- динамика по сцене ---
 
+def mount(upper_vertices, lower_vertices, mandible=None, skull=None) -> tuple:
+    """Монтаж по сканам и, если есть, КТ: (Anatomy, Settings, сведения о бугорках, примечания).
+
+    Горизонталь — окклюзионная плоскость, резцовая точка — на нижних резцах.
+    Мыщелки — по кости нижней челюсти (mandible: объект с vertices), иначе
+    средний артикулятор; ССП — по суставному бугорку черепа (skull: vertices и
+    faces), угол Беннетта — по Ханау; чего нет — значения по умолчанию.
+    """
+    upper_vertices, lower_vertices = np.asarray(upper_vertices, float), np.asarray(lower_vertices, float)
+    up, anterior = mo.arch_axes(lower_vertices, upper_vertices.mean(0) - lower_vertices.mean(0))
+    right = np.cross(anterior, up)
+    incisal = mo._incisal(lower_vertices, anterior, up, mo.INCISAL_TILT_DEG)
+    notes, settings = [], kin.Settings()
+    co = suggest_condyles(mandible.vertices, up=up, left=-right, anterior=anterior) if mandible is not None else {}
+    if len(co) == 2:
+        hinge = (co["Co_R"] + co["Co_L"]) / 2
+        R = np.array([right, anterior, up])
+        anatomy = mo.Anatomy(rigid(R, -R @ hinge),
+                             {"incisal": incisal, "condyle_right": co["Co_R"], "condyle_left": co["Co_L"]},
+                             "КТ: мыщелки по нижней челюсти; горизонталь — окклюзионная плоскость")
+    else:
+        anatomy = mo.anatomy_average(lower_vertices, upper_vertices, incisal=incisal)
+        if mandible is not None:
+            notes.append("мыщелки на кости нижней челюсти не найдены — средний артикулятор")
+    eminence = {}
+    if skull is not None and len(co) == 2:
+        for side in ("right", "left"):
+            try:
+                info = condylar_path(*eminence_profile(skull.vertices, skull.faces, anatomy.frame,
+                                                       anatomy.points[f"condyle_{side}"]))
+            except ValueError as e:
+                notes.append(f"{'правый' if side == 'right' else 'левый'} бугорок: {e}")
+                continue
+            eminence[side] = {k: v for k, v in info.items() if k != "path"}
+            setattr(settings, f"sagittal_{side}_deg", info["sagittal_deg"])
+            setattr(settings, f"bennett_{side}_deg", round(hanau_bennett(info["sagittal_deg"]), 1))
+            settings.sources[f"sagittal_{side}_deg"] = "КТ: суставной бугорок"
+            settings.sources[f"bennett_{side}_deg"] = "формула Ханау"
+    return anatomy, settings, eminence, notes
+
+
 def analyze(scene: Scene, travel: float = 6.0) -> tuple[dict, mo.MotionCase, mo.Anatomy]:
     """Протрузия и латеротрузии по сканам челюстей сцены.
 
@@ -390,36 +431,7 @@ def analyze(scene: Scene, travel: float = 6.0) -> tuple[dict, mo.MotionCase, mo.
     upper, lower = p["upper_scan"], p["lower_scan"]
     if upper is None or lower is None:
         raise ValueError("в сцене нужны сканы обеих челюстей (или скан и антагонист)")
-    up, anterior = mo.arch_axes(lower.vertices, upper.vertices.mean(0) - lower.vertices.mean(0))
-    right = np.cross(anterior, up)
-    incisal = mo._incisal(lower.vertices, anterior, up, mo.INCISAL_TILT_DEG)
-    notes, settings = [], kin.Settings()
-    co = suggest_condyles(p["mandible"].vertices, up=up, left=-right, anterior=anterior) \
-        if p["mandible"] is not None else {}
-    if len(co) == 2:
-        hinge = (co["Co_R"] + co["Co_L"]) / 2
-        R = np.array([right, anterior, up])
-        anatomy = mo.Anatomy(rigid(R, -R @ hinge),
-                             {"incisal": incisal, "condyle_right": co["Co_R"], "condyle_left": co["Co_L"]},
-                             "КТ: мыщелки по нижней челюсти; горизонталь — окклюзионная плоскость")
-    else:
-        anatomy = mo.anatomy_average(lower.vertices, upper.vertices, incisal=incisal)
-        if p["mandible"] is not None:
-            notes.append("мыщелки на кости нижней челюсти не найдены — средний артикулятор")
-    eminence = {}
-    if p["skull"] is not None and len(co) == 2:
-        for side in ("right", "left"):
-            try:
-                info = condylar_path(*eminence_profile(p["skull"].vertices, p["skull"].faces, anatomy.frame,
-                                                       anatomy.points[f"condyle_{side}"]))
-            except ValueError as e:
-                notes.append(f"{'правый' if side == 'right' else 'левый'} бугорок: {e}")
-                continue
-            eminence[side] = {k: v for k, v in info.items() if k != "path"}
-            setattr(settings, f"sagittal_{side}_deg", info["sagittal_deg"])
-            setattr(settings, f"bennett_{side}_deg", round(hanau_bennett(info["sagittal_deg"]), 1))
-            settings.sources[f"sagittal_{side}_deg"] = "КТ: суставной бугорок"
-            settings.sources[f"bennett_{side}_deg"] = "формула Ханау"
+    anatomy, settings, eminence, notes = mount(upper.vertices, lower.vertices, p["mandible"], p["skull"])
     try:
         occlusion = kin.Occlusion(upper.vertices, upper.faces, lower.vertices, anatomy.frame)
     except ValueError as e:

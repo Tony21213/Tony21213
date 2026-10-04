@@ -40,6 +40,7 @@ FRAMES = 41
 GUIDE_REACH_MM = 6.0  # нижние зубы дальше этого от верхних в прикусе не участвуют в ведении
 GUIDE_POINTS = 8000  # столько точек нижних зубов проверяется на проникновение
 CONTACT_TOL_MM = 0.02  # допуск проникновения сверх того, что было в исходном прикусе
+REFINE_ROUNDS = 5  # сколько раз дополнять выборку точками, ушедшими в верхние зубы
 STEP_DEG = 0.05  # шаг поиска контакта: на резцах ~0.08 мм — тоньше режущего края, насквозь не проскочить
 CLOSE_LIMIT_DEG = -15.0
 OPEN_LIMIT_DEG = 25.0
@@ -156,19 +157,33 @@ class Occlusion:
         near = lower[np.isfinite(d)]
         if len(near) == 0:
             raise ValueError(f"модели не в прикусе: нижние зубы дальше {GUIDE_REACH_MM:g} мм от верхних")
-        if len(near) > max_points:
-            near = near[np.random.default_rng(seed).choice(len(near), max_points, replace=False)]
-        self.lower = near
         _d, i = self.tree.query(near)
         if np.mean(np.sum((near - self.points[i]) * self.normals[i], axis=1)) < 0:
             self.normals = -self.normals  # нормали верхних зубов — наружу, к нижним
-        start = self._signed(np.eye(4))
-        self.floor = np.minimum(start, 0.0) - CONTACT_TOL_MM  # не глубже, чем в прикусе
+        # Все точки нижних зубов у верхних — для проверки; выборка — для частого поиска контакта.
+        self.all_lower = near
+        start = self._signed_points(np.eye(4), near)
+        self.all_floor = np.minimum(start, 0.0) - CONTACT_TOL_MM  # не глубже, чем в прикусе
         self.bite_penetration_mm = float(max(0.0, -start.min()))  # насколько «провален» прикус
+        pick = np.arange(len(near)) if len(near) <= max_points else \
+            np.random.default_rng(seed).choice(len(near), max_points, replace=False)
+        self.lower, self.floor = near[pick], self.all_floor[pick]
 
     def _signed(self, M: np.ndarray) -> np.ndarray:
-        """Расстояние каждой нижней точки до верхних зубов со знаком (минус — внутри); далёкие — inf."""
-        p = apply(M, self.lower)
+        """Расстояние каждой нижней точки выборки до верхних зубов со знаком (минус — внутри); далёкие — inf."""
+        return self._signed_points(M, self.lower)
+
+    def _refine(self, M: np.ndarray) -> bool:
+        """Проверить положение по всем точкам: ушедшие глубже допуска добавляются в выборку (True — добавлены)."""
+        bad = self.all_floor - self._signed_points(M, self.all_lower) > 0
+        if not bad.any():
+            return False
+        self.lower = np.vstack([self.lower, self.all_lower[bad]])
+        self.floor = np.r_[self.floor, self.all_floor[bad]]
+        return True
+
+    def _signed_points(self, M: np.ndarray, points: np.ndarray) -> np.ndarray:
+        p = apply(M, points)
         d, i = self.tree.query(p, distance_upper_bound=1.5)
         out = np.full(len(p), np.inf)
         ok = np.isfinite(d)
@@ -180,7 +195,19 @@ class Occlusion:
         return float(max(0.0, (self.floor - self._signed(M)).max()))
 
     def contact(self, c0: dict, c1: dict, anchor: str, start: float) -> float:
-        """Угол открывания, при котором зубы в контакте без проникновения (ищется от start)."""
+        """Угол открывания, при котором зубы в контакте без проникновения (ищется от start).
+
+        Поиск идёт по выборке точек; найденное положение проверяется по всем
+        точкам нижних зубов, и если какие-то ушли в верхние зубы, они
+        добавляются в выборку и поиск повторяется.
+        """
+        for _ in range(REFINE_ROUNDS):
+            theta = self._contact(c0, c1, anchor, start)
+            if not self._refine(jaw_pose(c0, c1, theta, anchor)):
+                break
+        return theta
+
+    def _contact(self, c0: dict, c1: dict, anchor: str, start: float) -> float:
         def free(theta):
             return self.depth(jaw_pose(c0, c1, theta, anchor)) <= 0.0
 
@@ -305,7 +332,7 @@ def check_against_scans(recordings: list, upper_vertices, upper_faces, lower_ver
     (Occlusion.floor). ref — исходное положение записей (motion.reference_pose);
     anatomy — чтобы назвать участок дуги.
     """
-    occ = Occlusion(upper_vertices, upper_faces, lower_vertices, np.eye(4), max_points=SEAT_POINTS)
+    occ = Occlusion(upper_vertices, upper_faces, lower_vertices, np.eye(4), max_points=10 ** 9)  # все точки
     out, notes = [], []
     for rec in recordings:
         T = rec.transforms @ np.linalg.inv(ref if ref is not None else rec.transforms[0])

@@ -16,6 +16,7 @@ import trimesh
 from .. import articulators as arts
 from .. import landmarks as lmk
 from ..fusion import CaseCT, Registration, Scan, deviation_colors, export_case
+from ..jawcase import JawCase
 from ..learning import AlignmentMemory
 from ..register import apply
 from ..segment import Segmenter
@@ -74,6 +75,7 @@ class Session:
         self.landmarks: dict[str, np.ndarray] = {}
         self.suggested: set[str] = set()  # предложены программой и ещё не подтверждены врачом
         self.articulators_path = os.path.join(os.path.dirname(self.memory.path), "articulators.json")
+        self.jaw = JawCase()  # артикуляция: монтаж, суставы, движения, контакты (интерфейс — позже)
 
     # --- КТ -----------------------------------------------------------------
     def load_ct(self, path: str, progress=None) -> dict:
@@ -371,4 +373,5 @@ class Session:
 
     def state(self) -> dict:
         return {"ct": self.ct_info(), "scans": [self.scan_info(s) for s in self.scans],
-                "models_dir": self.models_dir, **self.structures_info(), **self.landmarks_info()}
+                "models_dir": self.models_dir, **self.structures_info(), **self.landmarks_info(),
+                "articulation": self.jaw.state()}
