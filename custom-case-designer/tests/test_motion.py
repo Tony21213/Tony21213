@@ -4,6 +4,7 @@ import zipfile
 import numpy as np
 import pytest
 import trimesh
+from scipy.spatial import cKDTree
 
 from casedesigner import guidance as gd
 from casedesigner import kinematics as kin
@@ -399,3 +400,32 @@ def test_thin_incisal_edge_is_not_skipped():
     """Край резца 0.2 мм, суставной путь круче ведения: челюсть закрывается до контакта и не проскакивает край."""
     angle, _ = guided_protrusion(*ramp_case(thickness=0.2), sagittal=60.0)
     assert angle == pytest.approx(50, abs=0.6)
+
+
+def test_fgp_follows_the_guiding_surface():
+    """Огибающая нижнего резца, скользящего по нёбной поверхности, лежит на этой поверхности, не выше её."""
+    from casedesigner import fgp
+
+    up_v, up_f, low_v = ramp_case()
+    a = mo.Anatomy(np.eye(4), dict(POINTS), "истина")
+    s = kin.Settings(35, 35)
+    occ = kin.Occlusion(up_v, up_f, low_v, np.eye(4))
+    rec = kin.protrusion(a, s, occlusion=occ, frames=81)
+    verts, faces, _ = fgp.fgp(up_v, up_f, low_v, a, s, recordings=[rec], cell=0.1)
+    assert len(faces) > 0
+    angle = np.radians(50)
+    along = np.array([0, np.cos(angle), -np.sin(angle)])
+    incisal = POINTS["incisal"]
+    # точки огибающей впереди резца: высота над нёбной плоскостью (по вертикали) около −0.05…0 мм, не выше
+    rel = verts - incisal
+    front = verts[(np.abs(rel[:, 0]) < 3) & (rel[:, 1] > 0.5) & (rel[:, 1] < 4)]
+    on_ramp_z = incisal[2] + (front[:, 1] - incisal[1]) * along[2] / along[1]
+    gap = front[:, 2] - on_ramp_z
+    # клетка берёт максимум: на склоне 50° запас до половины клетки × tg 50° (+ допуск контакта)
+    assert gap.max() < 0.05 * np.tan(angle) + 0.05 and np.median(gap) > -0.3
+    # огибающая не ниже исходного положения нижних зубов (у края резца, где они касаются верхних)
+    tree = cKDTree(verts[:, :2])
+    edge = low_v[:41]
+    for p in edge:
+        around = tree.query_ball_point(p[:2], 0.12)
+        assert around and verts[around, 2].max() >= p[2] - 1e-6
