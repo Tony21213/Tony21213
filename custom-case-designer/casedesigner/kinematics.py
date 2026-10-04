@@ -40,7 +40,7 @@ FRAMES = 41
 GUIDE_REACH_MM = 6.0  # нижние зубы дальше этого от верхних в прикусе не участвуют в ведении
 GUIDE_POINTS = 8000  # столько точек нижних зубов проверяется на проникновение
 CONTACT_TOL_MM = 0.02  # допуск проникновения сверх того, что было в исходном прикусе
-STEP_DEG = 0.25  # шаг поиска контакта: на резцах это ~0.4 мм, проникновение остаётся неглубоким
+STEP_DEG = 0.05  # шаг поиска контакта: на резцах ~0.08 мм — тоньше режущего края, насквозь не проскочить
 CLOSE_LIMIT_DEG = -15.0
 OPEN_LIMIT_DEG = 25.0
 
@@ -133,9 +133,14 @@ def laterotrusion_targets(c0: dict, s: Settings, working: str, forward: float,
 class Occlusion:
     """Верхние зубы как препятствие для нижних: ведение по реальной геометрии зубов.
 
-    Модели — в прикусе, в координатах кейса. Проникновение считается по
-    ближайшей вершине верхней модели и её нормали; шаги движения малы, поэтому
-    проникновение на каждом шаге неглубокое и определяется надёжно.
+    Только внутриротовые сканы (или CAD-модели) в прикусе: зубы из КТ для
+    скольжения не годятся — разрешение и сглаживание искажают бугры и края.
+    Модели — в координатах кейса. Проникновение считается по ближайшей
+    вершине верхней модели и её нормали. Прикус сканов часто «провален» на
+    десятые доли миллиметра, поэтому допуск свой у каждой точки: глубже, чем
+    она была в исходном прикусе, ей уходить нельзя, а точкам, которые в прикусе
+    не касались, — глубже CONTACT_TOL_MM. Шаги движения и поиска контакта малы,
+    поэтому за шаг точка не проскакивает сквозь тонкий край.
     """
 
     def __init__(self, upper_vertices, upper_faces, lower_vertices, frame: np.ndarray, seed: int = 0):
@@ -156,22 +161,27 @@ class Occlusion:
         _d, i = self.tree.query(near)
         if np.mean(np.sum((near - self.points[i]) * self.normals[i], axis=1)) < 0:
             self.normals = -self.normals  # нормали верхних зубов — наружу, к нижним
-        self.allowed = self.depth(np.eye(4)) + CONTACT_TOL_MM
+        start = self._signed(np.eye(4))
+        self.floor = np.minimum(start, 0.0) - CONTACT_TOL_MM  # не глубже, чем в прикусе
+        self.bite_penetration_mm = float(max(0.0, -start.min()))  # насколько «провален» прикус
 
-    def depth(self, M: np.ndarray) -> float:
-        """Наибольшее проникновение нижних зубов в верхние при положении M (анатомическая система), мм."""
+    def _signed(self, M: np.ndarray) -> np.ndarray:
+        """Расстояние каждой нижней точки до верхних зубов со знаком (минус — внутри); далёкие — inf."""
         p = apply(M, self.lower)
         d, i = self.tree.query(p, distance_upper_bound=1.5)
+        out = np.full(len(p), np.inf)
         ok = np.isfinite(d)
-        if not ok.any():
-            return 0.0
-        signed = np.sum((p[ok] - self.points[i[ok]]) * self.normals[i[ok]], axis=1)
-        return float(max(0.0, -signed.min()))
+        out[ok] = np.sum((p[ok] - self.points[i[ok]]) * self.normals[i[ok]], axis=1)
+        return out
+
+    def depth(self, M: np.ndarray) -> float:
+        """Насколько при положении M (анатомическая система) нижние зубы уходят в верхние глубже допуска, мм."""
+        return float(max(0.0, (self.floor - self._signed(M)).max()))
 
     def contact(self, c0: dict, c1: dict, anchor: str, start: float) -> float:
         """Угол открывания, при котором зубы в контакте без проникновения (ищется от start)."""
         def free(theta):
-            return self.depth(jaw_pose(c0, c1, theta, anchor)) <= self.allowed
+            return self.depth(jaw_pose(c0, c1, theta, anchor)) <= 0.0
 
         lo = hi = start
         if free(start):  # закрывать, пока зубы не встретятся

@@ -351,3 +351,51 @@ def test_arch_direction_with_curve_of_spee():
     lower = np.vstack([arch + [0, r, -dz] for dz in np.linspace(0, 8, 6) for r in (-4, 0, 4)])
     up, anterior = mo.arch_axes(lower, [0, 0, 1.0])
     assert anterior @ [0, 1, 0] > 0.99 and up @ [0, 0, 1] > 0.98
+
+
+def ramp_case(thickness=None, molars_over_closed=None):
+    """Верхний резец — нёбная поверхность под 50° (и губная, если задана толщина края); нижний режущий край у неё.
+
+    molars_over_closed — «провал» прикуса: нижние жевательные бугры на столько мм внутри верхних.
+    """
+    angle = np.radians(50)
+    along = np.array([0, np.cos(angle), -np.sin(angle)])
+    toward_lower = np.array([0, -np.sin(angle), -np.cos(angle)])
+    incisal = POINTS["incisal"]
+    meshes = [plate(incisal - 4 * along + [-6, 0, 0], np.array([12.0, 0, 0]), 12 * along)]
+    if thickness:  # губная поверхность: та же плоскость, сдвинутая внутрь зуба, нормаль наружу
+        meshes.append(plate(incisal - 4 * along + [-6, 0, 0] - thickness * toward_lower, 12 * along,
+                            np.array([12.0, 0, 0])))
+    edge = np.c_[np.linspace(-4, 4, 41), np.full(41, 90.0), np.full(41, -30.0)] + 0.05 * toward_lower
+    lower = [edge, edge + [0, -1.5, -1.0], edge + [0, -3, -6]]
+    if molars_over_closed is not None:  # верхние бугры — плоскость z = −32, нижние — чуть внутри неё
+        meshes.append(plate(np.array([-25.0, 40, -32]), np.array([50.0, 0, 0]), np.array([0, 20.0, 0])))
+        grid = np.stack(np.meshgrid(np.linspace(-20, 20, 21), np.linspace(42, 58, 9)), -1).reshape(-1, 2)
+        lower.append(np.c_[grid, np.full(len(grid), -32 + molars_over_closed)])
+    verts, faces, off = [], [], 0
+    for v, f in meshes:
+        verts.append(v)
+        faces.append(f + off)
+        off += len(v)
+    return np.vstack(verts), np.vstack(faces), np.vstack(lower)
+
+
+def guided_protrusion(up_v, up_f, low_v, sagittal=35.0):
+    a = mo.Anatomy(np.eye(4), dict(POINTS), "истина")
+    occ = kin.Occlusion(up_v, up_f, low_v, np.eye(4))
+    rec = kin.protrusion(a, kin.Settings(sagittal, sagittal), occlusion=occ)
+    return mo.analyze_case(mo.MotionCase("x", [rec]), a)["guidance_deg"]["protrusion"], occ
+
+
+def test_over_closed_bite_does_not_let_incisors_sink():
+    """Прикус «провален» на 0.4 мм в жевательных зубах — резцы всё равно не уходят друг в друга."""
+    exact, _ = guided_protrusion(*ramp_case(molars_over_closed=0.0))
+    sunk, occ = guided_protrusion(*ramp_case(molars_over_closed=0.4))
+    assert occ.bite_penetration_mm == pytest.approx(0.4, abs=0.05)
+    assert sunk == pytest.approx(exact, abs=0.2) and exact == pytest.approx(50, abs=1.0)
+
+
+def test_thin_incisal_edge_is_not_skipped():
+    """Край резца 0.2 мм, суставной путь круче ведения: челюсть закрывается до контакта и не проскакивает край."""
+    angle, _ = guided_protrusion(*ramp_case(thickness=0.2), sagittal=60.0)
+    assert angle == pytest.approx(50, abs=0.6)
