@@ -146,6 +146,14 @@ def cmd_motion(args):
         if anatomy.hinge_rms_mm is not None:
             print(f"Шарнирная ось: в начале открывания смещается в среднем на {anatomy.hinge_rms_mm:.2f} мм")
         _print_motion(report)
+        from . import articulator_fit
+
+        _fitted, fitted = articulator_fit.fit(case, anatomy)
+        report["articulator_fit"] = fitted
+        print("Подбор артикулятора по всему начальному участку пути: " + ", ".join(
+            f"{k} = {v}" for k, v in fitted["settings"].items() if fitted["sources"].get(k) == "подбор по записи"))
+        for note in fitted["notes"]:
+            print(f"  {note}")
         upper, lower_mesh = case.mesh("upper"), case.mesh("lower")
         if upper is not None and lower_mesh is not None:
             from . import kinematics

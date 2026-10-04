@@ -101,3 +101,17 @@ def test_fgp_from_case(scans):
     case.generate(travel=3)
     mesh = case.fgp("upper", cell=0.4)
     assert len(mesh.faces) > 100 and "верхней" in mesh.source
+
+
+def test_fit_articulator_in_case(scans, tmp_path):
+    case = fresh(scans)
+    case.mount("average")
+    rec = kin.protrusion(case.anatomy, kin.Settings(41, 39), 5, case.occlusion)  # пациент — по своим зубам
+    xml = '<M units="mm"><Movement name="p">' + "".join(
+        f'<Frame time="{t:.4f}">{" ".join(f"{v:.9f}" for v in M.ravel())}</Frame>'
+        for t, M in zip(rec.times, rec.transforms)) + "</Movement></M>"
+    (tmp_path / "p.xml").write_text(xml)
+    case.load_motion(str(tmp_path / "p.xml"))
+    report = case.fit_articulator()
+    assert report["enough"] and case.settings.sagittal_right_deg == pytest.approx(41, abs=0.3)
+    assert case.undo() == "настройки по записи" and case.settings.sagittal_right_deg == 35.0

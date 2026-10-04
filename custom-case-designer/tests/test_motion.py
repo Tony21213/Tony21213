@@ -506,3 +506,37 @@ def test_recording_checked_against_scans(case):
         assert r["start_depth_mm"] == pytest.approx(0.4, abs=0.05)
     if case == "apart":
         assert r["start_gap_mm"] > kin.GAP_MM  # 0.6 мм вниз — по нормали ската 50° это около 0.4 мм
+
+
+# --- подбор артикулятора по записи ---
+
+def curved_protrusion(a, bend=0.08, travel=6.0, frames=41):
+    """Протрузия по изогнутому пути мыщелков (скат бугорка круче к концу): артикулятор так не умеет."""
+    c0 = kin.condyles(a)
+    poses = []
+    for s in np.linspace(0, travel, frames):
+        step = np.array([0, s, -np.tan(np.radians(30)) * s - bend * s ** 2])
+        poses.append(kin.jaw_pose(c0, {k: v + step for k, v in c0.items()}, 0.0))
+    return kin._recording("Протрузия", a, poses, 1.0)
+
+
+def test_articulator_fit_reproduces_straight_paths():
+    from casedesigner import articulator_fit as af
+
+    s, report = af.fit(mo.MotionCase("x", recordings()), truth())
+    assert s.sagittal_right_deg == pytest.approx(SETTINGS.sagittal_right_deg, abs=0.3)
+    assert s.bennett_left_deg == pytest.approx(SETTINGS.bennett_left_deg, abs=0.5)
+    assert s.side_shift_right_mm == pytest.approx(SETTINGS.side_shift_right_mm, abs=0.1)
+    assert report["enough"] and report["worst_incisal_mm"] < 0.1
+    assert s.sources["sagittal_left_deg"] == "подбор по записи"
+
+
+def test_articulator_fit_reports_curved_path():
+    from casedesigner import articulator_fit as af
+
+    a = truth()
+    s, report = af.fit(mo.MotionCase("x", [curved_protrusion(a)]), a)
+    assert 30 < s.sagittal_right_deg < 45  # прямая между началом и концом изогнутого участка
+    assert report["path_rms_mm"]["sagittal_right"] > 0.1
+    assert not report["enough"] and report["worst_incisal_mm"] > af.ENOUGH_MM
+    assert "лучше сама запись" in report["notes"][0]

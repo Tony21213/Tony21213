@@ -223,6 +223,21 @@ class JawCase:
         return {"values": {k: v for k, v in vars(s).items() if k not in ("sources", "frame")},
                 "sources": dict(s.sources), "own_horizontal": s.frame is not None}
 
+    def fit_articulator(self, use: bool = True) -> dict:
+        """Подобрать настройки артикулятора по записям пациента и показать, насколько артикулятор с ними
+        расходится с записью (articulator_fit); use — сразу взять подобранные настройки (отменяется undo)."""
+        from . import articulator_fit as af
+
+        self._require()
+        recs = [m.recording for m in self._recorded()]
+        if not recs:
+            raise ValueError("записей движения нет — загрузите выгрузку (load_motion)")
+        settings, report = af.fit(mo.MotionCase("кейс", recs), self.anatomy, self.settings, self.occlusion)
+        if use:
+            self._edit("настройки по записи")
+            self.settings = settings
+        return report
+
     def seat_bite(self) -> dict:
         """Посадить прикус сканов на шарнирной оси до касания без проникновения (отменяется undo)."""
         self._require()
