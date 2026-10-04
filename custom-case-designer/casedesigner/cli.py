@@ -106,7 +106,7 @@ def cmd_register(args):
 
 
 def cmd_motion(args):
-    case = motion.read_case(args.case)
+    case = motion.read_case(args.case, split=args.split, smoothing=args.smooth)
     print(f"Кейс: {case.source}, файлов: {len(case.files)}")
     for f in case.files:
         role = f" — {f['role']}" if f.get("role") else ""
@@ -233,6 +233,8 @@ def main(argv=None):
     mot.add_argument("--incisal", nargs=3, type=float, metavar=("X", "Y", "Z"),
                      help="резцовая точка в координатах моделей (по умолчанию ищется на модели)")
     mot.add_argument("--icd", type=float, default=motion.ICD_MM, help="межмыщелковое расстояние, мм (100)")
+    mot.add_argument("--split", action="store_true", help="сплошные записи — разделить на отдельные движения")
+    mot.add_argument("--smooth", action="store_true", help="сгладить шум трекера (окно 0.1 с)")
     mot.add_argument("--axes", help="для путей мыщелков: какие оси файла смотрят вправо пациента, вперёд и вверх, "
                                     "например --axes=-y,x,z (по умолчанию угадываются по путям)")
     mot.add_argument("-o", "--out", help="папка отчёта: motion.json, paths.csv, motion.png")

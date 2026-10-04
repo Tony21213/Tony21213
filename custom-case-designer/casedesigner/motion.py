@@ -48,6 +48,7 @@ import csv
 import io
 import os
 import re
+import warnings
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
@@ -82,6 +83,14 @@ CUSP_SHARE = 0.05  # окклюзионная плоскость — по сам
 ARCH_BAND_MM = 6.0  # форма дуги — по коронкам не глубже 6 мм от окклюзионной плоскости
 RIGID_STD_MM = 0.5  # маркеры одного тела: расстояние между ними за запись меняется меньше
 MIN_SPREAD_MM = 1.0  # маркеры тела не на одной прямой: второй размер облака больше
+VISIBLE_SHARE = 0.5  # маркер, видный меньше чем в половине кадров, не учитывается
+RESIDUAL_MM = 0.5  # отклонение маркеров от жёсткого тела в кадре больше — маркер сбит или кадр — выброс
+SPIKE_MM = 1.5  # скачок к кадру и обратно больше этого (и в 5 раз больше обычного шага) — выброс
+SMOOTH_S = 0.1  # окно сглаживания, с
+REST_MM = 1.0  # челюсть ближе к исходному положению — покой между движениями
+MERGE_S = 0.4  # покой короче — то же движение (жевательные циклы)
+MIN_MOVE_MM = 2.0  # движение меньше — не отдельное движение
+PROBE = np.array([[x, y, z] for x in (-50.0, 50) for y in (-50.0, 50) for z in (-50.0, 50)])  # куб вокруг моделей
 METERS_SPREAD = 0.5  # маркеры, разнесённые меньше чем на 0.5 «единицы», — это метры
 AXES_RATIO = 1.5  # оси путей мыщелков угадываются, только если вперёд они уходят заметно больше, чем вниз
 
@@ -419,19 +428,20 @@ def _recordings(parent, frames, source) -> list[Recording]:
 
 
 def _point_series(parent, frames, source) -> Tracing | None:
-    """Серия кадров из точек: точки, что есть во всех кадрах (одиночные точки — с одинаковым именем)."""
+    """Серия кадров из точек: точки, что видны в большинстве кадров (в остальных — NaN)."""
     pts = [b for _, b in frames if isinstance(b, _Points)]
     if len(pts) < 0.9 * len(frames):
         return None
-    common = set(pts[0]).intersection(*pts[1:])
-    labels = [k for k in pts[0] if k in common]
+    seen = Counter(k for b in pts for k in b)
+    labels = list(dict.fromkeys(k for b in pts for k in b if seen[k] >= VISIBLE_SHARE * len(pts)))
     if not labels:
         return None  # у каждого «кадра» своя точка — это набор точек, а не запись
     keep = [(c, b) for c, b in frames if isinstance(b, _Points)]
     times, timed = _times(parent, [c for c, _ in keep])
     if len(labels) == 1 and not timed:
         return None  # ряд одиночных точек без времени — скорее линия или контур, чем движение
-    return Tracing(_label(parent), times, {k: np.array([b[k] for _, b in keep], float) for k in labels},
+    gap = np.full(3, np.nan)  # маркер в кадре не виден
+    return Tracing(_label(parent), times, {k: np.array([b.get(k, gap) for _, b in keep], float) for k in labels},
                    source, timed)
 
 
@@ -506,8 +516,13 @@ def point_role(label: str, pair: bool = False) -> str | None:
 
 
 def _rigid_groups(P: np.ndarray) -> list[list[int]]:
-    """Маркеры по телам: в теле расстояния между всеми маркерами за запись почти не меняются."""
-    sd = np.linalg.norm(P[:, :, None] - P[:, None], axis=-1).std(0)
+    """Маркеры по телам: в теле расстояния между всеми маркерами за запись почти не меняются (NaN — не виден)."""
+    with np.errstate(invalid="ignore"):
+        d = np.linalg.norm(P[:, :, None] - P[:, None], axis=-1)
+    both = (~np.isnan(d)).sum(0)
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        sd = np.where(both >= MIN_FRAMES, np.nanstd(d, axis=0), np.inf)
     groups = []
     for i in range(P.shape[1]):
         for g in groups:
@@ -521,9 +536,16 @@ def _rigid_groups(P: np.ndarray) -> list[list[int]]:
 
 def _spread(points: np.ndarray) -> float:
     """Второй размер облака точек: у точек на одной прямой — около нуля."""
+    points = points[~np.isnan(points).any(1)]
     if len(points) < 3:
         return 0.0
     return float(np.linalg.svd(points - points.mean(0), compute_uv=False)[1])
+
+
+def _complete(P: np.ndarray) -> int | None:
+    """Первый кадр, где видны все маркеры."""
+    ok = ~np.isnan(P).any(axis=(1, 2))
+    return int(np.argmax(ok)) if ok.any() else None
 
 
 def _assign(bodies: list, labels: list, P: np.ndarray, notes: list) -> tuple:
@@ -541,30 +563,92 @@ def _assign(bodies: list, labels: list, P: np.ndarray, notes: list) -> tuple:
         return b, a
     if jaw(a) == "lower" or jaw(b) == "upper":
         return a, b
-    moved = [float(np.linalg.norm(P[:, g] - P[0, g], axis=-1).mean()) for g in (a, b)]
+
+    def moved(g):
+        k = _complete(P[:, g])
+        return float(np.nanmean(np.linalg.norm(P[:, g] - P[k, g], axis=-1))) if k is not None else 0.0
+
     notes.append("маркеры головы и челюсти не подписаны — нижней челюстью считается тело, которое двигается больше")
-    return (a, b) if moved[0] >= moved[1] else (b, a)
+    return (a, b) if moved(a) >= moved(b) else (b, a)
 
 
-def _track_body(P: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray, float]:
-    """Положения тела по маркерам от исходного расположения (Кабш) и отклонение от жёсткого движения, мм."""
-    T = np.array([kabsch(ref, p) for p in P])
-    moved = np.einsum("nij,kj->nki", T[:, :3, :3], ref) + T[:, None, :3, 3]
-    return T, float(np.median(np.sqrt(((moved - P) ** 2).sum(-1).mean(-1))))
+def _fit(ref: np.ndarray, pts: np.ndarray) -> tuple[np.ndarray, float]:
+    M = kabsch(ref, pts)
+    return M, float(np.sqrt(((apply(M, ref) - pts) ** 2).sum(1).mean()))
+
+
+def _track_body(P: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray, float, dict]:
+    """Положения тела по видимым маркерам от исходного расположения (Кабш).
+
+    Кадр, где видно меньше трёх маркеров (или они на одной прямой), — пропуск
+    (NaN). Если маркер сбит (блик, подмена), отклонение от жёсткого тела велико —
+    тогда положение берётся без худшего маркера, а если и так не сходится, кадр
+    считается выбросом. Возвращает положения, типичное отклонение (мм) и счётчики.
+    """
+    N, k = P.shape[:2]
+    T, res = np.full((N, 4, 4), np.nan), np.full(N, np.nan)
+    stats = {"hidden": 0, "dropped_marker": 0}
+    for n in range(N):
+        vis = ~np.isnan(P[n]).any(1)
+        stats["hidden"] += int(vis.sum() < k)
+        if vis.sum() < 3 or _spread(ref[vis]) <= MIN_SPREAD_MM:
+            continue
+        M, r = _fit(ref[vis], P[n, vis])
+        if r > RESIDUAL_MM and vis.sum() >= 4:
+            tries = [(_fit(ref[v], P[n, v]), v) for i in np.flatnonzero(vis)
+                     if _spread(ref[(v := vis & (np.arange(k) != i))]) > MIN_SPREAD_MM]
+            if tries:
+                (M2, r2), _v = min(tries, key=lambda t: t[0][1])
+                if r2 < r:
+                    M, r = M2, r2
+                    stats["dropped_marker"] += 1
+        T[n], res[n] = M, r
+    typical = float(np.nanmedian(res)) if np.isfinite(res).any() else float("nan")
+    bad = res > max(RESIDUAL_MM, 3 * typical)
+    T[bad] = np.nan
+    stats["outliers"] = int(bad.sum())
+    return T, typical, stats
+
+
+def fill_gaps(times: np.ndarray, T: np.ndarray) -> tuple[np.ndarray, int]:
+    """Пропущенные кадры (NaN) — по соседним: смещение линейно, поворот — сферически (slerp).
+
+    До первого и после последнего известного кадра — как ближайший известный.
+    """
+    from scipy.spatial.transform import Slerp
+
+    ok = ~np.isnan(T).any(axis=(1, 2))
+    missing = int((~ok).sum())
+    if missing == 0 or ok.sum() < 2:
+        return T, missing if ok.sum() >= 2 else -1
+    t = np.asarray(times, float)
+    tk = t[ok]
+    q = np.clip(t, tk[0], tk[-1])
+    out = T.copy()
+    out[:, :3, :3] = Slerp(tk, Rotation.from_matrix(T[ok, :3, :3]))(q).as_matrix()
+    for i in range(3):
+        out[:, i, 3] = np.interp(q, tk, T[ok, i, 3])
+    out[:, 3] = [0, 0, 0, 1]
+    out[ok] = T[ok]
+    return out, missing
 
 
 def _from_points(series: list, reference: dict | None = None, scale: float | None = None) -> tuple:
     """Записи по точкам: тело из ≥ 3 маркеров — положения челюсти, иначе — пути точек.
 
     Исходное расположение — из файла (окклюзия), иначе — первый кадр первой
-    записи с теми же маркерами: так все записи кейса отсчитаны от одного
-    положения. Если есть и маркеры головы, положение челюсти — относительно головы.
+    записи, где видны все маркеры тела: так все записи кейса отсчитаны от
+    одного положения. Если есть и маркеры головы, положение челюсти — относительно
+    головы. Кадры, где маркеров не хватило, и выбросы заполняются по соседним.
     """
     recs, tracings, notes = [], [], []
     if not series:
         return recs, tracings, notes
     if scale is None:
-        first = np.array(list(series[0].points.values()))[:, 0]
+        stack = np.array(list(series[0].points.values()))
+        k = _complete(np.transpose(stack, (1, 0, 2)))
+        first = stack[:, k] if k is not None else stack[:, 0]
+        first = first[~np.isnan(first).any(1)]
         if len(first) >= 2 and np.ptp(first, axis=0).max() < METERS_SPREAD:
             scale = 1000.0
             notes.append("координаты точек похожи на метры — переведены в миллиметры")
@@ -574,7 +658,7 @@ def _from_points(series: list, reference: dict | None = None, scale: float | Non
         labels = list(s.points)
         P = np.stack([s.points[k] for k in labels], 1) * scale
         big = [g for g in _rigid_groups(P) if len(g) >= 3]
-        bodies = [g for g in big if _spread(P[0, g]) > MIN_SPREAD_MM]
+        bodies = [g for g in big if (k := _complete(P[:, g])) is not None and _spread(P[k, g]) > MIN_SPREAD_MM]
         lower, upper = _assign(bodies, labels, P, notes)
 
         def ref_of(g):
@@ -583,18 +667,35 @@ def _from_points(series: list, reference: dict | None = None, scale: float | Non
             if reference and all(n in reference for n in names):
                 reference_used = True
                 return np.array([reference[n] for n in names], float) * scale
-            return common.setdefault(frozenset(names), P[0, g])
+            return common.setdefault(frozenset(names), P[_complete(P[:, g]), g])
+
+        def body(g):
+            T, res, stats = _track_body(P[:, g], ref_of(g))
+            T, filled = fill_gaps(s.times, T)
+            return T, res, stats, filled
 
         T_up = None
         if upper is not None:
-            T_up, _res = _track_body(P[:, upper], ref_of(upper))
+            T_up, _res, _stats, filled_up = body(upper)
+            if filled_up < 0:
+                T_up = None
+                notes.append(f"запись {n + 1}: маркеры головы почти не видны — движение головы не учтено")
         if lower is not None:
-            T, res = _track_body(P[:, lower], ref_of(lower))
+            T, res, stats, filled = body(lower)
+            if filled < 0:
+                notes.append(f"запись {n + 1}: маркеры челюсти почти не видны — запись пропущена")
+                continue
             if T_up is not None:
                 T = np.linalg.inv(T_up) @ T
-            body = f"маркеров {len(lower)}" + (" относительно маркеров головы" if T_up is not None else "")
-            recs.append(Recording(s.name, s.times, T, f"{s.source} ({body}, отклонение от жёсткого тела "
-                                                      f"{res:.2f} мм)", s.timed))
+            what = f"маркеров {len(lower)}" + (" относительно маркеров головы" if T_up is not None else "")
+            what += f", отклонение от жёсткого тела {res:.2f} мм"
+            if stats["hidden"]:
+                what += f"; кадров с невидимыми маркерами {stats['hidden']}"
+            if stats["dropped_marker"]:
+                what += f", со сбитым маркером {stats['dropped_marker']}"
+            if filled:
+                what += f", заполнено по соседним {filled} (из них выбросов {stats['outliers']})"
+            recs.append(Recording(s.name, s.times, T, f"{s.source} ({what})", s.timed))
             continue
         if len(labels) >= 3 and upper is None:
             why = "лежат почти на одной прямой" if big else "не двигаются как одно тело"
@@ -817,6 +918,29 @@ def _split_header(line: str, width: int) -> list[str] | None:
     return cells if len(cells) == width else None
 
 
+_GAP = {"", "nan", "-nan", "na", "n/a", "n.a.", "-", "--", "null", "none", "missing", "#n/a"}
+
+
+def _row(line: str) -> list[float] | None:
+    """Строка с пропусками (маркер не виден): пустые поля, NaN, «-» — как NaN; разделитель «;», таб или «,»."""
+    sep = ";" if ";" in line else "\t" if "\t" in line else "," if "," in line else None
+    if sep is None:
+        return None
+    out = []
+    for cell in line.split(sep):
+        c = cell.strip().strip('"')
+        if c.lower() in _GAP:
+            out.append(np.nan)
+            continue
+        n = _numbers(c.replace(",", ".") if sep != "," else c)
+        if n is None or len(n) != 1:
+            return None
+        out.append(n[0])
+    while out and np.isnan(out[-1]) and not line.rstrip().endswith(("nan", "NaN", "NAN")):
+        out.pop()  # «;» в конце строки — не пропуск
+    return out if any(not np.isnan(v) for v in out) and any(np.isnan(v) for v in out) else None
+
+
 def _blocks(text: str) -> list[tuple]:
     """Числовые блоки таблицы: (заголовок или None, строки (N, k), строки текста перед блоком)."""
     blocks, rows, texts = [], [], []
@@ -829,7 +953,7 @@ def _blocks(text: str) -> list[tuple]:
     for line in text.splitlines():
         if not line.strip():
             continue
-        n = _numbers(line.replace("\t", " "))
+        n = _numbers(line.replace("\t", " ")) or _row(line)
         if n:
             if rows and len(n) != len(rows[0]):
                 close()
@@ -1073,8 +1197,12 @@ def _kind(ext: str) -> str:
     return "другое"
 
 
-def read_case(path: str) -> MotionCase:
-    """Прочитать выгрузку: папку, архив .zip или отдельный файл движения."""
+def read_case(path: str, split: bool = False, smoothing: bool = False) -> MotionCase:
+    """Прочитать выгрузку: папку, архив .zip или отдельный файл движения.
+
+    Выбросы убираются всегда; split — сплошные записи делятся на отдельные
+    движения; smoothing — шум трекера сглаживается.
+    """
     import trimesh
 
     case = MotionCase(source=os.path.basename(os.path.normpath(path)))
@@ -1125,6 +1253,19 @@ def read_case(path: str) -> MotionCase:
             for r in case.recordings:
                 r.transforms[:, :3, 3] *= 1000
             case.notes.append("смещения похожи на метры — переведены в миллиметры")
+        spikes = sum(despike(r) for r in case.recordings)
+        if spikes:
+            case.notes.append(f"выбросы трекера: {spikes} кадров заменены по соседним")
+        if smoothing:
+            case.recordings = [smooth(r) for r in case.recordings]
+        many = [len(movement_parts(r)) for r in case.recordings]
+        if split:
+            case.recordings = [p for r in case.recordings for p in split_recording(r)]
+            if any(m > 1 for m in many):
+                case.notes.append(f"сплошные записи разделены на движения: {sum(m for m in many if m > 1)} частей")
+        elif any(m > 1 for m in many):
+            case.notes.append(f"в {sum(m > 1 for m in many)} записях по несколько движений подряд — их можно "
+                              "разделить (--split)")
         if not all(r.timed for r in case.recordings):
             case.notes.append("в части записей нет времени — вместо секунд номера кадров")
     elif not case.tracings:
@@ -1184,6 +1325,99 @@ def hinge_axis(transforms: np.ndarray, near=None, max_deg: float = HINGE_MAX_DEG
     point += ((near - point) @ axis) * axis
     moved = np.linalg.norm(track(T, point) - point, axis=1)
     return point, axis, float(np.sqrt(np.mean(moved ** 2)))
+
+
+def _probe(T: np.ndarray) -> np.ndarray:
+    """Положения вершин куба ±50 мм вокруг моделей по кадрам: смещение и поворот одной мерой, мм."""
+    return np.einsum("nij,kj->nki", T[:, :3, :3], PROBE) + T[:, None, :3, 3]
+
+
+def despike(rec: Recording) -> int:
+    """Убрать одиночные выбросы (скачок трекера, подмена маркера): кадр, далёкий от середины соседей,
+    заменяется по соседним. Возвращает, сколько кадров заменено."""
+    T = rec.transforms
+    if len(T) < 5:
+        return 0
+    p = _probe(T)
+    step = np.linalg.norm(np.diff(p, axis=0), axis=-1).max(1)  # (N-1)
+    jump = np.r_[0.0, np.minimum(step[:-1], step[1:]), 0.0]  # до обоих соседей
+    span = np.r_[np.inf, np.linalg.norm(p[2:] - p[:-2], axis=-1).max(1), np.inf]  # между соседями
+    # выброс — скачок туда и обратно: далеко от обоих соседей, а они друг к другу близко
+    # (разворот движения — тоже «туда и обратно», но шаг там обычный)
+    bad = (jump > max(SPIKE_MM, 5 * float(np.median(step)))) & (span < 0.5 * jump)
+    if not bad.any():
+        return 0
+    T = T.copy()
+    T[bad] = np.nan
+    rec.transforms, _n = fill_gaps(rec.times, T)
+    return int(bad.sum())
+
+
+def smooth(rec: Recording, window_s: float = SMOOTH_S) -> Recording:
+    """Сглаживание шума трекера (Савицкий — Голей): смещение и поворот относительно первого кадра.
+
+    Окно — window_s секунд (без времени — 5 кадров); форма движения сохраняется,
+    дрожание в доли миллиметра уходит.
+    """
+    from scipy.signal import savgol_filter
+
+    n = len(rec.transforms)
+    if rec.timed and n > 1:
+        dt = float(np.median(np.diff(rec.times)))
+        win = int(round(window_s / dt)) if dt > 0 else 5
+    else:
+        win = 5
+    win = min(win | 1, n - 1 if n % 2 == 0 else n)
+    if win < 5:
+        return rec
+    T = rec.transforms
+    R0 = T[0, :3, :3]
+    rv = Rotation.from_matrix(np.einsum("ji,njk->nik", R0, T[:, :3, :3])).as_rotvec()
+    out = np.tile(np.eye(4), (n, 1, 1))
+    out[:, :3, :3] = R0 @ Rotation.from_rotvec(savgol_filter(rv, win, 2, axis=0)).as_matrix()
+    out[:, :3, 3] = savgol_filter(T[:, :3, 3], win, 2, axis=0)
+    return Recording(rec.name, rec.times, out, f"{rec.source}, сглажено ({win} кадров)", rec.timed)
+
+
+def movement_parts(rec: Recording) -> list[tuple[int, int]]:
+    """Отдельные движения в сплошной записи: участки между покоями у исходного положения.
+
+    Исходное положение — окклюзия (единичная матрица), если она есть в записи,
+    иначе первый кадр. Покой короче MERGE_S не делит движение — так жевательные
+    циклы остаются одной записью.
+    """
+    T = rec.transforms
+    ref = np.eye(4) if (rotation_angles(T) < 0.5).any() and \
+        (np.linalg.norm(T[:, :3, 3], axis=1) < 0.3).any() else T[0]
+    p = _probe(T)
+    d = np.linalg.norm(p - _probe(ref[None])[0], axis=-1).max(1)
+    rest = d < REST_MM
+    t = rec.times if rec.timed else np.arange(len(T)) * 0.1  # без времени — как 10 кадров в секунду
+    parts, k = [], 0
+    while k < len(T):
+        if rest[k]:
+            k += 1
+            continue
+        start = k
+        while k < len(T) and not rest[k]:
+            k += 1
+        parts.append([start, k])
+    merged = []
+    for a, b in parts:
+        if merged and t[a] - t[merged[-1][1] - 1] < MERGE_S:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    return [(max(a - 1, 0), min(b + 1, len(T))) for a, b in merged if d[a:b].max() >= MIN_MOVE_MM]
+
+
+def split_recording(rec: Recording) -> list[Recording]:
+    """Сплошная запись (несколько движений подряд) — отдельными записями; одно движение — как есть."""
+    parts = movement_parts(rec)
+    if len(parts) <= 1:
+        return [rec]
+    return [Recording(f"{rec.name}, часть {i + 1}", rec.times[a:b], rec.transforms[a:b],
+                      f"{rec.source}, кадры {a}–{b - 1}", rec.timed) for i, (a, b) in enumerate(parts)]
 
 
 def _frame(origin, x, y, z) -> np.ndarray:

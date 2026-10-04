@@ -239,3 +239,77 @@ def test_closed_format_and_systems(tmp_path):
     assert case.systems == ["SICAT JMT+"] and "открыто не описан" in case.files[0]["note"]
     assert mo.detect_system("export.xml", b"<Data Generator='MODJAW Tech in Motion'/>") == "Modjaw"
     assert mo.detect_system("x.csv", b"1;2;3") is None
+
+
+# --- реальные данные: шум, невидимые маркеры, выбросы, сплошная запись ---
+
+def test_hidden_and_bad_markers_and_spikes(tmp_path):
+    """Трекер теряет маркеры, один маркер сбит бликом, один кадр — скачок: положения всё равно верные."""
+    rec = recordings()[2]
+    rng = np.random.default_rng(1)
+    ids = ["1", "2", "3", "4", "5"]
+    jaw = np.vstack([JAW, apply(ANAT_TO_CASE, np.array([[10, 105, -30.0]]))])
+    out = ['<Data><Reference>' + "".join(f'<M id="{i}" x="{p[0]}" y="{p[1]}" z="{p[2]}"/>' for i, p in zip(ids, jaw))
+           + '</Reference><Movement name="x">']
+    for k, (t, M) in enumerate(zip(rec.times, rec.transforms)):
+        pts = apply(M, jaw) + rng.normal(0, 0.02, jaw.shape)
+        if k % 7 == 3:
+            pts[k % 5] = np.nan  # маркер закрыт
+        if k == 10:
+            pts[1] += [3.0, 0, 0]  # блик сбил маркер
+        if k in (20, 21):
+            pts[:3] = np.nan  # видно только два маркера
+        if k == 30:
+            pts += [6.0, -4, 2]  # скачок трекера
+        out.append(f'<Frame t="{t}">' + "".join(f'<M id="{i}" x="{p[0]}" y="{p[1]}" z="{p[2]}"/>'
+                                                for i, p in zip(ids, pts) if not np.isnan(p).any()) + "</Frame>")
+    case = read(tmp_path, "m.xml", ("".join(out) + "</Movement></Data>").encode())
+    got = case.recordings[0]
+    err = np.linalg.norm(np.einsum("nij,kj->nki", got.transforms[:, :3, :3] - rec.transforms[:, :3, :3], jaw)
+                         + (got.transforms - rec.transforms)[:, None, :3, 3], axis=-1).max(1)  # на маркерах
+    assert err.max() < 0.15, (err.argmax(), err.max())
+    assert "со сбитым маркером 1" in got.source and "заполнено по соседним" in got.source
+    assert any("выбросы трекера" in n for n in case.notes)
+
+
+def test_table_with_empty_cells(tmp_path):
+    recs = recordings()[1:2]
+    text = points_table(recs, unit="mm").splitlines()
+    data = [k for k, line in enumerate(text) if line[:1].isdigit()]
+    for k in data[5:8]:  # резцовая точка не видна: пустые поля
+        cells = text[k].split(";")
+        cells[1:4] = ["", "NaN", "-"]
+        text[k] = ";".join(cells)
+    case = read(tmp_path, "t.csv", "\n".join(text).encode())
+    assert len(case.recordings) == 1 and len(case.recordings[0].times) == len(recs[0].times)
+    assert np.abs(case.recordings[0].transforms - recs[0].transforms).max() < 1e-3
+
+
+def test_smoothing_removes_jitter():
+    rec = recordings()[1]
+    rng = np.random.default_rng(0)
+    noisy = rec.transforms.copy()
+    noisy[:, :3, 3] += rng.normal(0, 0.15, (len(noisy), 3))
+    out = mo.smooth(mo.Recording("x", rec.times, noisy), window_s=0.25)
+    before = np.abs(noisy[:, :3, 3] - rec.transforms[:, :3, 3]).mean()
+    after = np.abs(out.transforms[:, :3, 3] - rec.transforms[:, :3, 3]).mean()
+    assert after < 0.6 * before
+
+
+def test_continuous_recording_is_split():
+    """Одна лента: протрузия, пауза, латеротрузии, жевание — делится на движения, жевание остаётся целым."""
+    recs = recordings()[1:]
+    times, Ts, t0 = [], [], 0.0
+    for r in recs:
+        rest = np.tile(np.eye(4), (30, 1, 1))  # секунда покоя в окклюзии
+        there = r.transforms if r.name == "Жевание" else np.concatenate([r.transforms, r.transforms[::-1]])
+        for part, dt in ((rest, 1 / 30), (there, 1 / 30)):  # движение — туда и обратно в окклюзию
+            ts = t0 + np.arange(len(part)) * dt
+            times.append(ts)
+            Ts.append(part)
+            t0 = ts[-1] + 1 / 30
+    tape = mo.Recording("лента", np.concatenate(times), np.concatenate(Ts))
+    parts = mo.split_recording(tape)
+    assert len(parts) == 4
+    kinds = [mo.analyze_recording(p, truth(), np.eye(4))["kind"] for p in parts]
+    assert kinds == ["protrusion", "laterotrusion_right", "laterotrusion_left", "chewing"]

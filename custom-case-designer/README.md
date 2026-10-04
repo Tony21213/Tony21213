@@ -155,6 +155,7 @@ python -m casedesigner segment КТ --models модели -o результат
 python -m casedesigner motion выгрузка_P-ART.zip -o отчёт
 python -m casedesigner motion выгрузка_P-ART.zip --inspect   # структура без значений и имён
 python -m casedesigner motion cadiax.txt --axes=-y,x,-z      # пути мыщелков: оси прибора — вправо, вперёд, вверх
+python -m casedesigner motion запись.csv --split --smooth   # сплошная запись: разделить на движения, сгладить шум
 ```
 
 ![Анализ движений](docs/motion_analysis.png)
