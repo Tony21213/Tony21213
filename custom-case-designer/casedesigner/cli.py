@@ -146,6 +146,19 @@ def cmd_motion(args):
         if anatomy.hinge_rms_mm is not None:
             print(f"Шарнирная ось: в начале открывания смещается в среднем на {anatomy.hinge_rms_mm:.2f} мм")
         _print_motion(report)
+        upper, lower_mesh = case.mesh("upper"), case.mesh("lower")
+        if upper is not None and lower_mesh is not None:
+            from . import kinematics
+
+            try:
+                check = kinematics.check_against_scans(case.recordings, upper[0], upper[1], lower_mesh[0],
+                                                       ref=motion.reference_pose(case), anatomy=anatomy)
+            except ValueError as e:
+                check = {"verdict": "no_bite", "notes": [f"запись со сканами не сверить: {e}"]}
+            report["scans_check"] = check
+            print("\nЗапись и сканы:")
+            for note in check["notes"]:
+                print(f"  {note}")
     if case.tracings:
         axes = motion.parse_axes(args.axes) if args.axes else None
         traced = motion.analyze_tracings(case, axes)

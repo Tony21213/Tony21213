@@ -275,6 +275,86 @@ def contact_sectors(rec: Recording, anatomy: Anatomy, occlusion: Occlusion, ever
     return dict(sorted(out.items()))
 
 
+PENETRATION_MM = 0.15  # нижние зубы глубже в верхних, чем в прикусе сканов, — запись со сканами не сходится
+GAP_MM = 0.3  # в окклюзии записи зубы дальше друг от друга — тоже
+CHECK_FRAMES = 400  # кадров записи на проверку не больше (равномерно)
+
+
+def _sector(point: np.ndarray, anatomy: Anatomy | None, anterior_mm: float = 12.0) -> str | None:
+    if anatomy is None:
+        return None
+    p = apply(anatomy.frame, point[None])[0] - apply(anatomy.frame, anatomy.points["incisal"][None])[0]
+    return "передние" if p[1] > -anterior_mm else "жевательные справа" if p[0] > 0 else "жевательные слева"
+
+
+def check_against_scans(recordings: list, upper_vertices, upper_faces, lower_vertices, ref: np.ndarray | None = None,
+                        anatomy: Anatomy | None = None) -> dict:
+    """Сходится ли запись движения со сканами: зубы не проходят друг в друга и касаются в окклюзии.
+
+    Записанное движение двигает скан нижней челюсти (координаты кейса). Если
+    запись привязана к моделям неверно (сдвинута ложка или маркеры, ошибка
+    регистрации) или сканы сняты в другом прикусе, это видно сразу:
+
+    * в начале записи (окклюзия) зубы уже уходят друг в друга или не касаются —
+      постоянный сдвиг записи относительно сканов;
+    * в окклюзии всё хорошо, а в движении зубы проходят друг в друга —
+      записанное ведение не совпадает с зубами на сканах (привязка с поворотом,
+      или зубы с тех пор изменились).
+
+    Проникновение считается сверх того, что было в прикусе самих сканов
+    (Occlusion.floor). ref — исходное положение записей (motion.reference_pose);
+    anatomy — чтобы назвать участок дуги.
+    """
+    occ = Occlusion(upper_vertices, upper_faces, lower_vertices, np.eye(4), max_points=SEAT_POINTS)
+    out, notes = [], []
+    for rec in recordings:
+        T = rec.transforms @ np.linalg.inv(ref if ref is not None else rec.transforms[0])
+        idx = np.unique(np.linspace(0, len(T) - 1, min(len(T), CHECK_FRAMES)).round().astype(int))
+        depth, gap, where = [], [], []
+        for k in idx:
+            signed = occ._signed(T[k])
+            over = occ.floor + CONTACT_TOL_MM - signed  # глубже, чем в прикусе сканов
+            j = int(np.argmax(over))
+            depth.append(max(0.0, float(over[j])))
+            where.append(apply(T[k], occ.lower[j][None])[0])
+            gap.append(float(signed[np.isfinite(signed)].min()) if np.isfinite(signed).any() else np.inf)
+        depth, gap = np.array(depth), np.array(gap)
+        bad = depth > PENETRATION_MM
+        k = int(np.argmax(depth))
+        item = {"name": rec.name, "start_depth_mm": round(float(depth[0]), 2),
+                "start_gap_mm": None if not np.isfinite(gap[0]) else round(max(0.0, gap[0]), 2),
+                "max_depth_mm": round(float(depth.max()), 2), "at": round(float(idx[k] / max(len(T) - 1, 1)), 2),
+                "penetrating_share": round(float(bad.mean()), 2), "where": _sector(where[k], anatomy)}
+        if bad.any():
+            item["along"] = [round(float(idx[bad][0] / max(len(T) - 1, 1)), 2),
+                             round(float(idx[bad][-1] / max(len(T) - 1, 1)), 2)]
+        out.append(item)
+    starts = [r["start_depth_mm"] for r in out]
+    gaps = [r["start_gap_mm"] for r in out]
+    verdict = "ok"
+    if out and np.median(starts) > PENETRATION_MM:
+        verdict = "offset"
+        notes.append(f"уже в окклюзии записи нижние зубы на {np.median(starts):.2f} мм в верхних — запись сдвинута "
+                     "относительно сканов (привязка ложки или маркеров) или сканы сняты в другом прикусе")
+    elif out and all(g is None or g > GAP_MM for g in gaps):
+        verdict = "offset"
+        known = [g for g in gaps if g is not None]
+        notes.append("в окклюзии записи зубы не касаются" + (f" (зазор от {min(known):.2f} мм)" if known else "")
+                     + " — запись сдвинута относительно сканов или сканы сняты в другом прикусе")
+    for r in out:
+        if r["penetrating_share"] > 0 and r["max_depth_mm"] > PENETRATION_MM and r["max_depth_mm"] > r["start_depth_mm"] \
+                + PENETRATION_MM:
+            verdict = "offset" if verdict == "offset" else "guidance"
+            place = f", {r['where']}" if r["where"] else ""
+            notes.append(f"«{r['name']}»: зубы проходят друг в друга до {r['max_depth_mm']:.2f} мм "
+                         f"(путь {r['along'][0]:.0%}–{r['along'][1]:.0%}{place}) — записанное ведение не совпадает "
+                         "с зубами на сканах: привязка записи с поворотом или зубы изменились")
+    if verdict == "ok":
+        notes.append("запись согласуется со сканами: в окклюзии зубы касаются, в движении не проходят друг в друга")
+    return {"verdict": verdict, "bite_penetration_mm": round(occ.bite_penetration_mm, 2), "recordings": out,
+            "notes": notes}
+
+
 def _recording(name: str, anatomy: Anatomy, poses: list, duration: float) -> Recording:
     """Положения из анатомической системы — в координаты кейса."""
     F = anatomy.frame

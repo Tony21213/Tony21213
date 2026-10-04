@@ -482,3 +482,27 @@ def test_teeth_numbers_along_the_arch(jaw):
     calibrated = at.ArchLine(pts, jaw, known={q * 10 + 3: known[q * 10 + 3], q * 10 + 6: known[q * 10 + 6]})
     assert calibrated.scale == pytest.approx(1.15, abs=0.03)
     assert np.mean(calibrated.teeth(pts) == labels) > 0.9 > plain
+
+
+@pytest.mark.parametrize("case", ["consistent", "free", "into", "apart"])
+def test_recording_checked_against_scans(case):
+    """Запись, сдвинутая относительно сканов или с чужим ведением, видна сразу; согласованная — нет."""
+    up_v, up_f, low_v = ramp_case(molars_over_closed=0.0)
+    a = mo.Anatomy(np.eye(4), dict(POINTS), "истина")
+    occ = kin.Occlusion(up_v, up_f, low_v, np.eye(4))
+    s = kin.Settings(35, 35)
+    rec = kin.protrusion(a, s) if case == "free" else kin.protrusion(a, s, occlusion=occ)
+    shift = {"into": [0, 0, 0.4], "apart": [0, 0, -0.6]}.get(case)
+    if shift is not None:  # ложка привязана со сдвигом: всё движение смещено
+        rec = mo.Recording(rec.name, rec.times, np.array([rigid(np.eye(3), np.array(shift)) @ M
+                                                          for M in rec.transforms]))
+    report = kin.check_against_scans([rec], up_v, up_f, low_v, ref=None if shift is None else np.eye(4), anatomy=a)
+    want = {"consistent": "ok", "free": "guidance", "into": "offset", "apart": "offset"}[case]
+    assert report["verdict"] == want, report["notes"]
+    r = report["recordings"][0]
+    if case == "free":
+        assert r["max_depth_mm"] > 0.3 and r["where"] == "передние"  # пластина тонкая: глубже — уже насквозь
+    if case == "into":
+        assert r["start_depth_mm"] == pytest.approx(0.4, abs=0.05)
+    if case == "apart":
+        assert r["start_gap_mm"] > kin.GAP_MM  # 0.6 мм вниз — по нормали ската 50° это около 0.4 мм
