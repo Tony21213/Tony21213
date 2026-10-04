@@ -9,6 +9,20 @@ exocad он выгружает модели челюстей и XML с запи�
 добавится точное чтение, а пока `describe_xml` печатает структуру файла без
 значений, имён и дат, чтобы ею можно было поделиться.
 
+Другие системы записи (Zebris JMA, Modjaw, Medit, Gamma CADIAX и т.д.) тоже
+читаются разведкой — их форматы открыто не описаны, известно только общее:
+
+* XML для exocad: положения челюсти по кадрам или координаты маркеров по
+  кадрам с исходным (окклюзионным) расположением. Маркеры (≥ 3 на тело)
+  переводятся в положения челюсти по МНК (Кабш); если в кадре маркеры головы
+  и челюсти, тела разделяются по постоянству расстояний между маркерами;
+* таблицы CSV/ASCII с заголовками: время, смещение + кватернион или углы,
+  ячейки матрицы или координаты точек (резцовая точка, мыщелки, маркеры);
+* открытый трекер JawTrackingSystem: CSV «tx ty tz qw qx qy qz» и HDF5;
+* меньше трёх точек (например, пути шарнирных точек мыщелков у
+  кондилографа) — пути точек (`Tracing`): по ним считаются углы суставного
+  пути, но двигать модели по ним нельзя.
+
 Положения считаются положениями нижней челюсти относительно верхней в
 координатах выгруженных моделей — так exocad двигает нижнюю модель. Если в
 кадре два тела (верхняя и нижняя), берётся нижняя относительно верхней. Это
@@ -43,12 +57,15 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from .landmarks import BY_KEY, reference_frame
-from .register import apply, rigid
+from .register import apply, kabsch, rigid
 
 MESH_EXT = (".stl", ".ply", ".obj", ".off")
-MOTION_EXT = (".xml", ".jawmotion", ".csv", ".txt")
+MOTION_EXT = (".xml", ".jawmotion", ".csv", ".txt", ".tsv", ".asc", ".dat")
+HDF5_EXT = (".h5", ".hdf5")
 MATRIX_EXT = (".matrix4",)
 PROJECT_EXT = (".dentalproject",)
+# Форматы, описания которых нет в открытом доступе: прочитать нельзя, нужна выгрузка в открытом виде.
+CLOSED_EXT = {".jmtxd": "SICAT JMT+"}
 
 MIN_FRAMES = 5  # серия короче — не запись движения
 MAX_BODIES = 4  # тел в одном кадре больше не бывает; больше — это уже серия кадров
@@ -63,6 +80,10 @@ BONWILL_MM = 100.0  # сторона треугольника Бонвилля: 
 BALKWILL_DEG = 25.0  # угол Балквилла: между треугольником Бонвилля и окклюзионной плоскостью
 CUSP_SHARE = 0.05  # окклюзионная плоскость — по самым высоким 5% точек нижних зубов
 ARCH_BAND_MM = 6.0  # форма дуги — по коронкам не глубже 6 мм от окклюзионной плоскости
+RIGID_STD_MM = 0.5  # маркеры одного тела: расстояние между ними за запись меняется меньше
+MIN_SPREAD_MM = 1.0  # маркеры тела не на одной прямой: второй размер облака больше
+METERS_SPREAD = 0.5  # маркеры, разнесённые меньше чем на 0.5 «единицы», — это метры
+AXES_RATIO = 1.5  # оси путей мыщелков угадываются, только если вперёд они уходят заметно больше, чем вниз
 
 KINDS = {"opening": "открывание", "protrusion": "протрузия", "laterotrusion_right": "латеротрузия вправо",
          "laterotrusion_left": "латеротрузия влево", "chewing": "жевание", "other": "другое"}
@@ -88,6 +109,31 @@ T_PREFIXES = ("", "t", "p", "pos", "position", "translation", "trans", "offset",
 Q_PREFIXES = ("q", "quat", "quaternion", "rotation", "rot", "orientation", "r", "")
 E_PREFIXES = ("r", "rot", "rotation", "angle", "angles", "euler", "a")
 E_NAMES = (("alpha", "beta", "gamma"), ("roll", "pitch", "yaw"))
+FRAME_KEYS = ("frame", "frames", "sample", "samples", "index", "nr", "no", "n", "кадр", "номер")
+POSE_WORDS = ("rot", "quat", "orient", "euler", "angle", "matrix")  # в кадре с ними — положение, а не точки
+# Исходное расположение маркеров (окклюзия) в XML — по этим словам в имени элемента или его родителей.
+REF_KEYS = ("reference", "referenz", "ref", "static", "statisch", "initial", "intercusp", "icp", "centric",
+            "zentrik", "occlusion", "okklusion", "habitual", "baseline", "окклюз", "исходн", "опорн")
+# Тела по именам маркеров: верхняя челюсть / голова и нижняя челюсть (в т.ч. обозначения JTS: HP — голова, MP — рот).
+JAW_KEYS = {"upper": ROLE_KEYS["upper"] + ("head", "kopf", "cran", "skull", "hp", "cra", "голов", "череп"),
+            "lower": ROLE_KEYS["lower"] + ("mp", "mta", "mouth", "мандиб")}
+POINT_WORDS = {"incisal": ("incis", "inzis", "ip", "резц"),
+               "condyle": ("condyl", "kondyl", "cond", "kond", "hinge", "scharnier", "achs", "axis", "мыщел",
+                           "шарнир"),
+               "right": ("right", "rechts", "r", "rt", "dx", "прав", "п"),
+               "left": ("left", "links", "l", "lt", "sx", "лев", "л")}
+# Слова движения в именах файлов и блоков: имя записи берётся только из них — имя пациента в отчёт не попадёт.
+MOVE_WORDS = (("открывание", ("open", "öffn", "oeffn", "откр")), ("протрузия", ("protru", "vorschub", "протру")),
+              ("ретрузия", ("retru", "ретру")), ("латеротрузия", ("latero", "латеро")),
+              ("жевание", ("chew", "kau", "mastic", "жев")), ("закрывание", ("clos", "schlie", "закр")),
+              ("вправо", ("right", "rechts", "прав")), ("влево", ("left", "links", "лев")))
+UNIT_SCALE = {"mm": 1.0, "cm": 10.0, "m": 1000.0}
+# Системы записи — по словам в имени файла и в его начале (только для подписи в отчёте и подсказок).
+SYSTEMS = (("Zebris JMA", ("zebris",)), ("Modjaw", ("modjaw",)), ("SDI Matrix / P-ART", ("prosystom", "p-art")),
+           ("Gamma CADIAX", ("cadiax", "gamma dental")), ("Medit", ("medit",)), ("SICAT JMT+", ("sicat", ".jmtxd")),
+           ("KaVo ARCUSdigma", ("arcusdigma", "arcus digma")), ("Planmeca 4D Jaw Motion", ("planmeca",)),
+           ("Bioresearch JT-3D", ("bioresearch",)), ("OXO", ("oxo technologies",)), ("ITAKA", ("itaka",)),
+           ("JawTrackingSystem (JTS)", ("jts_version", "t_model_origin_mand")), ("exocad", ("exocad",)))
 
 
 @dataclass
@@ -106,11 +152,33 @@ class Recording:
 
 
 @dataclass
+class Tracing:
+    """Пути отдельных точек, когда положения челюсти целиком нет (меньше трёх точек на тело).
+
+    Так пишут кондилографы: пути шарнирных точек мыщелков. Координаты — в
+    осях системы записи, мм; оси для анализа задаются явно или угадываются
+    (`tracing_axes`).
+    """
+
+    name: str
+    times: np.ndarray
+    points: dict  # имя точки → (N, 3)
+    source: str = ""
+    timed: bool = True
+
+    @property
+    def duration(self) -> float:
+        return float(self.times[-1] - self.times[0]) if len(self.times) else 0.0
+
+
+@dataclass
 class MotionCase:
     """Выгруженный кейс: записи движений, модели и всё, что удалось понять из файлов."""
 
     source: str
     recordings: list = field(default_factory=list)
+    tracings: list = field(default_factory=list)
+    systems: list = field(default_factory=list)  # системы записи, узнанные по файлам
     meshes: dict = field(default_factory=dict)  # путь → (вершины, грани)
     roles: dict = field(default_factory=dict)  # upper / lower / bite → путь модели
     matrices: dict = field(default_factory=dict)  # путь .matrix4 → 4×4 (точка — столбец)
@@ -267,8 +335,40 @@ def _label(el) -> str:
     return _local(el.tag)
 
 
+class _Points(dict):
+    """Кадр из отдельных точек: имя → xyz."""
+
+
+def _xyz(el) -> np.ndarray | None:
+    """Точка: три числа в тексте или x/y/z в атрибутах и листьях — без поворота."""
+    n = _numbers(el.text)
+    if n is not None and len(n) == 3 and not len(el):
+        return np.array(n)
+    f = _fields(el)
+    t, _p = _triple(f, T_PREFIXES)
+    return t if t is not None and _named_pose(f) is None else None
+
+
+def _points(el) -> _Points | None:
+    """Кадр из точек (маркеры, резцовая точка, мыщелки): 3·k чисел в тексте или дети с x/y/z."""
+    n = _numbers(el.text)
+    if n is not None and not len(el):
+        if len(n) >= 9 and len(n) % 3 == 0 and not (len(n) == 9 and _is_rotation(np.reshape(n, (3, 3)))):
+            return _Points({f"{k + 1}": np.array(n[3 * k:3 * k + 3]) for k in range(len(n) // 3)})
+    if any(w in _local(c.tag).lower() for c in el for w in POSE_WORDS):
+        return None
+    found = [(_label(c), p) for c in el if (p := _xyz(c)) is not None]
+    if not found:
+        p = _xyz(el)  # кадр — сама точка: <P x=… y=… z=…/>
+        return _Points({_label(el): p}) if p is not None else None
+    labels = [k for k, _ in found]
+    if len(set(labels)) < len(labels):  # одинаковые <Marker> без имён — по порядку
+        labels = [f"{k}{i + 1}" for i, k in enumerate(labels)]
+    return _Points(zip(labels, (p for _, p in found)))
+
+
 def _bodies(el):
-    """Кадр: одно положение — матрица; несколько тел — словарь «имя → матрица»."""
+    """Кадр: одно положение — матрица; несколько тел — словарь «имя → матрица»; иначе — точки."""
     M = _pose(el)
     if M is not None:
         return M
@@ -276,7 +376,7 @@ def _bodies(el):
     labels = [k for k, _ in found]
     if 2 <= len(found) <= MAX_BODIES and len(set(labels)) == len(labels):
         return dict(found)
-    return None
+    return _points(el)
 
 
 def _role(name: str) -> str | None:
@@ -318,9 +418,26 @@ def _recordings(parent, frames, source) -> list[Recording]:
     return [Recording(name, times, np.array([b for _, b in frames]), source, timed)]
 
 
-def _tracks(root, source: str) -> tuple[list[Recording], set]:
-    """Серии кадров с положениями: родитель, у которого ≥ MIN_FRAMES одинаковых детей с положением."""
-    recs, used = [], set()
+def _point_series(parent, frames, source) -> Tracing | None:
+    """Серия кадров из точек: точки, что есть во всех кадрах (одиночные точки — с одинаковым именем)."""
+    pts = [b for _, b in frames if isinstance(b, _Points)]
+    if len(pts) < 0.9 * len(frames):
+        return None
+    common = set(pts[0]).intersection(*pts[1:])
+    labels = [k for k in pts[0] if k in common]
+    if not labels:
+        return None  # у каждого «кадра» своя точка — это набор точек, а не запись
+    keep = [(c, b) for c, b in frames if isinstance(b, _Points)]
+    times, timed = _times(parent, [c for c, _ in keep])
+    if len(labels) == 1 and not timed:
+        return None  # ряд одиночных точек без времени — скорее линия или контур, чем движение
+    return Tracing(_label(parent), times, {k: np.array([b[k] for _, b in keep], float) for k in labels},
+                   source, timed)
+
+
+def _tracks(root, source: str) -> tuple[list[Recording], list[Tracing], set]:
+    """Серии кадров: родитель, у которого ≥ MIN_FRAMES одинаковых детей с положением или точками."""
+    recs, series, used = [], [], set()
     for parent in root.iter():
         if id(parent) in used:
             continue
@@ -333,10 +450,164 @@ def _tracks(root, source: str) -> tuple[list[Recording], set]:
             frames = [(c, b) for c in items if (b := _bodies(c)) is not None]
             if len(frames) < 0.9 * len(items):
                 continue
+            where = f"{source}: {_local(parent.tag)}/{_local(tag)}"
+            if isinstance(frames[0][1], _Points):
+                if (s := _point_series(parent, frames, where)) is None:
+                    continue
+                series.append(s)
+            else:
+                recs += _recordings(parent, [(c, b) for c, b in frames if not isinstance(b, _Points)], where)
             for c in items:
                 used.update(id(d) for d in c.iter())
-            recs += _recordings(parent, frames, f"{source}: {_local(parent.tag)}/{_local(tag)}")
-    return recs, used
+    return recs, series, used
+
+
+def _reference_points(root, labels: set, used: set) -> dict | None:
+    """Исходное расположение маркеров: элемент вне серий с теми же точками (имя — «reference», «ICP» и т.п.)."""
+    parents = {c: p for p in root.iter() for c in p}
+    others = []
+    for el in root.iter():
+        if id(el) in used or not (pts := _points(el)) or len(set(pts) & labels) < min(3, len(labels)):
+            continue
+        chain, e = [], el
+        while e is not None and len(chain) < 4:
+            chain.append(f"{_label(e)} {_local(e.tag)}".lower())
+            e = parents.get(e)
+        if any(k in " ".join(chain) for k in REF_KEYS):
+            return dict(pts)
+        others.append(dict(pts))
+    return others[0] if len(others) == 1 else None  # без подписи — только если такой набор точек один
+
+
+def _tokens(label: str) -> list[str]:
+    return re.findall(r"[a-zа-яёäöüß]+", str(label).lower())
+
+
+def _has(tokens, words) -> bool:
+    return any(t == w or (len(w) >= 3 and t.startswith(w)) for t in tokens for w in words)
+
+
+def _jaw(label: str) -> str | None:
+    """Верхняя (голова) или нижняя челюсть по имени маркера: «UK1», «LowerJaw 2», «HP3»."""
+    t = _tokens(label)
+    up, low = _has(t, JAW_KEYS["upper"]), _has(t, JAW_KEYS["lower"])
+    return "upper" if up and not low else "lower" if low and not up else None
+
+
+def point_role(label: str, pair: bool = False) -> str | None:
+    """Резцовая точка или мыщелок по имени точки; pair — точек две, и «R»/«L» без слова «мыщелок» — мыщелки."""
+    t = _tokens(label)
+    if _has(t, POINT_WORDS["incisal"]):
+        return "incisal"
+    side = "right" if _has(t, POINT_WORDS["right"]) else "left" if _has(t, POINT_WORDS["left"]) else None
+    if side and (_has(t, POINT_WORDS["condyle"]) or pair):
+        return f"condyle_{side}"
+    return None
+
+
+def _rigid_groups(P: np.ndarray) -> list[list[int]]:
+    """Маркеры по телам: в теле расстояния между всеми маркерами за запись почти не меняются."""
+    sd = np.linalg.norm(P[:, :, None] - P[:, None], axis=-1).std(0)
+    groups = []
+    for i in range(P.shape[1]):
+        for g in groups:
+            if all(sd[i, j] < RIGID_STD_MM for j in g):
+                g.append(i)
+                break
+        else:
+            groups.append([i])
+    return groups
+
+
+def _spread(points: np.ndarray) -> float:
+    """Второй размер облака точек: у точек на одной прямой — около нуля."""
+    if len(points) < 3:
+        return 0.0
+    return float(np.linalg.svd(points - points.mean(0), compute_uv=False)[1])
+
+
+def _assign(bodies: list, labels: list, P: np.ndarray, notes: list) -> tuple:
+    """Какое из тел — нижняя челюсть, какое — голова: по именам маркеров, иначе по размаху движения."""
+    def jaw(g):
+        votes = Counter(_jaw(labels[i]) for i in g)
+        return "upper" if votes["upper"] > votes["lower"] else "lower" if votes["lower"] > votes["upper"] else None
+
+    if not bodies:
+        return None, None
+    if len(bodies) == 1:
+        return (None, bodies[0]) if jaw(bodies[0]) == "upper" else (bodies[0], None)
+    a, b = sorted(bodies, key=len, reverse=True)[:2]
+    if jaw(a) == "upper" or jaw(b) == "lower":
+        return b, a
+    if jaw(a) == "lower" or jaw(b) == "upper":
+        return a, b
+    moved = [float(np.linalg.norm(P[:, g] - P[0, g], axis=-1).mean()) for g in (a, b)]
+    notes.append("маркеры головы и челюсти не подписаны — нижней челюстью считается тело, которое двигается больше")
+    return (a, b) if moved[0] >= moved[1] else (b, a)
+
+
+def _track_body(P: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray, float]:
+    """Положения тела по маркерам от исходного расположения (Кабш) и отклонение от жёсткого движения, мм."""
+    T = np.array([kabsch(ref, p) for p in P])
+    moved = np.einsum("nij,kj->nki", T[:, :3, :3], ref) + T[:, None, :3, 3]
+    return T, float(np.median(np.sqrt(((moved - P) ** 2).sum(-1).mean(-1))))
+
+
+def _from_points(series: list, reference: dict | None = None, scale: float | None = None) -> tuple:
+    """Записи по точкам: тело из ≥ 3 маркеров — положения челюсти, иначе — пути точек.
+
+    Исходное расположение — из файла (окклюзия), иначе — первый кадр первой
+    записи с теми же маркерами: так все записи кейса отсчитаны от одного
+    положения. Если есть и маркеры головы, положение челюсти — относительно головы.
+    """
+    recs, tracings, notes = [], [], []
+    if not series:
+        return recs, tracings, notes
+    if scale is None:
+        first = np.array(list(series[0].points.values()))[:, 0]
+        if len(first) >= 2 and np.ptp(first, axis=0).max() < METERS_SPREAD:
+            scale = 1000.0
+            notes.append("координаты точек похожи на метры — переведены в миллиметры")
+    scale = scale or 1.0
+    common, reference_used = {}, False
+    for n, s in enumerate(series):
+        labels = list(s.points)
+        P = np.stack([s.points[k] for k in labels], 1) * scale
+        big = [g for g in _rigid_groups(P) if len(g) >= 3]
+        bodies = [g for g in big if _spread(P[0, g]) > MIN_SPREAD_MM]
+        lower, upper = _assign(bodies, labels, P, notes)
+
+        def ref_of(g):
+            nonlocal reference_used
+            names = tuple(labels[i] for i in g)
+            if reference and all(n in reference for n in names):
+                reference_used = True
+                return np.array([reference[n] for n in names], float) * scale
+            return common.setdefault(frozenset(names), P[0, g])
+
+        T_up = None
+        if upper is not None:
+            T_up, _res = _track_body(P[:, upper], ref_of(upper))
+        if lower is not None:
+            T, res = _track_body(P[:, lower], ref_of(lower))
+            if T_up is not None:
+                T = np.linalg.inv(T_up) @ T
+            body = f"маркеров {len(lower)}" + (" относительно маркеров головы" if T_up is not None else "")
+            recs.append(Recording(s.name, s.times, T, f"{s.source} ({body}, отклонение от жёсткого тела "
+                                                      f"{res:.2f} мм)", s.timed))
+            continue
+        if len(labels) >= 3 and upper is None:
+            why = "лежат почти на одной прямой" if big else "не двигаются как одно тело"
+            notes.append(f"запись {n + 1}: точки {why} — положения челюсти по ним нет, разобраны пути точек")
+        keep = [i for i in range(len(labels)) if upper is None or i not in upper]
+        if T_up is not None:  # пути точек относительно головы
+            back = np.linalg.inv(T_up)
+            P = np.einsum("nij,nkj->nki", back[:, :3, :3], P) + back[:, None, :3, 3]
+        if keep:
+            tracings.append(Tracing(s.name, s.times, {labels[i]: P[:, i] for i in keep}, s.source, s.timed))
+    if recs and not reference_used:
+        notes.append("исходного расположения маркеров в файле нет — положения отсчитаны от первого кадра первой записи")
+    return recs, tracings, list(dict.fromkeys(notes))
 
 
 def _values(root, used: set, limit: int = 300) -> dict:
@@ -426,20 +697,87 @@ def describe_xml(data: bytes, limit: int = 200) -> list[str]:
     return lines
 
 
+def _safe_cell(text: str) -> str:
+    text = text.strip().strip('"\'')
+    return text if len(text) <= 24 and not any(w in text.lower() for w in PRIVATE) else "…"
+
+
+def describe_table(text: str, limit: int = 30) -> list[str]:
+    """Структура таблицы без значений: блоки чисел, сколько строк и столбцов, заголовки столбцов.
+
+    Строки текста вне заголовков (пациент, дата, комментарии) не выводятся — только их число.
+    """
+    def column(c):  # похоже на имя столбца: время, номер кадра, ось x/y/z, кватернион, ячейка матрицы
+        n = _cell(c)[1]
+        return bool(n in TIME_KEYS or n in FRAME_KEYS or n.startswith(("time", "zeit", "время"))
+                    or re.fullmatch(r"\w*[xyz]|[xyz]\w*|q?[wxyz]|m?\d\d|\d+", n))
+
+    lines = []
+    for k, (header, rows, texts) in enumerate(_blocks(text)[:limit]):
+        if header and sum(map(column, header)) >= 0.5 * len(header):
+            cols = " | ".join(_safe_cell(c) for c in header)
+        else:
+            cols = "заголовок не распознан — не показан" if header else "без заголовка"
+        lines.append(f"блок {k + 1}: строк {len(rows)} по {rows.shape[1]} чисел; столбцы: {cols}"
+                     + (f"; строк текста перед ним: {len(texts)}" if texts else ""))
+    if m := _FILE_UNIT.search(text):
+        lines.append(f"единица в тексте: {m[1]}")
+    if m := _FILE_RATE.search(text):
+        lines.append(f"частота в тексте: {m[1]}")
+    return lines or ["чисел нет"]
+
+
+def describe_hdf5(data: bytes) -> list[str]:
+    """Структура HDF5 без значений: группы, наборы с размерами, имена атрибутов (значения — только unit и
+    sample_rate)."""
+    import h5py
+
+    lines = []
+    with h5py.File(io.BytesIO(data), "r") as f:
+        lines.append("атрибуты файла: " + (", ".join(_safe_cell(k) for k in f.attrs) or "нет"))
+
+        def visit(path, obj):
+            name = _safe_cell(path.rsplit("/", 1)[-1])
+            what = f"набор {obj.shape} {obj.dtype}" if isinstance(obj, h5py.Dataset) else "группа"
+            attrs = ", ".join(f"{k}: {obj.attrs[k]!r}" if k in ("unit", "sample_rate") else _safe_cell(k)
+                              for k in obj.attrs)
+            lines.append("  " * path.count("/") + f"{name} — {what}" + (f" [{attrs}]" if attrs else ""))
+
+        f.visititems(visit)
+    return lines
+
+
 # --- чтение кейса ---
+
+def _add(case: MotionCase, recs: list, series: list, scale: float | None, reference: dict | None = None) -> str:
+    """Записи файла — в кейс: положения челюсти (в т.ч. по маркерам) и пути точек; что получилось — строкой."""
+    more, tracings, notes = _from_points(series, reference, scale)
+    case.recordings += recs + more
+    case.tracings += tracings
+    case.notes += [n for n in notes if n not in case.notes]
+    out = []
+    if recs or more:
+        out.append(f"записей движения: {len(recs) + len(more)}, кадров: {sum(len(r.transforms) for r in recs + more)}")
+    if more:
+        out.append(f"из них по маркерам: {len(more)}")
+    if tracings:
+        out.append(f"путей точек: {len(tracings)} ({', '.join(sorted({k for t in tracings for k in t.points}))})")
+    return ", ".join(out)
+
 
 def _read_xml(data: bytes, name: str, case: MotionCase) -> str:
     root = ET.fromstring(data)
-    recs, used = _tracks(root, name)
+    recs, series, used = _tracks(root, name)
     scale = _unit_scale(root)
     for rec in recs:
         if scale and scale != 1:
             rec.transforms[:, :3, 3] *= scale
-    case.recordings += recs
+    reference = _reference_points(root, set().union(*(s.points for s in series)), used) if series else None
+    note = _add(case, recs, series, scale, reference)
     for k, v in _values(root, used).items():
         case.values[f"{name}:{k}"] = v
-    if recs:
-        return f"записей движения: {len(recs)}, кадров: {sum(len(r.transforms) for r in recs)}"
+    if note:
+        return note
     M = _pose(root)
     if M is not None:
         case.matrices[name] = M
@@ -447,24 +785,254 @@ def _read_xml(data: bytes, name: str, case: MotionCase) -> str:
     return "записей движения не найдено"
 
 
+# --- таблицы CSV / ASCII ---
+
+_UNIT = re.compile(r"[\[(]\s*(mm|cm|m|ms|s|deg|°|grad|rad)\s*[\])]", re.I)
+_FILE_UNIT = re.compile(r"(?:unit|units|einheit|единиц\w*)\W{0,3}(mm|cm|m)\b", re.I)
+_FILE_RATE = re.compile(r"(?:sample\s*rate|sampling\s*rate|frame\s*rate|frequency|frequenz|abtastrate|fps|"
+                        r"частота)\D{0,12}?(\d+(?:[.,]\d+)?)", re.I)
+_AXIS_LAST = re.compile(r"^(.*?)[\s_.\-/:]*([xyz])$", re.I)
+_AXIS_FIRST = re.compile(r"^([xyz])[\s_.\-/:]*(.+)$", re.I)
+
+
+def _cell(text: str) -> tuple[str, str, str | None]:
+    """Заголовок столбца: (как есть без единиц, для сравнения — только буквы и цифры, единица)."""
+    unit = None
+    if m := _UNIT.search(text):
+        unit = m[1].lower().replace("°", "deg").replace("grad", "deg")
+        text = text[:m.start()] + text[m.end():]
+    text = text.strip().strip('"\'').strip()
+    return text, re.sub(r"[\W_]+", "", text.lower()), unit
+
+
+def _split_header(line: str, width: int) -> list[str] | None:
+    for sep in (";", "\t", ","):
+        if sep in line:
+            cells = [c.strip() for c in line.split(sep)]
+            while cells and not cells[-1]:
+                cells.pop()
+            if len(cells) == width:
+                return cells
+    cells = re.sub(r"\s+([\[(])", r"\1", line.strip()).split()
+    return cells if len(cells) == width else None
+
+
+def _blocks(text: str) -> list[tuple]:
+    """Числовые блоки таблицы: (заголовок или None, строки (N, k), строки текста перед блоком)."""
+    blocks, rows, texts = [], [], []
+
+    def close():
+        if rows:
+            header = _split_header(texts[-1], len(rows[0])) if texts else None
+            blocks.append((header, np.array(rows), texts[:-1] if header else list(texts)))
+
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        n = _numbers(line.replace("\t", " "))
+        if n:
+            if rows and len(n) != len(rows[0]):
+                close()
+                rows, texts = [], []
+            rows.append(n)
+        else:
+            if rows:
+                close()
+                rows, texts = [], []
+            texts.append(line)
+    close()
+    return blocks
+
+
+def _safe_name(text: str, fallback: str) -> str:
+    """Имя записи только из слов движения (протрузия, вправо…): имени пациента из файла в отчёте не будет."""
+    t = _tokens(text)
+    words = [w for w, keys in MOVE_WORDS if _has(t, keys)]
+    return " ".join(words) if words else fallback
+
+
+def _quaternions(q: np.ndarray, scalar_first: bool | None = None) -> np.ndarray | None:
+    """Повороты из кватернионов (N, 4). Скаляр — первым или последним: по данным (у него |w| ≈ 1),
+    а если не понять — первым, как в JawTrackingSystem."""
+    q = np.asarray(q, float)
+    if not np.allclose(np.linalg.norm(q, axis=1), 1, atol=1e-2):
+        return None
+    if scalar_first is None:
+        near = [(np.abs(q[:, k]) > 0.9).mean() for k in (0, 3)]
+        scalar_first = not (near[1] > 0.9 and near[0] < 0.5)
+    xyzw = q[:, [1, 2, 3, 0]] if scalar_first else q
+    return Rotation.from_quat(xyzw / np.linalg.norm(xyzw, axis=1, keepdims=True)).as_matrix()
+
+
+def _times_column(names: list, units: list, rows: np.ndarray, rate: float | None):
+    for j, (n, u) in enumerate(zip(names, units)):
+        if n in TIME_KEYS or n.startswith(("time", "zeit", "время")):
+            t = rows[:, j]
+            return (t / 1000 if u == "ms" or n in ("ms", "timems", "time_ms", "millis") else t), True, j
+    if rate:
+        return np.arange(len(rows)) / rate, True, None
+    return np.arange(len(rows), dtype=float), False, None
+
+
+def _headerless(rows: np.ndarray, name: str, source: str) -> tuple[list, str]:
+    """Таблица без заголовка: 12/16 чисел матрицы или смещение + кватернион (7 чисел), впереди — время."""
+    width = rows.shape[1]
+    if width in (13, 17, 8) and np.all(np.diff(rows[:, 0]) >= 0) and np.ptp(rows[:, 0]) > 0:
+        times, body, timed = rows[:, 0], rows[:, 1:], True
+    else:
+        times, body, timed = np.arange(len(rows), dtype=float), rows, False
+    if body.shape[1] in (12, 16):
+        mats = [_matrix(r) for r in body]
+        ok = [k for k, M in enumerate(mats) if M is not None]
+        if len(ok) < 0.9 * len(rows):
+            return [], "числа не складываются в положения"
+        return [Recording(name, times[ok], np.array([mats[k] for k in ok]), source, timed)], ""
+    if body.shape[1] == 7:
+        R = _quaternions(body[:, 3:])
+        if R is None:
+            return [], "в последних 4 столбцах не кватернионы"
+        T = np.tile(np.eye(4), (len(body), 1, 1))
+        T[:, :3, :3], T[:, :3, 3] = R, body[:, :3]
+        return [Recording(name, times, T, f"{source} (смещение + кватернион)", timed)], ""
+    return [], f"не похоже на движение: по {width} чисел в строке, заголовка нет"
+
+
+def _with_header(header: list, rows: np.ndarray, name: str, source: str, rate: float | None,
+                 unit: float | None) -> tuple[list, list, str]:
+    """Таблица с заголовком: положения (смещение + кватернион/углы/ячейки матрицы) или точки x/y/z."""
+    cells = [_cell(h) for h in header]
+    names, units = [c[1] for c in cells], [c[2] for c in cells]
+    times, timed, tj = _times_column(names, units, rows, rate)
+    skip = {tj} | {j for j, n in enumerate(names) if n in FRAME_KEYS}
+    cols = [j for j in range(len(names)) if j not in skip]
+    vals = rows.astype(float).copy()
+    for j in cols:
+        if units[j] == "rad":
+            vals[:, j] = np.degrees(vals[:, j])
+    keys = [names[j] for j in cols]
+    first = _named_pose(dict(zip(keys, vals[0, cols])))
+    if first is not None:
+        mats = [_named_pose(dict(zip(keys, r[cols]))) for r in vals]
+        ok = [k for k, M in enumerate(mats) if M is not None]
+        if len(ok) >= 0.9 * len(rows):
+            T = np.array([mats[k] for k in ok])
+            t_cols = _triple({k: j for k, j in zip(keys, cols)}, T_PREFIXES)[0]
+            u = units[int(t_cols[0])] if t_cols is not None else None
+            T[:, :3, 3] *= UNIT_SCALE.get(u, unit or 1.0)
+            return [Recording(name, times[ok], T, source, timed)], [], ""
+    groups = {}
+    for j in cols:
+        label = cells[j][0]
+        m = _AXIS_LAST.match(label)
+        if m and m[1].strip(" _.-/:"):
+            point, axis = m[1].strip(" _.-/:"), m[2].lower()
+        elif (m := _AXIS_FIRST.match(label)) and m[2].strip(" _.-/:"):
+            point, axis = m[2].strip(" _.-/:"), m[1].lower()
+        elif label.lower() in ("x", "y", "z"):
+            point, axis = "точка", label.lower()
+        else:
+            continue
+        groups.setdefault(point, {})[axis] = j
+    points = {p: g for p, g in groups.items() if set(g) == {"x", "y", "z"}}
+    if not points:
+        return [], [], "столбцов с положением или точками x/y/z нет"
+    pts = {}
+    for p, g in points.items():
+        scale = UNIT_SCALE.get(units[g["x"]], unit or 1.0)
+        pts[p] = vals[:, [g["x"], g["y"], g["z"]]] * scale
+    return [], [Tracing(name, times, pts, source, timed)], ""
+
+
 def _read_table(text: str, name: str, case: MotionCase) -> str:
-    """Таблица по строке на кадр: 16 или 12 чисел матрицы, впереди может стоять время."""
-    rows = [n for line in text.splitlines() if (n := _numbers(line.replace("\t", " ")))]
-    if not rows:
-        return "чисел нет"
-    width = Counter(len(r) for r in rows).most_common(1)[0][0]
-    rows = np.array([r for r in rows if len(r) == width])
-    timed = width in (13, 17)
-    if width not in (12, 13, 16, 17) or len(rows) < MIN_FRAMES:
-        return f"не похоже на движение: по {width} чисел в строке"
-    mats = [_matrix(r[1:] if timed else r) for r in rows]
-    ok = [k for k, M in enumerate(mats) if M is not None]
-    if len(ok) < 0.9 * len(rows):
-        return "числа не складываются в положения"
-    times = rows[ok, 0] if timed else np.arange(len(ok), dtype=float)
-    case.recordings.append(Recording(os.path.splitext(os.path.basename(name))[0], times,
-                                     np.array([mats[k] for k in ok]), name, timed))
-    return f"запись движения, кадров: {len(ok)}"
+    """Таблица CSV/ASCII: блоки чисел по строке на кадр, с заголовком столбцов или без.
+
+    Без заголовка — 12 или 16 чисел матрицы либо смещение + кватернион (7 чисел),
+    впереди может стоять время. С заголовком — по именам столбцов: время,
+    смещение + кватернион или углы, ячейки матрицы, точки x/y/z (резцовая точка,
+    мыщелки, маркеры); единицы — из заголовка «[mm]» или строки «Unit: m».
+    Разделитель — «;», табуляция, запятая или пробелы; десятичная запятая понимается.
+    """
+    blocks = [b for b in _blocks(text) if len(b[1]) >= MIN_FRAMES]
+    if not blocks:
+        return "чисел нет" if not _blocks(text) else "блоков чисел длиной с запись движения нет"
+    unit = UNIT_SCALE[m[1].lower()] if (m := _FILE_UNIT.search(text)) else None
+    rate = float(m[1].replace(",", ".")) if (m := _FILE_RATE.search(text)) else None
+    stem = os.path.splitext(os.path.basename(name))[0]
+    recs, series, problems = [], [], []
+    for k, (header, rows, texts) in enumerate(blocks):
+        title = _safe_name(" ".join(texts[-2:]), "") or _safe_name(stem, "")
+        rec_name = title or (f"запись {len(case.recordings) + len(case.tracings) + k + 1}")
+        source = f"{name}: блок {k + 1}" if len(blocks) > 1 else name
+        if header is None:
+            got, why = _headerless(rows, rec_name, source)
+            for r in got:
+                if unit:
+                    r.transforms[:, :3, 3] *= unit
+            recs += got
+        else:
+            got, pts, why = _with_header(header, rows, rec_name, source, rate, unit)
+            recs += got
+            series += pts
+        if why:
+            problems.append(why)
+    known = unit is not None or any(_UNIT.search(" ".join(b[0])) for b in blocks if b[0])
+    note = _add(case, recs, series, 1.0 if known else None)  # единицы известны — точки уже в мм
+    return note or "; ".join(dict.fromkeys(problems))
+
+
+# --- HDF5 (JawTrackingSystem и подобные) ---
+
+def _read_hdf5(data: bytes, name: str, case: MotionCase) -> str:
+    """Группы со смещениями (N, 3) и поворотами (кватернионы (N, 4), скаляр первым, или матрицы (N, 3, 3)),
+    атрибуты sample_rate и unit — как сохраняет JawTrackingSystem; а также наборы (N, 4, 4)."""
+    try:
+        import h5py
+    except ImportError:
+        return "HDF5: для чтения установите h5py"
+    recs = []
+    with h5py.File(io.BytesIO(data), "r") as f:
+        jts = "jts_version" in f.attrs
+        found = []
+
+        def visit(path, obj):
+            if isinstance(obj, h5py.Group) and "translations" in obj and "rotations" in obj:
+                found.append(path)
+            elif isinstance(obj, h5py.Dataset) and obj.ndim == 3 and obj.shape[1:] == (4, 4):
+                found.append(path)
+
+        f.visititems(visit)
+        smooth = {p[:-len("_smooth")] for p in found if p.endswith("_smooth")}
+        found = [p for p in found if p not in smooth]  # есть сглаженная — сырая не нужна
+        for k, path in enumerate(found):
+            obj = f[path]
+            attrs = obj.attrs if isinstance(obj, h5py.Group) else obj.parent.attrs
+            if isinstance(obj, h5py.Group):
+                t, r = np.asarray(obj["translations"], float), np.asarray(obj["rotations"], float)
+                R = _quaternions(r, True if jts else None) if r.ndim == 2 and r.shape[1] == 4 else \
+                    (r if r.ndim == 3 and r.shape[1:] == (3, 3) else None)
+                if R is None or len(R) != len(t):
+                    continue
+                T = np.tile(np.eye(4), (len(t), 1, 1))
+                T[:, :3, :3], T[:, :3, 3] = R, t
+            else:
+                T = np.asarray(obj, float)
+            u = attrs.get("unit", "")
+            u = u.decode() if isinstance(u, bytes) else str(u)
+            T[:, :3, 3] *= UNIT_SCALE.get(u.strip().lower(), 1.0)
+            rate = float(attrs.get("sample_rate", 0) or 0)
+            times = np.arange(len(T)) / rate if rate > 0 else np.arange(len(T), dtype=float)
+            rec_name = _safe_name(os.path.splitext(os.path.basename(name))[0], f"запись {k + 1}")
+            recs.append(Recording(rec_name, times, T, f"{name}: {path}", rate > 0))
+    return _add(case, recs, [], None) or "записей движения не найдено"
+
+
+def detect_system(name: str, data: bytes) -> str | None:
+    """Система записи по имени файла и его началу — только подпись; на чтение не влияет."""
+    text = name.lower().encode("utf-8", "ignore") + b" " + data[:1 << 18].lower()
+    for system, keys in SYSTEMS:
+        if any(k.encode() in text for k in keys):
+            return system
+    return None
 
 
 def _entries(path: str):
@@ -485,8 +1053,19 @@ def _entries(path: str):
         raise FileNotFoundError(f"нет такого файла или папки: {path}")
 
 
+def _decode(data: bytes) -> str:
+    """Текст таблицы: UTF-8 (с BOM или без), UTF-16 или кодировка Windows."""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16", "replace")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp1252" if not re.search(rb"[\xc0-\xff]{3}", data) else "cp1251", "replace")
+
+
 def _kind(ext: str) -> str:
-    for kind, exts in (("модель", MESH_EXT), ("движение", MOTION_EXT), ("матрица", MATRIX_EXT),
+    for kind, exts in (("модель", MESH_EXT), ("движение", MOTION_EXT + HDF5_EXT + tuple(CLOSED_EXT)),
+                       ("матрица", MATRIX_EXT),
                        ("проект exocad", PROJECT_EXT), ("изображение", (".png", ".jpg", ".jpeg", ".bmp")),
                        ("документ", (".pdf", ".html", ".htm"))):
         if ext in exts:
@@ -519,17 +1098,25 @@ def read_case(path: str) -> MotionCase:
                     root = ET.fromstring(data)
                     case.project.update({k: el.text.strip() for k in PROJECT_FIELDS
                                          if (el := root.find(f".//{k}")) is not None and el.text})
-            elif ext in MOTION_EXT:
+            elif ext in MOTION_EXT or ext in HDF5_EXT or ext in CLOSED_EXT:
                 data = read()
-                if _is_xml(data):
+                if system := detect_system(rel, data):
+                    entry["system"] = system
+                if ext in CLOSED_EXT:
+                    entry["note"] = (f"формат {CLOSED_EXT[ext]} открыто не описан — нужна выгрузка движения "
+                                     "в открытом виде (XML для exocad, CSV/ASCII)")
+                elif ext in HDF5_EXT or data[:8] == b"\x89HDF\r\n\x1a\n":
+                    entry["note"] = _read_hdf5(data, rel, case)
+                elif _is_xml(data):
                     entry["note"] = _read_xml(data, rel, case)
                 elif ext == ".jawmotion":
                     entry["note"] = "двоичный формат — нужен образец"
                 else:
-                    entry["note"] = _read_table(data.decode("utf-8", "replace"), rel, case)
+                    entry["note"] = _read_table(_decode(data), rel, case)
         except Exception as e:  # noqa: BLE001 — один плохой файл не мешает остальным
             entry["note"] = f"не прочитан: {type(e).__name__}: {e}"
         case.files.append(entry)
+    case.systems = sorted({f["system"] for f in case.files if f.get("system")})
 
     if case.recordings:
         moved = max(float(np.abs(r.transforms[:, :3, 3]).max()) for r in case.recordings)
@@ -540,8 +1127,11 @@ def read_case(path: str) -> MotionCase:
             case.notes.append("смещения похожи на метры — переведены в миллиметры")
         if not all(r.timed for r in case.recordings):
             case.notes.append("в части записей нет времени — вместо секунд номера кадров")
-    else:
+    elif not case.tracings:
         case.notes.append("записей движения не найдено — нужен образец выгрузки (motion --inspect)")
+    if case.tracings and not case.recordings:
+        case.notes.append("есть только пути отдельных точек: углы суставного пути считаются, "
+                          "а двигать модели по ним нельзя")
     if case.meshes and "lower" not in case.roles:
         case.notes.append("модель нижней челюсти не определена по имени файла — укажите её (--lower)")
     return case
@@ -784,28 +1374,46 @@ def _r(v, digits=2):
 
 
 def analyze_recording(rec: Recording, anatomy: Anatomy, ref: np.ndarray | None = None) -> dict:
-    P = paths(rec, anatomy, ref)
-    inc = P["incisal"] - P["incisal"][0]
-    k = int(np.argmax(np.linalg.norm(inc, axis=1)))
-    cycles = _cycles(-inc[:, 2])
-    kind = _classify(inc[k, 0], inc[k, 1], -inc[k, 2], cycles)
-    out = {
-        "name": rec.name, "kind": kind, "kind_name": KINDS[kind], "frames": len(rec.transforms),
-        "duration_s": _r(rec.duration, 3) if rec.timed else None, "cycles": cycles,
-        "incisal": {"max_mm": _r(np.linalg.norm(inc, axis=1).max()), "opening_mm": _r(max(0, -inc[:, 2].min())),
-                    "protrusion_mm": _r(max(0, inc[:, 1].max())), "right_mm": _r(max(0, inc[:, 0].max())),
-                    "left_mm": _r(max(0, -inc[:, 0].min()))},
-        "condyles": {},
-    }
-    # Ведение зубами: наклон пути резцовой точки на первых миллиметрах (сбоку — при протрузии,
-    # спереди — при боковых движениях).
-    v, at = _chord(P["incisal"], GUIDE_CHORD_MM)
-    if kind == "protrusion" and at >= 1.0 and v[1] > 0:
-        out["incisal"]["guidance_deg"] = _r(np.degrees(np.arctan2(-v[2], v[1])), 1)
-    elif kind.startswith("laterotrusion") and at >= 1.0:
-        out["incisal"]["guidance_deg"] = _r(np.degrees(np.arctan2(-v[2], abs(v[0]))), 1)
+    return _analyze_paths(rec.name, paths(rec, anatomy, ref), len(rec.transforms),
+                          rec.duration if rec.timed else None)
+
+
+def _classify_condyles(P: dict) -> str:
+    """Тип движения по одним мыщелкам: оба уходят — протрузия (открывание от неё не отличить),
+    один стоит — латеротрузия в его сторону."""
+    d = {s: float(np.linalg.norm(P[f"condyle_{s}"] - P[f"condyle_{s}"][0], axis=1).max()) for s in ("right", "left")}
+    if max(d.values()) < 1.0:
+        return "other"
+    if min(d.values()) > 0.5 * max(d.values()):
+        return "protrusion"
+    return "laterotrusion_right" if d["right"] < d["left"] else "laterotrusion_left"
+
+
+def _analyze_paths(name: str, P: dict, frames: int, duration: float | None, kind: str | None = None) -> dict:
+    """Углы и размах по путям точек в анатомической системе; точек может не хватать (пути мыщелков без резцов)."""
+    out = {"name": name, "kind": kind, "frames": frames, "duration_s": _r(duration, 3), "cycles": 0}
+    if "incisal" in P:
+        inc = P["incisal"] - P["incisal"][0]
+        k = int(np.argmax(np.linalg.norm(inc, axis=1)))
+        out["cycles"] = _cycles(-inc[:, 2])
+        kind = kind or _classify(inc[k, 0], inc[k, 1], -inc[k, 2], out["cycles"])
+        out["incisal"] = {"max_mm": _r(np.linalg.norm(inc, axis=1).max()),
+                          "opening_mm": _r(max(0, -inc[:, 2].min())), "protrusion_mm": _r(max(0, inc[:, 1].max())),
+                          "right_mm": _r(max(0, inc[:, 0].max())), "left_mm": _r(max(0, -inc[:, 0].min()))}
+        # Ведение зубами: наклон пути резцовой точки на первых миллиметрах (сбоку — при протрузии,
+        # спереди — при боковых движениях).
+        v, at = _chord(P["incisal"], GUIDE_CHORD_MM)
+        if kind == "protrusion" and at >= 1.0 and v[1] > 0:
+            out["incisal"]["guidance_deg"] = _r(np.degrees(np.arctan2(-v[2], v[1])), 1)
+        elif kind.startswith("laterotrusion") and at >= 1.0:
+            out["incisal"]["guidance_deg"] = _r(np.degrees(np.arctan2(-v[2], abs(v[0]))), 1)
+    elif kind is None:
+        kind = _classify_condyles(P) if "condyle_right" in P and "condyle_left" in P else "other"
+    out["kind"], out["kind_name"] = kind, KINDS[kind]
+    out["condyles"] = {}
     for side, sign in (("right", 1.0), ("left", -1.0)):
-        c = P[f"condyle_{side}"]
+        if (c := P.get(f"condyle_{side}")) is None:
+            continue
         v, at = _chord(c, CHORD_MM)
         info = {"path_mm": _r(np.linalg.norm(c - c[0], axis=1).max()), "measured_at_mm": _r(at)}
         if kind == f"laterotrusion_{side}":  # рабочий мыщелок: насколько ушёл наружу
@@ -817,7 +1425,7 @@ def analyze_recording(rec: Recording, anatomy: Anatomy, ref: np.ndarray | None =
         out["condyles"][side] = info
     if kind.startswith("laterotrusion"):
         other = "left" if kind.endswith("right") else "right"
-        out["immediate_side_shift_mm"] = out["condyles"][other].get("immediate_side_shift_mm")
+        out["immediate_side_shift_mm"] = out["condyles"].get(other, {}).get("immediate_side_shift_mm")
     return out
 
 
@@ -848,13 +1456,10 @@ def _mean(values):
     return round(float(np.mean(values)), 1) if values else None
 
 
-def analyze_case(case: MotionCase, anatomy: Anatomy) -> dict:
-    """Все записи кейса и сводка: углы для настройки артикулятора, наибольшие движения."""
-    ref = reference_pose(case)
-    recs = [analyze_recording(r, anatomy, ref) for r in case.recordings]
-
+def _summary(recs: list) -> tuple[dict, dict]:
+    """Углы для настройки артикулятора и ведения зубами — средние по записям нужного типа."""
     def get(kind, side, key):
-        return [r["condyles"][side].get(key) for r in recs if r["kind"] == kind]
+        return [r["condyles"].get(side, {}).get(key) for r in recs if r["kind"] == kind]
 
     settings = {
         "sagittal_right_deg": _mean(get("protrusion", "right", "sagittal_deg")),
@@ -869,8 +1474,16 @@ def analyze_case(case: MotionCase, anatomy: Anatomy) -> dict:
     for side, other in (("right", "left"), ("left", "right")):
         nw, pro = _mean(get(f"laterotrusion_{other}", side, "sagittal_deg")), settings[f"sagittal_{side}_deg"]
         settings[f"fischer_{side}_deg"] = None if nw is None or pro is None else round(nw - pro, 1)
-    guidance = {kind: _mean(r["incisal"].get("guidance_deg") for r in recs if r["kind"] == kind)
+    guidance = {kind: _mean(r.get("incisal", {}).get("guidance_deg") for r in recs if r["kind"] == kind)
                 for kind in ("protrusion", "laterotrusion_right", "laterotrusion_left")}
+    return settings, guidance
+
+
+def analyze_case(case: MotionCase, anatomy: Anatomy) -> dict:
+    """Все записи кейса и сводка: углы для настройки артикулятора, наибольшие движения."""
+    ref = reference_pose(case)
+    recs = [analyze_recording(r, anatomy, ref) for r in case.recordings]
+    settings, guidance = _summary(recs)
     notes = list(case.notes)
     if anatomy.source.startswith("оценка"):
         notes.append("углы отсчитаны от плоскости «шарнирная ось — резцовая точка», а не от Франкфурта: "
@@ -878,13 +1491,125 @@ def analyze_case(case: MotionCase, anatomy: Anatomy) -> dict:
     if ref is None:
         notes.append("окклюзии в записях нет — смещения отсчитаны от первого кадра каждой записи")
     return {
-        "case": case.source, "frame": anatomy.source, "hinge_rms_mm": _r(anatomy.hinge_rms_mm, 3),
+        "case": case.source, "systems": case.systems, "frame": anatomy.source,
+        "hinge_rms_mm": _r(anatomy.hinge_rms_mm, 3),
         "reference": "окклюзия" if ref is not None else "первый кадр записи",
         "points": {k: [round(float(c), 2) for c in apply(anatomy.frame, p[None])[0]]
                    for k, p in anatomy.points.items()},
         "max_opening_mm": _r(max((r["incisal"]["opening_mm"] for r in recs), default=None)),
         "articulator": settings, "guidance_deg": guidance, "recordings": recs, "notes": notes,
     }
+
+
+# --- пути отдельных точек (кондилографы) ---
+
+def parse_axes(text: str) -> np.ndarray:
+    """Оси системы записи: «-y,x,z» — какие оси файла смотрят вправо пациента, вперёд и вверх."""
+    rows = []
+    for part in text.replace(" ", "").lower().split(","):
+        axis = part.lstrip("+-")
+        if axis not in ("x", "y", "z"):
+            raise ValueError(f"оси: «{text}» — нужно три оси файла через запятую, например «-y,x,z»")
+        v = np.zeros(3)
+        v["xyz".index(axis)] = -1.0 if part.startswith("-") else 1.0
+        rows.append(v)
+    A = np.array(rows)
+    if A.shape != (3, 3) or abs(np.linalg.det(A)) < 0.5:
+        raise ValueError(f"оси: «{text}» — три разные оси файла, например «-y,x,z»")
+    return A
+
+
+def _roles(tr: Tracing) -> dict:
+    pair = len(tr.points) == 2
+    out = {}
+    for k, v in tr.points.items():
+        if (role := point_role(k, pair)) and role not in out:
+            out[role] = v
+    return out
+
+
+def tracing_axes(tracings: list) -> tuple[np.ndarray | None, str]:
+    """Оси анализа путей мыщелков по самим путям — если это можно сделать надёжно.
+
+    Вправо — от левого мыщелка к правому (ближайшая ось файла). Из двух
+    оставшихся осей вперёд — та, вдоль которой мыщелки уходят больше, вверх —
+    другая, со знаком «мыщелки уходят вниз»: мыщелок идёт вперёд и вниз по скату
+    бугорка. При угле пути ближе к 45° (меньше чем в AXES_RATIO раз разницы)
+    оси не угадать — тогда их нужно задать.
+    """
+    pairs = [r for t in tracings if "condyle_right" in (r := _roles(t)) and "condyle_left" in r]
+    if not pairs:
+        return None, "нет пары мыщелков с понятными именами — задайте оси и имена точек явно"
+    x = np.mean([r["condyle_right"][0] - r["condyle_left"][0] for r in pairs], axis=0)
+    i = int(np.argmax(np.abs(x)))
+    if abs(x[i]) < np.cos(np.radians(20)) * np.linalg.norm(x):
+        return None, "линия между мыщелками не идёт вдоль оси файла — задайте оси явно"
+    E = np.eye(3)
+    right = E[i] * np.sign(x[i])
+    moves = np.array([c[np.argmax(np.linalg.norm(c - c[0], axis=1))] - c[0]
+                      for r in pairs for c in (r["condyle_right"], r["condyle_left"])])
+    rest = [j for j in range(3) if j != i]
+    size = [float(np.abs(moves[:, j]).mean()) for j in rest]
+    if max(size) < AXES_RATIO * min(size):
+        return None, ("мыщелки уходят вперёд и вниз почти поровну — по путям не понять, какая ось вперёд; "
+                      "задайте оси явно (например, --axes=-y,x,z)")
+    j, k = rest[int(np.argmax(size))], rest[int(np.argmin(size))]
+    forward = E[j] * np.sign(moves[:, j].sum())
+    up = -E[k] * np.sign(moves[:, k].sum())  # по скату бугорка мыщелки уходят вниз
+    axes = np.array([right, forward, up])
+    note = "оси системы записи угаданы по путям мыщелков: " + ", ".join(
+        f"{name} — {'-' if v.min() < 0 else ''}{'xyz'[int(np.argmax(np.abs(v)))]}"
+        for name, v in zip(("вправо", "вперёд", "вверх"), axes))
+    if np.linalg.det(axes) < 0:
+        note += " (оси файла левые — так бывает, например «вперёд, влево, вниз»; если нет — проверьте стороны)"
+    return axes, note
+
+
+def _kind_from_name(name: str) -> str | None:
+    t = _tokens(name)
+    if _has(t, dict(MOVE_WORDS)["протрузия"]):
+        return "protrusion"
+    if _has(t, dict(MOVE_WORDS)["открывание"]):
+        return "opening"
+    if _has(t, dict(MOVE_WORDS)["жевание"]):
+        return "chewing"
+    if _has(t, dict(MOVE_WORDS)["латеротрузия"]):
+        if _has(t, dict(MOVE_WORDS)["вправо"]):
+            return "laterotrusion_right"
+        if _has(t, dict(MOVE_WORDS)["влево"]):
+            return "laterotrusion_left"
+    return None
+
+
+def analyze_tracings(case: MotionCase, axes: np.ndarray | None = None) -> dict:
+    """Углы по путям отдельных точек: сагиттальный угол суставного пути, Беннетт, боковой сдвиг.
+
+    Углы — к горизонтали системы записи (у кондилографа это обычно его опорная
+    плоскость), а не к Франкфурту или окклюзионной плоскости. Тип движения — по
+    имени записи, иначе по мыщелкам (открывание от протрузии по ним не отличить).
+    """
+    notes = []
+    if axes is None:
+        axes, note = tracing_axes(case.tracings)
+        notes.append(note)
+    else:
+        notes.append("оси системы записи заданы явно")
+    if axes is None:
+        return {"axes": None, "recordings": [], "articulator": {}, "guidance_deg": {}, "notes": notes}
+    recs = []
+    for n, tr in enumerate(case.tracings):
+        P = {k: v @ axes.T for k, v in _roles(tr).items()}
+        if not P:
+            notes.append(f"запись {n + 1}: точки не узнаны по именам ({len(tr.points)}) — пропущена")
+            continue
+        kind = _kind_from_name(tr.name)
+        recs.append(_analyze_paths(tr.name, P, len(tr.times), tr.duration if tr.timed else None, kind))
+        if kind is None and recs[-1]["kind"] == "protrusion" and "incisal" not in P:
+            notes.append("симметричное движение мыщелков считается протрузией: открывание по путям мыщелков "
+                         "от неё не отличить — подпишите записи")
+    settings, guidance = _summary(recs)
+    return {"axes": axes.tolist(), "recordings": recs, "articulator": settings, "guidance_deg": guidance,
+            "notes": list(dict.fromkeys(notes))}
 
 
 # --- выгрузка ---

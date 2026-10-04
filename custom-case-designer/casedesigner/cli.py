@@ -110,46 +110,79 @@ def cmd_motion(args):
     print(f"Кейс: {case.source}, файлов: {len(case.files)}")
     for f in case.files:
         role = f" — {f['role']}" if f.get("role") else ""
+        system = f" [{f['system']}]" if f.get("system") else ""
         note = f": {f['note']}" if f.get("note") else ""
-        print(f"  [{f['kind']}] {f['path']}{role}{note}")
-    if args.inspect:
-        for rel, _size, read in motion._entries(args.case):  # структура XML без значений — ею можно делиться
-            if os.path.splitext(rel)[1].lower() in (".xml", ".jawmotion", ".matrix4", ".dentalproject"):
-                data = read()
-                if motion._is_xml(data):
-                    print(f"\nСтруктура {os.path.splitext(rel)[1]}:")
-                    print("\n".join("  " + line for line in motion.describe_xml(data)))
+        print(f"  [{f['kind']}] {f['path']}{role}{system}{note}")
+    if args.inspect:  # структура без значений, имён и дат — ею можно делиться
+        for rel, _size, read in motion._entries(args.case):
+            ext = os.path.splitext(rel)[1].lower()
+            if ext not in motion.MOTION_EXT + motion.HDF5_EXT + motion.MATRIX_EXT + motion.PROJECT_EXT:
+                continue
+            data = read()
+            if ext in motion.HDF5_EXT:
+                try:
+                    lines = motion.describe_hdf5(data)
+                except ImportError:
+                    lines = ["для HDF5 установите h5py"]
+            elif motion._is_xml(data):
+                lines = motion.describe_xml(data)
+            elif ext in (".csv", ".txt", ".tsv", ".asc", ".dat"):
+                lines = motion.describe_table(motion._decode(data))
+            else:
+                continue
+            print(f"\nСтруктура {ext}:")
+            print("\n".join("  " + line for line in lines))
         return
     for note in case.notes:
         print(f"ВНИМАНИЕ: {note}")
-    if not case.recordings:
-        return
-    lower = None
-    if args.lower:
-        lower = np.asarray(trimesh.load_mesh(args.lower, process=False).vertices, float)
-    anatomy = motion.estimate_anatomy(case, lower=lower, incisal=args.incisal, icd=args.icd)
-    report = motion.analyze_case(case, anatomy)
-    print(f"\nСистема координат: {anatomy.source}")
-    if anatomy.hinge_rms_mm is not None:
-        print(f"Шарнирная ось: в начале открывания смещается в среднем на {anatomy.hinge_rms_mm:.2f} мм")
-    for r in report["recordings"]:
-        inc = r["incisal"]
-        extra = f", ведение {inc['guidance_deg']}°" if inc.get("guidance_deg") is not None else ""
-        print(f"  {r['name']}: {r['kind_name']}, {r['frames']} кадров, резцовая точка до {inc['max_mm']} мм{extra}")
-    s = report["articulator"]
-    print("Для артикулятора: " + ", ".join(f"{k} = {v}" for k, v in s.items() if v is not None))
-    for note in report["notes"]:
-        print(f"Примечание: {note}")
-    if args.out:
+    report = {}
+    if case.recordings:
+        lower = None
+        if args.lower:
+            lower = np.asarray(trimesh.load_mesh(args.lower, process=False).vertices, float)
+        anatomy = motion.estimate_anatomy(case, lower=lower, incisal=args.incisal, icd=args.icd)
+        report = motion.analyze_case(case, anatomy)
+        print(f"\nСистема координат: {anatomy.source}")
+        if anatomy.hinge_rms_mm is not None:
+            print(f"Шарнирная ось: в начале открывания смещается в среднем на {anatomy.hinge_rms_mm:.2f} мм")
+        _print_motion(report)
+    if case.tracings:
+        axes = motion.parse_axes(args.axes) if args.axes else None
+        traced = motion.analyze_tracings(case, axes)
+        print("\nПути отдельных точек (углы — к горизонтали системы записи):")
+        _print_motion(traced)
+        report = {**report, "tracings": traced} if report else {"case": case.source, "systems": case.systems,
+                                                                 "tracings": traced}
+    if args.out and report:
         os.makedirs(args.out, exist_ok=True)
         with open(os.path.join(args.out, "motion.json"), "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
+        if not case.recordings:
+            print(f"Отчёт: {args.out} (motion.json)")
+            return
         motion.write_paths_csv(os.path.join(args.out, "paths.csv"), case, anatomy)
         try:
             motion.plot(case, anatomy, os.path.join(args.out, "motion.png"), report)
             print(f"Отчёт: {args.out} (motion.json, paths.csv, motion.png)")
         except ImportError:
             print(f"Отчёт: {args.out} (motion.json, paths.csv); для картинки установите matplotlib")
+
+
+def _print_motion(report: dict):
+    for r in report["recordings"]:
+        inc = r.get("incisal")
+        if inc:
+            extra = f", ведение {inc['guidance_deg']}°" if inc.get("guidance_deg") is not None else ""
+            print(f"  {r['name']}: {r['kind_name']}, {r['frames']} кадров, резцовая точка до {inc['max_mm']} мм{extra}")
+        else:
+            paths = ", ".join(f"{'правый' if s == 'right' else 'левый'} {c['path_mm']} мм"
+                              for s, c in r["condyles"].items())
+            print(f"  {r['name']}: {r['kind_name']}, {r['frames']} кадров, мыщелки: {paths or '—'}")
+    s = report["articulator"]
+    if any(v is not None for v in s.values()):
+        print("Для артикулятора: " + ", ".join(f"{k} = {v}" for k, v in s.items() if v is not None))
+    for note in report["notes"]:
+        print(f"Примечание: {note}")
 
 
 def _segment_options(parser, required):
@@ -192,13 +225,16 @@ def main(argv=None):
     seg.set_defaults(func=cmd_segment)
 
     mot = sub.add_parser("motion", help="записи движений нижней челюсти (P-ART и др.): разобрать и проанализировать")
-    mot.add_argument("case", help="выгрузка: папка, архив .zip или файл движения (.xml, .jawMotion, .csv)")
+    mot.add_argument("case", help="выгрузка: папка, архив .zip или файл движения (.xml, .jawMotion, .csv, .txt, .h5)")
     mot.add_argument("--inspect", action="store_true",
-                     help="только состав и структура XML — без значений, имён и дат (можно прислать для разбора формата)")
+                     help="только состав и структура файлов (XML, таблицы, HDF5) — без значений, имён и дат "
+                          "(можно прислать для разбора формата)")
     mot.add_argument("--lower", help="модель нижней челюсти, если её нет в выгрузке или имя не распознано")
     mot.add_argument("--incisal", nargs=3, type=float, metavar=("X", "Y", "Z"),
                      help="резцовая точка в координатах моделей (по умолчанию ищется на модели)")
     mot.add_argument("--icd", type=float, default=motion.ICD_MM, help="межмыщелковое расстояние, мм (100)")
+    mot.add_argument("--axes", help="для путей мыщелков: какие оси файла смотрят вправо пациента, вперёд и вверх, "
+                                    "например --axes=-y,x,z (по умолчанию угадываются по путям)")
     mot.add_argument("-o", "--out", help="папка отчёта: motion.json, paths.csv, motion.png")
     mot.set_defaults(func=cmd_motion)
 
