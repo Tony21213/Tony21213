@@ -429,3 +429,21 @@ def test_fgp_follows_the_guiding_surface():
     for p in edge:
         around = tree.query_ball_point(p[:2], 0.12)
         assert around and verts[around, 2].max() >= p[2] - 1e-6
+
+
+@pytest.mark.parametrize("over_closed", [0.4, -0.6])
+def test_seat_bite_on_hinge_axis(over_closed):
+    """Провален на 0.4 мм — открыть до касания; не сомкнут на 0.6 мм — закрыть до первого контакта."""
+    up_v, up_f, low_v = ramp_case(molars_over_closed=over_closed)
+    a = mo.Anatomy(np.eye(4), dict(POINTS), "истина")
+    T, info = kin.seat_bite(up_v, up_f, low_v, a)
+    assert info["penetration_after_mm"] <= kin.CONTACT_TOL_MM
+    seated = kin.Occlusion(up_v, up_f, apply(T, low_v), np.eye(4), max_points=kin.SEAT_POINTS)
+    assert seated._signed(np.eye(4)).min() == pytest.approx(0.0, abs=kin.CONTACT_TOL_MM)  # касание
+    if over_closed > 0:
+        assert info["theta_deg"] > 0 and info["penetration_before_mm"] == pytest.approx(0.4, abs=0.05)
+    else:
+        assert info["theta_deg"] < 0
+    # точки на шарнирной оси не сдвигаются — только поворот по дуге закрывания
+    for c in ("condyle_right", "condyle_left"):
+        assert apply(T, POINTS[c][None])[0] == pytest.approx(POINTS[c], abs=1e-9)

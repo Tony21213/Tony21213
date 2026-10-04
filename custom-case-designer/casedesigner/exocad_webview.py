@@ -423,6 +423,7 @@ def analyze(scene: Scene, travel: float = 6.0) -> tuple[dict, mo.MotionCase, mo.
         occlusion = kin.Occlusion(upper.vertices, upper.faces, lower.vertices, anatomy.frame)
     except ValueError as e:
         raise ValueError(f"сканы челюстей не в прикусе ({e}); если челюсти беззубые, ведения по сканам нет") from e
+    _seat, seating = kin.seat_bite(upper.vertices, upper.faces, lower.vertices, anatomy)  # только подсказка
     recs = [kin.protrusion(anatomy, settings, travel, occlusion),
             kin.laterotrusion(anatomy, settings, "right", travel, occlusion),
             kin.laterotrusion(anatomy, settings, "left", travel, occlusion)]
@@ -437,6 +438,7 @@ def analyze(scene: Scene, travel: float = 6.0) -> tuple[dict, mo.MotionCase, mo.
         "settings": {k: v for k, v in vars(settings).items() if k not in ("sources", "frame")},
         "sources": dict(settings.sources),
         "bite_penetration_mm": round(occlusion.bite_penetration_mm, 3),
+        "bite_seating": seating,  # как посадить прикус на шарнирной оси; прикус сканов не меняется
         "guidance_deg": analysis["guidance_deg"],
         "contacts": {r.name: kin.contact_sectors(r, anatomy, occlusion) for r in recs},
         "notes": notes,

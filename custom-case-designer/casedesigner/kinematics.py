@@ -143,7 +143,8 @@ class Occlusion:
     поэтому за шаг точка не проскакивает сквозь тонкий край.
     """
 
-    def __init__(self, upper_vertices, upper_faces, lower_vertices, frame: np.ndarray, seed: int = 0):
+    def __init__(self, upper_vertices, upper_faces, lower_vertices, frame: np.ndarray, seed: int = 0,
+                 max_points: int = GUIDE_POINTS):
         import trimesh
 
         upper = trimesh.Trimesh(apply(frame, upper_vertices), np.asarray(upper_faces), process=False)
@@ -155,8 +156,8 @@ class Occlusion:
         near = lower[np.isfinite(d)]
         if len(near) == 0:
             raise ValueError(f"модели не в прикусе: нижние зубы дальше {GUIDE_REACH_MM:g} мм от верхних")
-        if len(near) > GUIDE_POINTS:
-            near = near[np.random.default_rng(seed).choice(len(near), GUIDE_POINTS, replace=False)]
+        if len(near) > max_points:
+            near = near[np.random.default_rng(seed).choice(len(near), max_points, replace=False)]
         self.lower = near
         _d, i = self.tree.query(near)
         if np.mean(np.sum((near - self.points[i]) * self.normals[i], axis=1)) < 0:
@@ -198,6 +199,51 @@ class Occlusion:
             mid = (lo + hi) / 2
             lo, hi = (lo, mid) if free(mid) else (mid, hi)
         return hi
+
+
+SEAT_POINTS = 60000  # для посадки прикуса — почти все точки зубов, а не выборка
+SEAT_STEP_DEG = 0.1
+
+
+def seat_bite(upper_vertices, upper_faces, lower_vertices, anatomy: Anatomy, tol: float = CONTACT_TOL_MM) -> tuple:
+    """Посадка прикуса сканов на шарнирной оси: до первого контакта без проникновения.
+
+    Прикус со сканера часто «провален» (зубы друг в друге на десятые доли
+    мм) или не сомкнут. Нижняя челюсть поворачивается вокруг оси мыщелков —
+    по дуге закрывания — пока самая глубокая точка не окажется на поверхности
+    верхних зубов (±tol). Соотношение челюстей вперёд-назад и в стороны не
+    меняется. Возвращает матрицу «нижний скан → посаженный» (координаты кейса)
+    и сведения: угол, сдвиг резцовой точки, проникновение до и после.
+    """
+    F = anatomy.frame
+    occ = Occlusion(upper_vertices, upper_faces, lower_vertices, F, max_points=SEAT_POINTS)
+    c0 = condyles(anatomy)
+
+    def gap(theta):  # наименьшее расстояние со знаком: минус — проникновение
+        return float(occ._signed(jaw_pose(c0, c0, theta)).min())
+
+    g0 = gap(0.0)
+    if abs(g0) <= tol:
+        theta = 0.0
+    else:
+        step = SEAT_STEP_DEG if g0 < 0 else -SEAT_STEP_DEG  # провален — открывать, не сомкнут — закрывать
+        a, b = 0.0, step
+        while (gap(b) < 0) == (g0 < 0):
+            a, b = b, b + step
+            if abs(b) > OPEN_LIMIT_DEG:
+                raise ValueError("не удалось посадить прикус: проверьте, что сканы стоят друг против друга")
+        for _ in range(30):  # граница «касание»: с одной стороны проникновение, с другой — зазор
+            mid = (a + b) / 2
+            a, b = (mid, b) if (gap(mid) < 0) == (g0 < 0) else (a, mid)
+        theta = b if g0 < 0 else a  # без проникновения
+    M = jaw_pose(c0, c0, theta)
+    back = np.linalg.inv(F)
+    inc = apply(F, anatomy.points["incisal"][None])[0]
+    after = gap(theta)
+    info = {"theta_deg": round(theta, 4), "incisal_shift_mm": round(float(np.linalg.norm(apply(M, inc[None])[0] - inc)), 3),
+            "penetration_before_mm": round(max(0.0, -g0), 3), "penetration_after_mm": round(max(0.0, -after), 3),
+            "gap_before_mm": round(g0, 3) if np.isfinite(g0) else None}
+    return back @ M @ F, info
 
 
 def contact_sectors(rec: Recording, anatomy: Anatomy, occlusion: Occlusion, every: int = 4, gap: float = 0.1,
