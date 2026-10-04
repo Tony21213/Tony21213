@@ -341,3 +341,13 @@ def test_average_articulator_from_scans_only():
         assert np.sign(c[0] - inc[0]) == sign and c[2] > inc[2]  # справа — справа, мыщелки выше резцов
     with pytest.raises(ValueError, match="где верх"):
         mo.anatomy_average(lower)
+
+
+def test_arch_direction_with_curve_of_spee():
+    """Моляры выше резцов (кривая Шпее): самые высокие точки — одни моляры, «вперёд» всё равно к резцам."""
+    u = np.linspace(-1, 1, 80)
+    spee = 2.5 * u ** 2  # к молярам дуга поднимается
+    arch = np.c_[25 * u, 90 - 40 * u ** 2, -30 + spee]
+    lower = np.vstack([arch + [0, r, -dz] for dz in np.linspace(0, 8, 6) for r in (-4, 0, 4)])
+    up, anterior = mo.arch_axes(lower, [0, 0, 1.0])
+    assert anterior @ [0, 1, 0] > 0.99 and up @ [0, 0, 1] > 0.98

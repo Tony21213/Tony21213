@@ -62,6 +62,7 @@ INCISAL_TILT_DEG = 30.0  # «верх» для поиска резцов нак�
 BONWILL_MM = 100.0  # сторона треугольника Бонвилля: мыщелок — мыщелок и мыщелок — резцовая точка
 BALKWILL_DEG = 25.0  # угол Балквилла: между треугольником Бонвилля и окклюзионной плоскостью
 CUSP_SHARE = 0.05  # окклюзионная плоскость — по самым высоким 5% точек нижних зубов
+ARCH_BAND_MM = 6.0  # форма дуги — по коронкам не глубже 6 мм от окклюзионной плоскости
 
 KINDS = {"opening": "открывание", "protrusion": "протрузия", "laterotrusion_right": "латеротрузия вправо",
          "laterotrusion_left": "латеротрузия влево", "chewing": "жевание", "other": "другое"}
@@ -653,8 +654,11 @@ def arch_axes(vertices: np.ndarray, up) -> tuple[np.ndarray, np.ndarray]:
     """Окклюзионная плоскость и направление вперёд по зубной дуге.
 
     Плоскость — по вершинам бугров (самые высокие точки вдоль up). Вперёд —
-    к вершине дуги: в плоскости подбирается ось, вдоль которой вершины бугров
-    лучше всего ложатся на параболу, и её вершина — резцы.
+    к вершине дуги: в плоскости подбирается ось, вдоль которой коронки
+    (точки не глубже ARCH_BAND_MM от плоскости) лучше всего ложатся на
+    параболу, и её вершина — резцы. Форма дуги берётся по всем коронкам, а не
+    только по вершинам бугров: при выраженной кривой Шпее самые высокие точки —
+    одни моляры, и по ним дугу не понять.
     """
     up = np.asarray(up, float) / np.linalg.norm(up)
     h = vertices @ up
@@ -665,7 +669,11 @@ def arch_axes(vertices: np.ndarray, up) -> tuple[np.ndarray, np.ndarray]:
     u = np.cross(normal, [1.0, 0, 0] if abs(normal[0]) < 0.9 else [0, 1.0, 0])
     u /= np.linalg.norm(u)
     w = np.cross(normal, u)
-    p2 = np.c_[(tips - c) @ u, (tips - c) @ w]
+    depth = (tips @ normal).mean() - vertices @ normal
+    crowns = vertices[depth < ARCH_BAND_MM]
+    if len(crowns) > 6000:
+        crowns = crowns[np.random.default_rng(0).choice(len(crowns), 6000, replace=False)]
+    p2 = np.c_[(crowns - c) @ u, (crowns - c) @ w]
     best = None
     for a in np.radians(np.arange(0.0, 180.0, 1.0)):
         d, e = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
