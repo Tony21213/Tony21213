@@ -191,3 +191,40 @@ def scan_pose(seed=2):
     K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
     R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * K @ K
     return rigid(R, rng.uniform(-40, 40, 3))
+
+
+def _box(p, lo, hi):
+    c, h = (lo + hi) / 2, (hi - lo) / 2
+    q = np.abs(p - c) - h
+    return np.linalg.norm(np.maximum(q, 0), axis=1) + np.minimum(q.max(axis=1), 0)
+
+
+def make_model(jaw="lower", resolution=0.25, seed=1, closed=False):
+    """Гипсовая модель с настольного сканера: зубы, десна и цоколь со стенками.
+
+    Модель стоит на столике сканера, дно цоколя не снимается — сетка открыта
+    снизу. closed=True — дно закрыто (заделанное отверстие или модель, снятая
+    со всех сторон).
+    """
+    lo, hi = np.array([-34.0, -12.0, -20.0]), np.array([34.0, 34.0, 11.0])
+    shape = np.ceil((hi - lo) / resolution).astype(int) + 1
+    grid = np.stack(np.meshgrid(*[lo[i] + resolution * np.arange(shape[i]) for i in range(3)], indexing="ij"), -1)
+    p = grid.reshape(-1, 3)
+    socle = _box(p, np.array([-31.0, -9.0, -17.0]), np.array([31.0, 31.0, -2.0]))  # цоколь под десной
+    f = np.minimum(np.minimum(teeth_sdf(p, UPPER_VARIANT if jaw == "upper" else 0), gum_sdf(p)), socle)
+    verts, faces, _n, _ = measure.marching_cubes(np.pad(f.reshape(shape), 1, constant_values=10.0), 0.0,
+                                                 spacing=(resolution,) * 3)
+    verts += lo - resolution
+    if not closed:  # дно цоколя на столике сканера не видно
+        tri = verts[faces]
+        n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        bottom = (n[:, 2] < -0.9 * np.linalg.norm(n, axis=1)) & (tri[:, :, 2].mean(1) < -16.5)
+        faces = faces[~bottom]
+        used = np.unique(faces)
+        remap = np.full(len(verts), -1)
+        remap[used] = np.arange(len(used))
+        verts, faces = verts[used], remap[faces]
+    verts += np.random.default_rng(seed).normal(0, 0.01, verts.shape)
+    if jaw == "upper":
+        verts, faces = _mirror(verts), faces[:, ::-1]
+    return verts, faces

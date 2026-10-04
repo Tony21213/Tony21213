@@ -63,3 +63,35 @@ def test_upper_scan_with_palate(jaw_ct):
     assert reg.warnings == []
     # Нёбо — не коронки: кандидатов в коронки заметно меньше половины точек скана.
     assert reg.scan.crowns.mean() < 0.6
+
+
+@pytest.fixture(scope="module")
+def models():
+    return {jaw: phantom.make_model(jaw) for jaw in ("lower", "upper")}
+
+
+@pytest.mark.parametrize("jaw, seed, closed", [("lower", 2, False), ("upper", 7, False), ("lower", 3, True)])
+def test_plaster_model_with_socle(jaw_ct, models, jaw, seed, closed):
+    """Скан гипсовой модели с настольного сканера: цоколь со стенками, дно не снято (или закрыто) —
+    совмещается так же, как внутриротовой."""
+    from casedesigner import scan_teeth
+
+    verts, faces = phantom.make_model(jaw, closed=True) if closed else models[jaw]
+    scan = Scan(jaw, apply(phantom.scan_pose(seed), verts), faces)
+    assert scan_teeth.is_closed(scan.normals) == closed
+    # цоколь не коронки: кандидаты — только выше десны
+    crowns_z = verts[scan.crowns][:, 2] if jaw == "lower" else 2 * phantom.OCCLUSAL_Z - verts[scan.crowns][:, 2]
+    assert crowns_z.min() > -3
+    reg = jaw_ct.register(scan)
+    assert reg.jaw == jaw
+    assert true_error(reg, verts).max() < 0.15
+
+
+def test_models_in_occlusion(models):
+    """Модели, отсканированные сомкнутыми, — в прикусе; разнесённые — нет."""
+    from casedesigner.fusion import in_occlusion
+
+    (lv, lf), (uv, uf) = models["lower"], models["upper"]
+    T = phantom.scan_pose(4)
+    assert in_occlusion(Scan("u", apply(T, uv), uf), Scan("l", apply(T, lv), lf))
+    assert not in_occlusion(Scan("u", apply(T, uv + [0, 0, 8.0]), uf), Scan("l", apply(T, lv), lf))

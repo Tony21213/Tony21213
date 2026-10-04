@@ -1527,7 +1527,9 @@ def anatomy_average(lower: np.ndarray, upper: np.ndarray | None = None, lower_no
     if upper is not None:
         up = np.asarray(upper, float).mean(0) - lower.mean(0)
     elif lower_normals is not None:
-        up = np.asarray(lower_normals, float).sum(0)
+        from .scan_teeth import occlusal_direction
+
+        up = occlusal_direction(np.asarray(lower_normals, float), lower)  # у замкнутой гипсовой модели — по форме
     else:
         raise ValueError("нужен скан верхней челюсти или нормали скана нижней, чтобы понять, где верх")
     z, y = arch_axes(lower, up)
