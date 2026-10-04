@@ -31,9 +31,10 @@ import numpy as np
 
 from . import kinematics as kin
 from . import motion as mo
+from .arch_teeth import ArchLine, contacts_by_tooth
 from .guidance import condylar_path, eminence_profile, hanau_bennett
 from .landmarks import suggest_condyles
-from .register import rigid
+from .register import apply, rigid
 
 
 # --- чтение сцены ---
@@ -427,6 +428,9 @@ def analyze(scene: Scene, travel: float = 6.0) -> tuple[dict, mo.MotionCase, mo.
     recs = [kin.protrusion(anatomy, settings, travel, occlusion),
             kin.laterotrusion(anatomy, settings, "right", travel, occlusion),
             kin.laterotrusion(anatomy, settings, "left", travel, occlusion)]
+    arches = _arch_lines(upper, lower, p["designs"], anatomy)
+    if not any(a.scale != 1.0 for a in arches.values()):
+        notes.append("номера зубов — по положению на дуге и средним размерам зубов, приблизительно")
     case = mo.MotionCase("exocad", recs)
     analysis = mo.analyze_case(case, anatomy)
     report = {
@@ -441,6 +445,23 @@ def analyze(scene: Scene, travel: float = 6.0) -> tuple[dict, mo.MotionCase, mo.
         "bite_seating": seating,  # как посадить прикус на шарнирной оси; прикус сканов не меняется
         "guidance_deg": analysis["guidance_deg"],
         "contacts": {r.name: kin.contact_sectors(r, anatomy, occlusion) for r in recs},
+        "tooth_contacts": {r.name: contacts_by_tooth(r, anatomy, occlusion, arches["upper"], arches["lower"])
+                           for r in recs},
         "notes": notes,
     }
     return report, case, anatomy
+
+
+def _arch_lines(upper: SceneObject, lower: SceneObject, designs: dict, anatomy: mo.Anatomy) -> dict:
+    """Зубные дуги обеих челюстей по жевательной части сканов; масштаб — по моделировкам с номерами."""
+    from scipy.spatial import cKDTree
+
+    F = anatomy.frame
+    up, low = apply(F, upper.vertices), apply(F, lower.vertices)
+    out = {}
+    for jaw, pts, other in (("upper", up, low), ("lower", low, up)):
+        d, _ = cKDTree(other).query(pts, distance_upper_bound=4.0)
+        occlusal = pts[np.isfinite(d)]
+        known = {t: apply(F, o.vertices).mean(0) for t, o in designs.items() if o.jaw == jaw}
+        out[jaw] = ArchLine(occlusal, jaw, known)
+    return out

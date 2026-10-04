@@ -447,3 +447,38 @@ def test_seat_bite_on_hinge_axis(over_closed):
     # точки на шарнирной оси не сдвигаются — только поворот по дуге закрывания
     for c in ("condyle_right", "condyle_left"):
         assert apply(T, POINTS[c][None])[0] == pytest.approx(POINTS[c], abs=1e-9)
+
+
+def synthetic_arch(jaw, scale=1.0, n_per_tooth=40, seed=0):
+    """Точки коронок по параболической дуге, центры зубов — через средние межцентровые расстояния × scale."""
+    from casedesigner import arch_teeth as at
+
+    rng = np.random.default_rng(seed)
+    grid = np.linspace(-45, 45, 9001)
+    curve = np.c_[grid, 90 - 0.035 * grid ** 2]
+    arc = np.r_[0.0, np.cumsum(np.hypot(np.diff(curve[:, 0]), np.diff(curve[:, 1])))]
+    arc -= np.interp(0.0, grid, arc)
+    pts, labels, known = [], [], {}
+    for tooth, s in at.centres(jaw).items():
+        c = curve[np.argmin(np.abs(arc - s * scale))]
+        p = c + rng.normal(0, 1.2, (n_per_tooth, 2))
+        pts.append(np.c_[p, np.full(n_per_tooth, -30.0)])
+        labels += [tooth] * n_per_tooth
+        known[tooth] = np.r_[c, -30.0]
+    return np.vstack(pts), np.array(labels), known
+
+
+@pytest.mark.parametrize("jaw", ["upper", "lower"])
+def test_teeth_numbers_along_the_arch(jaw):
+    from casedesigner import arch_teeth as at
+
+    pts, labels, known = synthetic_arch(jaw)
+    arch = at.ArchLine(pts, jaw)
+    assert np.mean(arch.teeth(pts) == labels) > 0.9
+    # зубы крупнее средних на 15%: без опоры номера к молярам съезжают, по известным зубам — нет
+    pts, labels, known = synthetic_arch(jaw, scale=1.15)
+    plain = np.mean(at.ArchLine(pts, jaw).teeth(pts) == labels)
+    q = 1 if jaw == "upper" else 4
+    calibrated = at.ArchLine(pts, jaw, known={q * 10 + 3: known[q * 10 + 3], q * 10 + 6: known[q * 10 + 6]})
+    assert calibrated.scale == pytest.approx(1.15, abs=0.03)
+    assert np.mean(calibrated.teeth(pts) == labels) > 0.9 > plain
