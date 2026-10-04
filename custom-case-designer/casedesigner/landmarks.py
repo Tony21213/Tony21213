@@ -52,6 +52,8 @@ PLANES = {
 }
 # Срединные точки для срединно-сагиттальной плоскости.
 MIDLINE = ("N", "ANS", "PNS", "Ba", "IP")
+CORONOID_BAND_MM = 15.0  # мыщелок и венечный отросток — в верхних 15 мм ветви
+NOTCH_GAP_MM = 4.0  # между ними вырезка нижней челюсти: пустой промежуток вперёд-назад шире 4 мм
 
 
 def _point(landmarks: dict, keys) -> np.ndarray | None:
@@ -119,11 +121,16 @@ def plane_angles(landmarks: dict) -> dict:
 
 # --- предложения по сегментации -------------------------------------------------
 
-def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.0, 0.0, 0.0)) -> dict:
+def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.0, 0.0, 0.0),
+                     anterior=None) -> dict:
     """Верхушки мыщелков: самые верхние точки нижней челюсти справа и слева от середины.
 
     up — вверх, left — к левой стороне пациента; по умолчанию оси DICOM (LPS).
     Для сцен, где оси повёрнуты как угодно (exocad), их задают по зубам.
+    Если задано anterior (вперёд), венечный отросток отбрасывается: в верхних
+    CORONOID_BAND_MM ветви точки делятся по вырезке нижней челюсти на два
+    скопления, и мыщелок — заднее. Без этого при наклонённой вертикали
+    (по окклюзионной плоскости) самой высокой бывает верхушка венечного отростка.
     """
     v = np.asarray(mandible_vertices, float)
     up = np.asarray(up, float) / np.linalg.norm(up)
@@ -136,6 +143,14 @@ def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.
         if side.sum() < 50:
             continue
         part, hp = v[side], h[side]
+        if anterior is not None:
+            band = hp >= hp.max() - CORONOID_BAND_MM
+            a = part[band] @ np.asarray(anterior, float)
+            order = np.sort(a)
+            gaps = np.diff(order)
+            if len(gaps) and gaps.max() > NOTCH_GAP_MM:  # вырезка: заднее скопление — мыщелок
+                cut = order[np.argmax(gaps)]
+                part, hp = part[band][a <= cut], hp[band][a <= cut]
         out[key] = part[hp >= hp.max() - 1.5].mean(axis=0)  # верхушка головки, 1.5 мм
     return out
 

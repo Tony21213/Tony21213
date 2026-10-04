@@ -98,8 +98,11 @@ def build_scene(tmp_path):
     caps = [trimesh.creation.icosphere(2, 4.0) for _ in range(2)]
     for cap, x in zip(caps, (50.0, -50.0)):
         cap.apply_translation([x, 0, -4.0])  # верхушка головки (Co) — в (±50, 0, 0)
+    coronoids = [trimesh.creation.icosphere(2, 3.0) for _ in range(2)]
+    for cor, x in zip(coronoids, (45.0, -45.0)):
+        cor.apply_translation([x, 22.0, -1.0])  # венечные отростки впереди и на 2 мм выше головок
     body = plate(np.array([-45.0, 10, -50]), np.array([90.0, 0, 0]), np.array([0, 80.0, 0]))
-    mand = trimesh.util.concatenate([trimesh.Trimesh(*body, process=False), *caps])
+    mand = trimesh.util.concatenate([trimesh.Trimesh(*body, process=False), *caps, *coronoids])
     bones = []
     for x, alpha in ((50.0, 40.0), (-50.0, 30.0)):
         bones.append(temporal_bone(alpha, x=(x - 8, x + 8)))

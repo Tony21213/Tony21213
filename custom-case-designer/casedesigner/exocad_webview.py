@@ -393,7 +393,8 @@ def analyze(scene: Scene, travel: float = 6.0) -> tuple[dict, mo.MotionCase, mo.
     right = np.cross(anterior, up)
     incisal = mo._incisal(lower.vertices, anterior, up, mo.INCISAL_TILT_DEG)
     notes, settings = [], kin.Settings()
-    co = suggest_condyles(p["mandible"].vertices, up=up, left=-right) if p["mandible"] is not None else {}
+    co = suggest_condyles(p["mandible"].vertices, up=up, left=-right, anterior=anterior) \
+        if p["mandible"] is not None else {}
     if len(co) == 2:
         hinge = (co["Co_R"] + co["Co_L"]) / 2
         R = np.array([right, anterior, up])
@@ -418,7 +419,10 @@ def analyze(scene: Scene, travel: float = 6.0) -> tuple[dict, mo.MotionCase, mo.
             setattr(settings, f"bennett_{side}_deg", round(hanau_bennett(info["sagittal_deg"]), 1))
             settings.sources[f"sagittal_{side}_deg"] = "КТ: суставной бугорок"
             settings.sources[f"bennett_{side}_deg"] = "формула Ханау"
-    occlusion = kin.Occlusion(upper.vertices, upper.faces, lower.vertices, anatomy.frame)
+    try:
+        occlusion = kin.Occlusion(upper.vertices, upper.faces, lower.vertices, anatomy.frame)
+    except ValueError as e:
+        raise ValueError(f"сканы челюстей не в прикусе ({e}); если челюсти беззубые, ведения по сканам нет") from e
     recs = [kin.protrusion(anatomy, settings, travel, occlusion),
             kin.laterotrusion(anatomy, settings, "right", travel, occlusion),
             kin.laterotrusion(anatomy, settings, "left", travel, occlusion)]
