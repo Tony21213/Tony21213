@@ -97,17 +97,28 @@ def fgp(upper_vertices, upper_faces, lower_vertices, anatomy: Anatomy, settings:
     Сканы — в прикусе, в координатах кейса. Возвращает (вершины, грани) в
     координатах кейса и записи движений, по которым он построен.
     """
+    if for_jaw not in ("upper", "lower"):
+        raise ValueError("for_jaw: upper или lower")
+    out, recs = fgp_both(upper_vertices, upper_faces, lower_vertices, anatomy, settings, cell, recordings, (for_jaw,))
+    return (*out[for_jaw], recs)
+
+
+def fgp_both(upper_vertices, upper_faces, lower_vertices, anatomy: Anatomy, settings: kin.Settings | None = None,
+             cell: float = CELL_MM, recordings: list | None = None, jaws=("upper", "lower")) -> tuple[dict, list]:
+    """FGP для обеих челюстей по одному вееру движений: {челюсть: (вершины, грани)} и записи движений."""
     settings = settings or kin.Settings()
     F = anatomy.frame
     back = np.linalg.inv(F)
-    occlusion = kin.Occlusion(upper_vertices, upper_faces, lower_vertices, F)
-    recs = recordings if recordings is not None else excursions(anatomy, settings, occlusion)
+    if recordings is None:
+        occlusion = kin.Occlusion(upper_vertices, upper_faces, lower_vertices, F)
+        recordings = excursions(anatomy, settings, occlusion)
     up_a, low_a = apply(F, np.asarray(upper_vertices, float)), apply(F, np.asarray(lower_vertices, float))
-    moves = [F @ T @ back for r in recs for T in r.transforms]  # положения нижней челюсти, анатомическая система
-    if for_jaw == "upper":  # нижние зубы в системе верхней челюсти
-        verts, faces = envelope(_near(low_a, up_a, REACH_MM), moves, cell, upward=True)
-    elif for_jaw == "lower":  # верхние зубы в системе нижней челюсти
-        verts, faces = envelope(_near(up_a, low_a, REACH_MM), [np.linalg.inv(M) for M in moves], cell, upward=False)
-    else:
-        raise ValueError("for_jaw: upper или lower")
-    return apply(back, verts), faces, recs
+    moves = [F @ T @ back for r in recordings for T in r.transforms]  # положения нижней челюсти, анатомическая система
+    out = {}
+    if "upper" in jaws:  # нижние зубы в системе верхней челюсти
+        v, f = envelope(_near(low_a, up_a, REACH_MM), moves, cell, upward=True)
+        out["upper"] = (apply(back, v), f)
+    if "lower" in jaws:  # верхние зубы в системе нижней челюсти
+        v, f = envelope(_near(up_a, low_a, REACH_MM), [np.linalg.inv(M) for M in moves], cell, upward=False)
+        out["lower"] = (apply(back, v), f)
+    return out, recordings

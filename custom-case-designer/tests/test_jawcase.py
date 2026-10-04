@@ -101,6 +101,8 @@ def test_fgp_from_case(scans):
     case.generate(travel=3)
     mesh = case.fgp("upper", cell=0.4)
     assert len(mesh.faces) > 100 and "верхней" in mesh.source
+    both = case.fgp_both(cell=0.4)
+    assert np.allclose(both["upper"].vertices, mesh.vertices) and len(both["lower"].faces) > 100
 
 
 def test_fit_articulator_in_case(scans, tmp_path):

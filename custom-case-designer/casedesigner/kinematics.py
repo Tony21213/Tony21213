@@ -41,6 +41,9 @@ GUIDE_REACH_MM = 6.0  # нижние зубы дальше этого от ве�
 GUIDE_POINTS = 8000  # столько точек нижних зубов проверяется на проникновение
 CONTACT_TOL_MM = 0.02  # допуск проникновения сверх того, что было в исходном прикусе
 REFINE_ROUNDS = 5  # сколько раз дополнять выборку точками, ушедшими в верхние зубы
+SIGNED_REACH_MM = 1.5  # дальше от верхних зубов точка не проверяется — не касается
+CONTACT_HALVINGS = 12  # уточнений угла контакта внутри шага; меньше — контакт местами уходит на другую «ветку»
+NEAR_MARGIN_MM = 1.0  # запас, с которым отбираются близкие к зубам точки на время поиска контакта
 STEP_DEG = 0.05  # шаг поиска контакта: на резцах ~0.08 мм — тоньше режущего края, насквозь не проскочить
 CLOSE_LIMIT_DEG = -15.0
 OPEN_LIMIT_DEG = 25.0
@@ -184,7 +187,7 @@ class Occlusion:
 
     def _signed_points(self, M: np.ndarray, points: np.ndarray) -> np.ndarray:
         p = apply(M, points)
-        d, i = self.tree.query(p, distance_upper_bound=1.5)
+        d, i = self.tree.query(p, distance_upper_bound=SIGNED_REACH_MM, workers=-1)
         out = np.full(len(p), np.inf)
         ok = np.isfinite(d)
         out[ok] = np.sum((p[ok] - self.points[i[ok]]) * self.normals[i[ok]], axis=1)
@@ -208,8 +211,24 @@ class Occlusion:
         return theta
 
     def _contact(self, c0: dict, c1: dict, anchor: str, start: float) -> float:
+        # Пробуется много углов подряд, а близко к верхним зубам — малая часть точек. Близкие отбираются
+        # с запасом NEAR_MARGIN_MM, и пока угол не ушёл дальше, чем точки успевают пройти этот запас,
+        # пробы идут только по ним: далёкие точки до зубов дойти не могут.
+        mid = (c1["right"] + c1["left"]) / 2
+        radius = float(np.linalg.norm(self.lower - mid, axis=1).max()) + 1.0
+        span = np.degrees(NEAR_MARGIN_MM / radius)
+        near = {"theta": None, "idx": None}
+
         def free(theta):
-            return self.depth(jaw_pose(c0, c1, theta, anchor)) <= 0.0
+            M = jaw_pose(c0, c1, theta, anchor)
+            if near["theta"] is None or abs(theta - near["theta"]) > span:
+                d, _ = self.tree.query(apply(M, self.lower), distance_upper_bound=SIGNED_REACH_MM + NEAR_MARGIN_MM,
+                                      workers=-1)
+                near["theta"], near["idx"] = theta, np.flatnonzero(np.isfinite(d))
+            idx = near["idx"]
+            if not len(idx):
+                return True
+            return bool((self.floor[idx] - self._signed_points(M, self.lower[idx])).max() <= 0.0)
 
         lo = hi = start
         if free(start):  # закрывать, пока зубы не встретятся
@@ -222,7 +241,7 @@ class Occlusion:
             while hi < OPEN_LIMIT_DEG and not free(hi + STEP_DEG):
                 hi += STEP_DEG
             lo, hi = hi, hi + STEP_DEG
-        for _ in range(12):
+        for _ in range(CONTACT_HALVINGS):
             mid = (lo + hi) / 2
             lo, hi = (lo, mid) if free(mid) else (mid, hi)
         return hi

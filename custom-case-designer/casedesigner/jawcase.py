@@ -331,6 +331,17 @@ class JawCase:
                              self.settings, for_jaw, cell or fg.CELL_MM, recs)
         return Mesh(v, f, f"FGP для {'верхней' if for_jaw == 'upper' else 'нижней'} челюсти")
 
+    def fgp_both(self, cell: float | None = None, ids=None) -> dict:
+        """FGP для обеих челюстей сразу — по одному вееру движений, вдвое быстрее двух вызовов fgp."""
+        from . import fgp as fg
+
+        self._require()
+        recs = self._recs(ids) if self.movements else None
+        out, _recs = fg.fgp_both(self.upper.vertices, self.upper.faces, self.lower_vertices, self.anatomy,
+                                 self.settings, cell or fg.CELL_MM, recs)
+        names = {"upper": "верхней", "lower": "нижней"}
+        return {jaw: Mesh(v, f, f"FGP для {names[jaw]} челюсти") for jaw, (v, f) in out.items()}
+
     # --- сводка, сохранение -------------------------------------------------
     def state(self) -> dict:
         a = self.anatomy
