@@ -15,6 +15,7 @@ Custom Case Designer использует следующие открытые б
 | [Pillow](https://python-pillow.org) | картинки срезов | MIT-CMU (HPND) |
 | [three.js](https://threejs.org) 0.170 | 3D в интерфейсе (`casedesigner/app/web/vendor/three`, лицензия рядом) | MIT |
 | [pywebview](https://pywebview.flowrl.com) | окно приложения | BSD-3-Clause |
+| [MediaPipe](https://ai.google.dev/edge/mediapipe) и модель Face Landmarker | точки лица на фото (эстетическая система, необязательно) | Apache-2.0 |
 | [Matplotlib](https://matplotlib.org) | картинка анализа движений (`motion -o`, необязательно) | Matplotlib License (PSF-based) |
 | [PyInstaller](https://pyinstaller.org) | сборка exe (только при сборке) | GPL-2.0 с исключением для сборок |
 

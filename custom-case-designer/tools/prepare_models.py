@@ -29,6 +29,9 @@ MODELS = {
                  "nnUNetTrainer_DASegOrd0_NoMirroring__nnUNetPlans__3d_fullres_high"),
 }
 SPECS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+# Точки лица для эстетической системы: MediaPipe Face Landmarker (Apache-2.0), готовая модель, без перевода в ONNX.
+FACE_MODEL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/"
+              "face_landmarker.task")
 
 
 def fetch(archive: str, cache: str) -> str:
@@ -53,9 +56,16 @@ def main(argv=None):
     parser.add_argument("out", help="папка моделей для приложения")
     parser.add_argument("--cache", default=os.path.join(os.path.expanduser("~"), ".cache", "casedesigner"),
                         help="куда складывать скачанные архивы")
-    parser.add_argument("--only", nargs="+", choices=sorted(MODELS), help="только эти модели")
+    parser.add_argument("--only", nargs="+", choices=sorted(MODELS) + ["face"], help="только эти модели")
     args = parser.parse_args(argv)
-    for name in args.only or MODELS:
+    if not args.only or "face" in args.only:
+        target = os.path.join(args.out, "face_landmarker.task")
+        if not os.path.isfile(target):
+            os.makedirs(args.out, exist_ok=True)
+            print("Скачиваю модель точек лица (MediaPipe)…", flush=True)
+            urllib.request.urlretrieve(FACE_MODEL, target + ".part")
+            os.replace(target + ".part", target)
+    for name in [m for m in (args.only or MODELS) if m != "face"]:
         archive, configuration = MODELS[name]
         folder = fetch(archive, args.cache)
         found = glob.glob(os.path.join(folder, "*", configuration))
