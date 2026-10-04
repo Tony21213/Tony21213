@@ -119,17 +119,24 @@ def plane_angles(landmarks: dict) -> dict:
 
 # --- предложения по сегментации -------------------------------------------------
 
-def suggest_condyles(mandible_vertices: np.ndarray) -> dict:
-    """Верхушки мыщелков: самые верхние точки нижней челюсти справа и слева от середины."""
+def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.0, 0.0, 0.0)) -> dict:
+    """Верхушки мыщелков: самые верхние точки нижней челюсти справа и слева от середины.
+
+    up — вверх, left — к левой стороне пациента; по умолчанию оси DICOM (LPS).
+    Для сцен, где оси повёрнуты как угодно (exocad), их задают по зубам.
+    """
     v = np.asarray(mandible_vertices, float)
-    mid_x = np.median(v[:, 0])
+    up = np.asarray(up, float) / np.linalg.norm(up)
+    left = np.asarray(left, float) - (np.asarray(left, float) @ up) * up
+    left /= np.linalg.norm(left)
+    lat, h = v @ left, v @ up
+    mid = np.median(lat)
     out = {}
-    for key, side in (("Co_R", v[:, 0] < mid_x - 15), ("Co_L", v[:, 0] > mid_x + 15)):
-        part = v[side]
-        if len(part) < 50:
+    for key, side in (("Co_R", lat < mid - 15), ("Co_L", lat > mid + 15)):
+        if side.sum() < 50:
             continue
-        top = part[part[:, 2] >= part[:, 2].max() - 1.5]  # верхушка головки, 1.5 мм
-        out[key] = top.mean(axis=0)
+        part, hp = v[side], h[side]
+        out[key] = part[hp >= hp.max() - 1.5].mean(axis=0)  # верхушка головки, 1.5 мм
     return out
 
 

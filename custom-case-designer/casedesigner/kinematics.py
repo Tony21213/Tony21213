@@ -200,6 +200,35 @@ class Occlusion:
         return hi
 
 
+def contact_sectors(rec: Recording, anatomy: Anatomy, occlusion: Occlusion, every: int = 4, gap: float = 0.1,
+                    anterior_mm: float = 12.0) -> dict:
+    """Каких участков дуги касаются зубы и на какой части пути: {участок: [доля пути от, до]}.
+
+    Участки — передние (не дальше anterior_mm назад от резцовой точки, с клыками)
+    и жевательные справа и слева. Касание — нижняя точка ближе gap мм к верхним
+    зубам. Контакты жевательных зубов балансирующей стороны при боковом
+    движении — интерференции.
+    """
+    F = anatomy.frame
+    back = np.linalg.inv(F)
+    inc = apply(F, anatomy.points["incisal"][None])[0]
+    n = len(rec.transforms)
+    out = {}
+    for k in range(0, n, every):
+        p = apply(F @ rec.transforms[k] @ back, occlusion.lower)
+        d, _ = occlusion.tree.query(p, distance_upper_bound=gap)
+        hit = p[np.isfinite(d)] - inc
+        if not len(hit):
+            continue
+        sector = np.where(hit[:, 1] > -anterior_mm, "передние",
+                          np.where(hit[:, 0] > 0, "жевательные справа", "жевательные слева"))
+        t = round(k / max(n - 1, 1), 2)
+        for name in set(sector.tolist()):
+            lo, hi = out.get(name, (t, t))
+            out[name] = [min(lo, t), max(hi, t)]
+    return dict(sorted(out.items()))
+
+
 def _recording(name: str, anatomy: Anatomy, poses: list, duration: float) -> Recording:
     """Положения из анатомической системы — в координаты кейса."""
     F = anatomy.frame
