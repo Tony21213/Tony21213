@@ -21,6 +21,7 @@ const state = {
   opacity: {}, // объект → прозрачность, заданная кнопкой (иначе — по умолчанию)
   warnOpen: new Set(), // карточки сканов с раскрытым списком предупреждений
   moving: new Map(), // скан → номер последней ручной поправки, ещё не оценённой сервером
+  correcting: null, // { id, start } — режим коррекции положения: манипулятор на срезах, start — положение до него
 };
 let overlayVersion = 0; // меняется, когда сервер принял новое положение скана: контуры — заново
 
@@ -38,7 +39,7 @@ const app = {
   // Манипулятор на срезах: выбранный совмещённый скан на шаге «Сканы» и его центр (мм пациента).
   manipTarget() {
     const s = scanById(state.selected);
-    if (state.step !== 'scans' || !s?.registered || !viewer.objects.has(s.id)) return null;
+    if (state.step !== 'scans' || state.correcting?.id !== s?.id || !s?.registered || !viewer.objects.has(s.id)) return null;
     return { id: s.id, centre: viewer.scanCentre(s.id) };
   },
   moveScan(id, M) { moveScan(id, M); },
@@ -54,10 +55,10 @@ window.ccd = { app, slices, viewer, state }; // для проверки инте
 // ---------- общие помощники ----------
 function toast(text, kind = 'error') {
   const t = document.createElement('div');
-  t.className = `toast ${kind === 'info' ? 'info' : ''}`;
+  t.className = `toast ${kind === 'info' || kind === 'learn' ? 'info' : ''}`;
   t.textContent = text;
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), kind === 'info' ? 3500 : 6000);
+  setTimeout(() => t.remove(), kind === 'info' ? 3500 : kind === 'learn' ? 8000 : 6000);
 }
 
 async function busy(title, fn) {
@@ -302,9 +303,14 @@ function moveScan(id, M) {
   evaluateManual(id, 250); // серия нажатий стрелок — одной оценкой
 }
 
+let evalChain = Promise.resolve(); // оценки положения — строго по очереди: последнее отправленное положение и остаётся
 function evaluateManual(id, delay = 0) {
   clearTimeout(evalTimer);
-  evalTimer = setTimeout(async () => {
+  evalTimer = setTimeout(() => { evalChain = evalChain.then(() => evaluateNow(id)); }, delay);
+}
+
+async function evaluateNow(id) {
+  {
     const mark = state.moving.get(id);
     const info = await run(`scans/${id}/evaluate`, { transform: viewer.getTransform(id) }).catch((e) => toast(e.message));
     if (!info) return;
@@ -320,7 +326,7 @@ function evaluateManual(id, delay = 0) {
     overlayVersion += 1;
     app.setCursor(app.cursor);
     render();
-  }, delay);
+  }
 }
 
 async function refine(id) {
@@ -336,11 +342,52 @@ async function resetAuto(id) {
   evaluateManual(id);
 }
 
+// Коррекция положения: манипулятор на срезах; «Сохранить» запоминает результат пользователя для обучения.
+function startCorrection(id) {
+  state.correcting = { id, start: viewer.getTransform(id) };
+  slices.forEach((v) => v.draw());
+  render();
+}
+
+function endCorrection() {
+  state.correcting = null;
+  slices.forEach((v) => v.draw());
+  render();
+}
+
+function revertCorrection() {
+  const c = state.correcting;
+  if (!c) return;
+  viewer.setTransform(c.id, c.start);
+  state.moving.set(c.id, (state.moving.get(c.id) || 0) + 1);
+  slices.forEach((v) => v.settled(c.id));
+  evaluateManual(c.id);
+}
+
+async function settledPosition(id) { // дождаться, пока сервер примет последнюю поправку
+  clearTimeout(evalTimer);
+  if (state.moving.has(id)) evalChain = evalChain.then(() => evaluateNow(id));
+  await evalChain;
+}
+
 async function accept(id) {
+  await settledPosition(id);
   const r = await post(`scans/${id}/accept`).catch((e) => toast(e.message));
   if (!r) return;
   updateScan(r.scan);
-  toast(r.record.corrected_mm > 0.05 ? `Принято. Поправка ${fmt(r.record.corrected_mm)} мм запомнена.` : 'Принято.', 'info');
+  const m = r.memory || {};
+  const corrected = r.record.corrected_mm > 0.05;
+  let text = corrected ? `Поправка ${fmt(r.record.corrected_mm)} мм сохранена.` : 'Положение принято.';
+  if (!r.record.learned) text += ' Скан лёг на коронки неуверенно — в обучение этот кейс не взят.';
+  else if ((m.usable_for_learning ?? 0) >= r.min_cases) {
+    text += ` Учтено в обучении: по этому аппарату КТ ${m.usable_for_learning} кейсов, поправка границы эмали ${fmt(m.edge_shift_mm, 3)} мм — применяется к следующим совмещениям.`;
+  } else {
+    const left = r.min_cases - (m.usable_for_learning ?? 0);
+    text += ` Учтено в обучении: ещё ${left} ${left === 1 ? 'кейс' : 'кейса'} по этому аппарату КТ — и поправка начнёт применяться к следующим совмещениям.`;
+  }
+  if (state.correcting?.id === id) state.correcting = null;
+  slices.forEach((v) => v.draw());
+  toast(text, 'learn');
   render();
 }
 
@@ -444,12 +491,21 @@ function renderScans() {
       ${metricsHtml(s)}${warnings}
       ${s.registered ? '' : `<button class="btn wide" data-register="${s.id}">${icons.play}Совместить</button>`}</div>`;
   }).join('');
-  const tools = sel?.registered ? `
-    <div class="label">Ручная поправка — ${sel.name}</div>
-    <p class="muted small" style="margin-top:0">На срезе: внутри кольца — сдвиг, за кольцо — поворот. Стрелки — точно, Ctrl+←/→ — поворот, Shift — крупнее.</p>
-    <div class="row" style="margin-top:8px"><button class="btn grow" data-refine="${sel.id}">${icons.refine}Уточнить</button>
-      <button class="btn icon" data-reset="${sel.id}" title="Вернуть автоматическое положение" ${sel.auto_transform ? '' : 'disabled'}>${icons.undo}</button>
-      <button class="btn ok grow" data-accept="${sel.id}" ${sel.accepted ? 'disabled' : ''}>${icons.check}${sel.accepted ? 'Принято' : 'Принять'}</button></div>` : '';
+  const correcting = !!sel && state.correcting?.id === sel.id;
+  let tools = '';
+  if (sel?.registered && !correcting) {
+    tools = `<div class="label">Положение — ${sel.name}</div>
+      <div class="row"><button class="btn grow" data-correct="${sel.id}">${icons.move}Скорректировать</button>
+        <button class="btn ok grow" data-accept="${sel.id}" ${sel.accepted ? 'disabled' : ''}>${icons.check}${sel.accepted ? 'Принято' : 'Принять'}</button></div>
+      <p class="muted small">Не устраивает, как сел скан, — скорректируйте: программа запомнит ваше положение и учтёт его в следующих совмещениях.</p>`;
+  } else if (correcting) {
+    tools = `<div class="card correcting"><div class="card-head">${icons.move}<h3>Коррекция — ${sel.name}</h3></div>
+      <p class="muted small" style="margin-top:0">На срезе: внутри кольца — сдвиг, за кольцо — поворот. Стрелки — точно, Ctrl+←/→ — поворот, Shift — крупнее.</p>
+      <div class="row" style="margin-top:8px"><button class="btn grow" data-refine="${sel.id}" title="Подогнать по коронкам от текущего положения">${icons.refine}Уточнить</button>
+        <button class="btn icon" data-revert title="Вернуть, как было до коррекции">${icons.undo}</button></div>
+      <div class="row" style="margin-top:8px"><button class="btn ghost" data-endcorrect>Отмена</button>
+        <button class="btn ok grow" data-accept="${sel.id}">${icons.check}Сохранить поправку</button></div></div>`;
+  }
   return `<h2>Сканы</h2><p class="lead">STL, PLY или OBJ как есть со сканера. Совмещение — по коронкам зубов, сразу после загрузки.</p>
     ${cards}<button class="btn ${state.scans.length ? '' : 'primary'} wide" data-a="scan">${icons.plus}Добавить сканы</button>${tools}`;
 }
@@ -496,7 +552,7 @@ function render() {
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-view],[data-heat]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-endcorrect],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-view],[data-heat]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return render(); }
@@ -515,6 +571,9 @@ document.addEventListener('click', async (e) => {
   if (d.refine) return refine(d.refine);
   if (d.reset) return resetAuto(d.reset);
   if (d.accept) return accept(d.accept);
+  if (d.correct) return startCorrection(d.correct);
+  if ('revert' in d) return revertCorrection();
+  if ('endcorrect' in d) { revertCorrection(); return endCorrection(); }
   if (d.toggle) return toggleStructures([d.toggle], !state.visible.has(d.toggle));
   if (d.groupcheck) {
     e.stopPropagation();
@@ -526,6 +585,7 @@ document.addEventListener('click', async (e) => {
   if (d.view) return viewer.fit(d.view);
   if ('heat' in d) { state.heat = !state.heat; for (const s of state.scans) await showScan(s); return render(); }
   if (d.select && !e.target.closest('button')) {
+    if (state.selected !== d.select) state.correcting = null;
     state.selected = d.select;
     slices.forEach((v) => v.draw());
     return render();

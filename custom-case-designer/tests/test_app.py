@@ -104,6 +104,7 @@ def test_doctor_workflow(server, case_files, tmp_path):
 
     accepted = call(server, f"scans/{scan['id']}/accept", {})
     assert accepted["scan"]["accepted"] and accepted["memory"]["cases"] == 1
+    assert accepted["min_cases"] == 3 and isinstance(accepted["record"]["learned"], bool)
 
     out = tmp_path / "out"
     res = wait(server, call(server, "export", {"out_dir": str(out), "bite": "scan", "frame": "exocad"}))

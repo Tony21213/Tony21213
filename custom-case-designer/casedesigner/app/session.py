@@ -449,10 +449,15 @@ class Session:
         item = self.scans[sid]
         if item["reg"] is None:
             raise ValueError("скан ещё не совмещён")
+        from ..learning import MIN_CASES
+
         rec = self.memory.record(self.vol.device, item["auto"] or item["reg"], item["reg"])
         item["accepted"] = True
-        return {"scan": self.scan_info(sid), "record": {k: rec[k] for k in ("corrected_mm", "edge_shift_mm")},
-                "memory": self.memory.summary().get(self.vol.device or "unknown")}
+        # выученное — сразу в работу: следующие сканы этого кейса совмещаются уже с новой поправкой
+        self.case.edge_prior, self.case.prior_weight = self.memory.prior(self.vol.device)
+        return {"scan": self.scan_info(sid),
+                "record": {k: rec[k] for k in ("corrected_mm", "edge_shift_mm")} | {"learned": self.memory.usable(rec)},
+                "memory": self.memory.summary().get(self.vol.device or "unknown"), "min_cases": MIN_CASES}
 
     # --- модели сегментации --------------------------------------------------
     def models_status(self) -> dict:

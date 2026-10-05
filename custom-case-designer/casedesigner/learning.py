@@ -81,16 +81,16 @@ class AlignmentMemory:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         return rec
 
-    def _usable(self, device: str) -> list[dict]:
-        out = []
-        for r in self.records():
-            fit = r.get("fit", {})
-            if (r.get("device") == (device or "unknown")
-                    and fit.get("matched_fraction", 0) >= GOOD_FIT["min_matched_fraction"]
+    @staticmethod
+    def usable(r: dict) -> bool:
+        """Годится ли кейс для обучения: скан хорошо лёг, сдвиг правдоподобен для аппарата."""
+        fit = r.get("fit", {})
+        return bool(fit.get("matched_fraction", 0) >= GOOD_FIT["min_matched_fraction"]
                     and fit.get("p90_mm", np.inf) <= GOOD_FIT["max_p90_mm"]
-                    and abs(r.get("edge_shift_mm", np.inf)) <= MAX_BIAS_MM):
-                out.append(r)
-        return out
+                    and abs(r.get("edge_shift_mm", np.inf)) <= MAX_BIAS_MM)
+
+    def _usable(self, device: str) -> list[dict]:
+        return [r for r in self.records() if r.get("device") == (device or "unknown") and self.usable(r)]
 
     def prior(self, device: str) -> tuple[float, float]:
         """Выученный сдвиг границы эмали для аппарата (мм) и его вес; (0, 0) — пока мало кейсов."""

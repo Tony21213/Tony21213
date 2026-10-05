@@ -311,3 +311,4 @@ select:focus, input[type=text]:focus { border-color: var(--accent); }
   border: 1px solid transparent; background: var(--warn-soft); color: var(--warn); cursor: pointer; font-size: 12px; }
 .warn-btn svg { width: 14px; height: 14px; }
 .warn-btn.on { border-color: var(--warn); }
+.card.correcting { border-color: var(--accent); margin-top: 10px; }
