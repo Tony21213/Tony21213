@@ -21,7 +21,9 @@ const state = {
   opacity: {}, // объект → прозрачность, заданная кнопкой (иначе — по умолчанию)
   warnOpen: new Set(), // карточки сканов с раскрытым списком предупреждений
   moving: new Map(), // скан → номер последней ручной поправки, ещё не оценённой сервером
-  correcting: null, // { id, start } — режим коррекции положения: манипулятор на срезах, start — положение до него
+  correcting: null, // { id, start, undo, redo } — режим коррекции: манипулятор на срезах, start — положение до него
+  windowName: 'auto', // набор окна КТ ('' — подобрано вручную)
+  caseInfo: null, recent: [], // сохранённый кейс и недавние кейсы
 };
 let overlayVersion = 0; // меняется, когда сервер принял новое положение скана: контуры — заново
 
@@ -36,6 +38,26 @@ const app = {
   landmarkPoints: () => [],
   placeLandmark: () => {},
   overlayVersion: () => overlayVersion,
+  overlayHeat: () => state.heat && state.scans.some((x) => x.registered), // контур скана — по цвету отклонения
+  // Окно КТ (яркость и контраст): наборы по уровням плотности этого снимка и ручная настройка правой кнопкой.
+  windowPresets: () => [...windowPresets(), ...(state.windowName ? [] : [{ id: '', title: 'Вручную' }])],
+  windowName: () => state.windowName,
+  setWindowPreset(id) {
+    const p = windowPresets().find((x) => x.id === id);
+    if (p) this.setWindow(p.window, id);
+  },
+  setWindow(w, name = '') {
+    this.window = w;
+    state.windowName = name;
+    slices.forEach((v) => v.refreshSoon());
+  },
+  toggleMax(el) {
+    const main = $('.main');
+    const on = !el.classList.contains('max');
+    main.querySelectorAll('.view').forEach((v) => v.classList.remove('max'));
+    el.classList.toggle('max', on);
+    main.classList.toggle('one-max', on);
+  },
   // Манипулятор на срезах: выбранный совмещённый скан на шаге «Сканы» и его центр (мм пациента).
   manipTarget() {
     const s = scanById(state.selected);
@@ -47,10 +69,24 @@ const app = {
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
+
+function windowPresets() {
+  const ct = state.ct;
+  if (!ct?.levels) return [];
+  const { hard, dense, min } = ct.levels;
+  const gap = Math.max(dense - hard, 1);
+  return [
+    { id: 'auto', title: 'Авто', window: ct.window },
+    { id: 'teeth', title: 'Зубы', window: [dense + gap * 0.2, gap * 2.2] },
+    { id: 'bone', title: 'Кость', window: [(hard + dense) / 2, gap * 3] },
+    { id: 'soft', title: 'Мягкие ткани', window: [hard - (hard - min) * 0.3, Math.max(hard - min, 1) * 1.1] },
+  ];
+}
 const panel = $('#panel');
 const viewer = new Viewer3D($('#view3d'));
 const slices = [...document.querySelectorAll('.view[data-axis]')].map((el) => new SliceView(el, el.dataset.axis, app));
 window.ccd = { app, slices, viewer, state }; // для проверки интерфейса в браузере
+$('#view3d').addEventListener('dblclick', () => app.toggleMax($('#view3d'))); // развернуть 3D (Esc — обратно)
 
 // ---------- общие помощники ----------
 function toast(text, kind = 'error') {
@@ -295,7 +331,15 @@ const registerPending = () => register(state.scans.filter((s) => !s.registered).
 
 // Ручная поправка с манипулятора на срезе: M — матрица 4×4 в мм пациента, применяется поверх положения скана.
 let evalTimer = null;
+function remember(id) { // перед изменением положения в режиме коррекции — для Ctrl+Z
+  const c = state.correcting;
+  if (c?.id !== id) return;
+  c.undo.push(viewer.getTransform(id));
+  c.redo = [];
+}
+
 function moveScan(id, M) {
+  remember(id);
   const T = viewer.getTransform(id);
   const R = T.map((_, r) => [0, 1, 2, 3].map((c) => M[r].reduce((sum, m, k) => sum + m * T[k][c], 0)));
   viewer.setTransform(id, R);
@@ -330,12 +374,14 @@ async function evaluateNow(id) {
 }
 
 async function refine(id) {
+  remember(id);
   await register([id], { start: viewer.getTransform(id), jaw: scanById(id).jaw });
 }
 
 async function resetAuto(id) {
   const s = scanById(id);
   if (!s.auto_transform) return;
+  remember(id);
   viewer.setTransform(id, s.auto_transform);
   state.moving.set(id, (state.moving.get(id) || 0) + 1);
   slices.forEach((v) => v.settled(id));
@@ -344,7 +390,7 @@ async function resetAuto(id) {
 
 // Коррекция положения: манипулятор на срезах; «Сохранить» запоминает результат пользователя для обучения.
 function startCorrection(id) {
-  state.correcting = { id, start: viewer.getTransform(id) };
+  state.correcting = { id, start: viewer.getTransform(id), undo: [], redo: [] };
   slices.forEach((v) => v.draw());
   render();
 }
@@ -362,6 +408,20 @@ function revertCorrection() {
   state.moving.set(c.id, (state.moving.get(c.id) || 0) + 1);
   slices.forEach((v) => v.settled(c.id));
   evaluateManual(c.id);
+}
+
+// Ctrl+Z / Ctrl+Y в режиме коррекции: шаг назад и вперёд по положениям скана.
+function stepHistory(back) {
+  const c = state.correcting;
+  if (!c) return;
+  const from = back ? c.undo : c.redo, to = back ? c.redo : c.undo;
+  if (!from.length) return;
+  to.push(viewer.getTransform(c.id));
+  viewer.setTransform(c.id, from.pop());
+  state.moving.set(c.id, (state.moving.get(c.id) || 0) + 1);
+  slices.forEach((v) => v.settled(c.id));
+  evaluateManual(c.id);
+  render();
 }
 
 async function settledPosition(id) { // дождаться, пока сервер примет последнюю поправку
@@ -423,6 +483,43 @@ async function doExport() {
   });
 }
 
+// ---------- кейс: сохранить и открыть ----------
+async function saveCase(as = false) {
+  if (!state.ct) return toast('Нечего сохранять: откройте КТ');
+  let path = as ? null : state.caseInfo?.path;
+  if (!path) {
+    const paths = await choose('save', 'Куда сохранить кейс (.ccdcase)');
+    if (!paths) return;
+    path = paths[0];
+  }
+  for (const s of state.scans) if (state.moving.has(s.id)) await settledPosition(s.id); // последнее положение — в файл
+  const r = await post('case/save', { path }).catch((e) => toast(e.message));
+  if (!r) return;
+  state.caseInfo = { path: r.path, name: r.name.replace(/\.ccdcase$/i, '') };
+  toast(`Кейс сохранён: ${r.name}`, 'info');
+  render();
+}
+
+async function openCase(path) {
+  if (!path) {
+    const paths = await choose('case', 'Кейс (.ccdcase)');
+    if (!paths) return;
+    path = paths[0];
+  }
+  const opened = await busy('Открываю кейс', async (progress) => {
+    try {
+      return await run('case/open', { path }, progress);
+    } catch (e) {
+      if (!/КТ этого кейса не найден/.test(e.message)) throw e;
+      toast(`${e.message}. Укажите папку КТ.`, 'info');
+      const ct = await choose('ctdir', 'Где теперь КТ этого кейса');
+      if (!ct) return null;
+      return run('case/open', { path, ct_path: ct[0] }, progress);
+    }
+  });
+  if (opened) location.reload(); // интерфейс собирается заново по открытому кейсу
+}
+
 // ---------- панели ----------
 function metricsHtml(s) {
   const st = s.stats;
@@ -444,7 +541,10 @@ function opacityButton(keys, attr) {
 function renderCt() {
   const ct = state.ct;
   if (!ct) {
-    return `<h2>КТ</h2><p class="lead">КЛКТ: папка DICOM, архив или файл NIfTI, MHA, NRRD.</p>
+    const recent = state.recent.filter((r) => r.exists);
+    const recentHtml = recent.length ? `<div class="label">Недавние кейсы</div><div class="card recent">${recent.map((r) =>
+      `<div class="item" data-recent="${r.path}" title="${r.path}">${icons.folder}<span>${r.name}</span></div>`).join('')}</div>` : '';
+    return `${recentHtml}<h2>КТ</h2><p class="lead">КЛКТ: папка DICOM, архив или файл NIfTI, MHA, NRRD.</p>
       <button class="btn primary wide" data-a="ctdir">${icons.folder}Открыть папку DICOM</button>
       <button class="btn ghost wide" style="margin-top:6px" data-a="ct">или файл…</button>${modelsCard()}`;
   }
@@ -502,7 +602,8 @@ function renderScans() {
     tools = `<div class="card correcting"><div class="card-head">${icons.move}<h3>Коррекция — ${sel.name}</h3></div>
       <p class="muted small" style="margin-top:0">На срезе: внутри кольца — сдвиг, за кольцо — поворот. Стрелки — точно, Ctrl+←/→ — поворот, Shift — крупнее.</p>
       <div class="row" style="margin-top:8px"><button class="btn grow" data-refine="${sel.id}" title="Подогнать по коронкам от текущего положения">${icons.refine}Уточнить</button>
-        <button class="btn icon" data-revert title="Вернуть, как было до коррекции">${icons.undo}</button></div>
+        <button class="btn icon" data-hist="back" title="Шаг назад (Ctrl+Z)" ${state.correcting.undo.length ? '' : 'disabled'}>${icons.undo}</button>
+        <button class="btn icon" data-hist="fwd" title="Шаг вперёд (Ctrl+Y)" ${state.correcting.redo.length ? '' : 'disabled'}><span style="display:flex;transform:scaleX(-1)">${icons.undo}</span></button></div>
       <div class="row" style="margin-top:8px"><button class="btn ghost" data-endcorrect>Отмена</button>
         <button class="btn ok grow" data-accept="${sel.id}">${icons.check}Сохранить поправку</button></div></div>`;
   }
@@ -539,7 +640,9 @@ function render() {
     ${icons[s.icon]}<span>${s.title}</span><i class="dot"></i></button>`).join('');
   panel.innerHTML = RENDER[state.step]();
   const ct = state.ct;
-  $('#caseChip').textContent = ct ? `${ct.name}${state.scans.length ? ` · сканов: ${state.scans.length}` : ''}` : '';
+  $('#caseChip').textContent = ct ? `${state.caseInfo?.name || ct.name}${state.scans.length ? ` · сканов: ${state.scans.length}` : ''}` : '';
+  $('#caseActions').innerHTML = `<button class="btn ghost sm" data-case="open" title="Открыть кейс (Ctrl+O)">${icons.folder}Открыть</button>
+    <button class="btn ghost sm" data-case="save" title="Сохранить кейс (Ctrl+S)" ${ct ? '' : 'disabled'}>${icons.check}Сохранить</button>`;
   $('#empty3d').innerHTML = ct || state.scans.length ? '' : '<span>Откройте КТ</span>';
   const legend = $('#legend');
   legend.hidden = !(state.heat && state.scans.some((s) => s.registered));
@@ -552,7 +655,7 @@ function render() {
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-endcorrect],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-view],[data-heat]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-view],[data-heat]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return render(); }
@@ -573,6 +676,10 @@ document.addEventListener('click', async (e) => {
   if (d.accept) return accept(d.accept);
   if (d.correct) return startCorrection(d.correct);
   if ('revert' in d) return revertCorrection();
+  if (d.hist) return stepHistory(d.hist === 'back');
+  if (d.recent) return openCase(d.recent);
+  if (d.case === 'open') return openCase();
+  if (d.case === 'save') return saveCase();
   if ('endcorrect' in d) { revertCorrection(); return endCorrection(); }
   if (d.toggle) return toggleStructures([d.toggle], !state.visible.has(d.toggle));
   if (d.groupcheck) {
@@ -596,7 +703,15 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  const ctrl = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
+  if (ctrl && (key === 's' || key === 'ы')) { e.preventDefault(); return saveCase(e.shiftKey); }
+  if (ctrl && (key === 'o' || key === 'щ')) { e.preventDefault(); return openCase(); }
   if (e.target.closest('input,select')) return;
+  if (ctrl && state.correcting && (key === 'z' || key === 'я' || key === 'y' || key === 'н')) {
+    e.preventDefault();
+    return stepHistory((key === 'z' || key === 'я') && !e.shiftKey);
+  }
+  if (e.key === 'Escape' && $('.main').classList.contains('one-max')) return app.toggleMax($('.view.max'));
   SliceView.onKey(e); // стрелки — точная поправка скана в срезе под мышью
 });
 
@@ -606,6 +721,8 @@ document.addEventListener('keydown', (e) => {
   state.modelsDir = s.models_dir;
   state.models = s.models;
   state.parts = s.segment_parts;
+  state.caseInfo = s.case;
+  state.recent = s.recent || [];
   $('#version').textContent = s.version ? `v${s.version}` : '';
   render();
   if (s.ct) {

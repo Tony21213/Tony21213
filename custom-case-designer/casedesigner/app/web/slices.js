@@ -1,6 +1,7 @@
 // Срез КТ: картинка с сервера, контуры сканов и структур поверх, перекрестие других срезов.
-// Колесо — масштаб к точке под курсором (назад до конца — вписать), нажатое колесо или правая
-// кнопка — сдвиг, ползунок внизу — срезы (колесо над ползунком тоже листает срезы).
+// Колесо — масштаб к точке под курсором (назад до конца — вписать), нажатое колесо — сдвиг,
+// правая кнопка — яркость и контраст (вбок — контраст, вверх-вниз — яркость), двойной щелчок —
+// развернуть срез на всё окно; ползунок внизу — срезы (колесо над ползунком тоже листает срезы).
 // Ручная поправка выбранного скана — манипулятор на срезе (кольцо с центром на скане): тянуть внутри
 // кольца — сдвиг в плоскости среза, за кольцо — поворот вокруг центра; стрелки — точный сдвиг,
 // Ctrl+←/→ — точный поворот (с Shift — крупнее). Контур скана двигается сразу, без ожидания сервера.
@@ -43,11 +44,14 @@ export class SliceView {
     this.ctx = this.canvas.getContext('2d');
     el.innerHTML = `<div class="view-label"><i class="dot" style="background:${AXES[axis].color}"></i><b>${AXES[axis].title}</b><span class="pos"></span></div>
       <div class="empty"><span>КТ не открыт</span></div>
-      <input type="range" class="slice-slider" title="Срез" hidden style="accent-color:${AXES[axis].color}">`;
+      <input type="range" class="slice-slider" title="Срез" hidden style="accent-color:${AXES[axis].color}">
+      <select class="wl-preset" title="Окно КТ: яркость и контраст (правая кнопка мыши — вручную)" hidden></select>`;
     el.appendChild(this.canvas);
     this.posLabel = el.querySelector('.pos');
     this.emptyEl = el.querySelector('.empty');
     this.slider = el.querySelector('.slice-slider');
+    this.preset = el.querySelector('.wl-preset');
+    this.preset.addEventListener('change', () => this.app.setWindowPreset?.(this.preset.value));
     this.image = null; // { canvas, ia, ib, ja, jb } — картинка и её край в пикселях полного среза
     this.overlays = [];
     this.cache = new Map();
@@ -69,8 +73,8 @@ export class SliceView {
     this.canvas.addEventListener('pointerleave', () => { if (hovered === this) hovered = null; });
     this.canvas.addEventListener('pointermove', (e) => this.onHover(e));
     this.canvas.addEventListener('dblclick', (e) => {
-      const p = this.geometry && this.toWorld(e.offsetX, e.offsetY);
-      if (p) this.app.placeLandmark(p);
+      if (this.manipulator() && this.hit(this.manipulator(), e.offsetX, e.offsetY)) return; // на манипуляторе — нет
+      this.app.toggleMax?.(this.el);
     });
     this.slider.addEventListener('input', () => this.setPos(Number(this.slider.value)));
     this.slider.addEventListener('wheel', (e) => {
@@ -84,6 +88,7 @@ export class SliceView {
     this.sliceStep = info ? Math.min(...info.spacing) : 0.5;
     this.emptyEl.hidden = !!info;
     this.slider.hidden = !info;
+    this.preset.hidden = !info;
     if (info) Object.assign(this.slider, { min: this.geometry.range[0], max: this.geometry.range[1], step: this.sliceStep });
     this.zoom = 1;
     this.pan = [0, 0];
@@ -129,9 +134,16 @@ export class SliceView {
     if (e.button !== 1 && e.button !== 2) return;
     e.preventDefault();
     try { this.canvas.setPointerCapture(e.pointerId); } catch { /* указатель уже отпущен */ }
-    const start = [e.clientX, e.clientY], pan = [...this.pan];
+    const start = [e.clientX, e.clientY], pan = [...this.pan], [level, width] = this.app.window;
+    const windowing = e.button === 2;
     const move = (ev) => {
-      this.pan = [pan[0] + ev.clientX - start[0], pan[1] + ev.clientY - start[1]];
+      const dx = ev.clientX - start[0], dy = ev.clientY - start[1];
+      if (windowing) { // вбок — шире или уже окно, вверх-вниз — светлее или темнее
+        const k = width / 300;
+        this.app.setWindow?.([level - dy * k, Math.max(1, width + dx * k)]);
+        return;
+      }
+      this.pan = [pan[0] + dx, pan[1] + dy];
       this.draw();
       this.refreshSoon();
     };
@@ -142,7 +154,7 @@ export class SliceView {
     };
     this.canvas.addEventListener('pointermove', move);
     this.canvas.addEventListener('pointerup', up);
-    this.canvas.style.cursor = 'grabbing';
+    this.canvas.style.cursor = windowing ? 'ns-resize' : 'grabbing';
   }
 
   // Центр манипулятора на срезе (мм по осям среза) и что под точкой холста: сдвиг, поворот или ничего.
@@ -337,12 +349,13 @@ export class SliceView {
       if (seq === this.imageSeq) this.prefetch(pos);
     }
     const visible = this.app.visibleKeys();
-    const okey = `${pos.toFixed(3)}|${visible.join(',')}|${this.app.overlayVersion?.() ?? 0}`;
+    const heat = !!this.app.overlayHeat?.();
+    const okey = `${pos.toFixed(3)}|${visible.join(',')}|${this.app.overlayVersion?.() ?? 0}|${heat}`;
     if (okey !== this.overlayKey) {
       this.overlayKey = okey;
       const seq = ++this.overlaySeq;
       const pendingAt = this.pending;
-      const ov = await post('overlays', { axis: this.axis, pos, visible }).catch(() => null);
+      const ov = await post('overlays', { axis: this.axis, pos, visible, heat }).catch(() => null);
       if (ov && seq === this.overlaySeq) {
         this.overlays = ov;
         if (this.pending === pendingAt && this.app.settledScan?.(pendingAt?.id)) this.pending = null;
@@ -374,6 +387,11 @@ export class SliceView {
     ctx.clearRect(0, 0, w, h);
     if (!this.geometry) return;
     this.posLabel.textContent = `${this.pos.toFixed(1)} мм`;
+    const presets = this.app.windowPresets?.() || [];
+    if (this.preset.options.length !== presets.length) {
+      this.preset.innerHTML = presets.map((x) => `<option value="${x.id}">${x.title}</option>`).join('');
+    }
+    this.preset.value = this.app.windowName?.() ?? '';
     this.slider.value = this.pos;
     const g = this.geometry, L = this.layout();
     if (this.image) {

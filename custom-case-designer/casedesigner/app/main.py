@@ -18,6 +18,7 @@ from .session import Session
 FILE_TYPES = {
     "ct": ("КТ (*.nii;*.nii.gz;*.mha;*.mhd;*.nrrd;*.dcm;*.zip)", "Все файлы (*.*)"),
     "scan": ("Сканы (*.stl;*.ply;*.obj)", "Все файлы (*.*)"),
+    "case": ("Кейс (*.ccdcase)", "Все файлы (*.*)"),
 }
 
 
@@ -32,6 +33,10 @@ class WindowApi:
 
         if kind in ("ctdir", "models", "out"):
             result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        elif kind == "save":
+            result = self.window.create_file_dialog(webview.SAVE_DIALOG, save_filename="кейс.ccdcase",
+                                                    file_types=FILE_TYPES["case"])
+            result = [result] if isinstance(result, str) else result
         else:
             result = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=kind == "scan",
                                                     file_types=FILE_TYPES.get(kind, ()))

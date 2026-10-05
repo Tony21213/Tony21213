@@ -33,6 +33,9 @@ SLICES = {
     "sagittal": {"normal": 0, "u": 1, "v": 2, "v_down": False},
 }
 SLICE_PIXELS = 512
+RECENT = 8  # недавних кейсов на стартовом экране
+CASE_EXT = ".ccdcase"
+DEV_COLORS = ("#28aa46", "#e6be1e", "#d23228", "#8a8f99")  # ≤ 0.1, ≤ 0.2, > 0.2 мм, не коронки (как карта в 3D)
 MAX_SLICE_PIXELS = 2048  # сторона картинки видимой части среза
 SCAN_COLORS = ["#7fb2ff", "#ffb86b", "#b48cff", "#6be0c1"]
 # Скан совмещён до сегментации — только по плотности (см. CaseCT.use_teeth).
@@ -101,15 +104,17 @@ class Sectioner:
             self.axes[n] = (order, lo[order], hi)
         return self.axes[n]
 
-    def cut(self, n: int, pos: float, uv: list[int]) -> list[float]:
-        """Отрезки сечения плоскостью «координата n = pos»: плоский список u1, v1, u2, v2, …"""
+    def cut(self, n: int, pos: float, uv: list[int], with_faces: bool = False):
+        """Отрезки сечения плоскостью «координата n = pos»: плоский список u1, v1, u2, v2, …
+        (with_faces — и номера треугольников, по отрезку на треугольник)."""
+        empty = ([], np.zeros(0, np.int64)) if with_faces else []
         if not len(self.f):
-            return []
+            return empty
         order, lo_sorted, hi = self._axis(n)
         cand = order[: np.searchsorted(lo_sorted, pos, side="right")]
         cand = cand[hi[cand] >= pos]
         if not len(cand):
-            return []
+            return empty
         tri = self.v[self.f[cand]]  # (K, 3, 3)
         d = tri[..., n] - pos
         d = np.where(d == 0, 1e-9, d)  # вершина ровно на плоскости — чуть выше: у треугольника ровно 2 пересечения
@@ -124,7 +129,8 @@ class Sectioner:
         second = np.where((c0 & c1)[:, None], p1, p2)
         keep = (c0.astype(int) + c1 + c2) == 2
         seg = np.concatenate([first[keep], second[keep]], axis=1)
-        return np.round(seg.reshape(-1), 3).tolist()
+        flat = np.round(seg.reshape(-1), 3).tolist()
+        return (flat, cand[keep]) if with_faces else flat
 
 
 def group_of(key: str) -> str:
@@ -161,6 +167,8 @@ class Session:
         self.articulators_path = os.path.join(os.path.dirname(self.memory.path), "articulators.json")
         self.settings_path = os.path.join(os.path.dirname(self.memory.path), "settings.json")
         self.settings = self._load_settings()
+        self.case_path: str | None = None  # файл кейса, куда сохранять
+        self.guide_teeth: dict = {}  # зубы из сегментации — опора совмещения (сохраняются с кейсом)
         self.jaw = JawCase()  # артикуляция: монтаж, суставы, движения, контакты (интерфейс — позже)
 
     # --- настройки (рядом с памятью совмещений) -----------------------------
@@ -168,27 +176,31 @@ class Session:
         import json
 
         known = [p for p, _t, _k in SEGMENT_PARTS]
-        settings = {"segment_parts": known}
+        settings = {"segment_parts": known, "recent": []}
         try:
             with open(self.settings_path, encoding="utf-8") as f:
                 saved = json.load(f)
             settings["segment_parts"] = [p for p in known if p in saved.get("segment_parts", [])]
+            settings["recent"] = [r for r in saved.get("recent", []) if isinstance(r, str)][:RECENT]
         except (OSError, ValueError, AttributeError):  # нет файла или он испорчен — всё по умолчанию
             pass
         return settings
 
     def set_segment_parts(self, parts: list[str]) -> dict:
-        import json
-
         known = [p for p, _t, _k in SEGMENT_PARTS]
         unknown = sorted(set(parts) - set(known))
         if unknown:
             raise ValueError(f"нет таких частей: {', '.join(unknown)}")
         self.settings["segment_parts"] = [p for p in known if p in parts]
+        self._save_settings()
+        return self.segment_parts_info()
+
+    def _save_settings(self):
+        import json
+
         os.makedirs(os.path.dirname(self.settings_path), exist_ok=True)
         with open(self.settings_path, "w", encoding="utf-8") as f:
             json.dump(self.settings, f, ensure_ascii=False, indent=1)
-        return self.segment_parts_info()
 
     def segment_parts_info(self) -> dict:
         return {"parts": [{"id": p, "title": t} for p, t, _k in SEGMENT_PARTS],
@@ -203,6 +215,7 @@ class Session:
         case = CaseCT(vol, *prior)
         with self.lock:
             self.ct_path, self.vol, self.case = path, vol, case
+            self.case_path, self.guide_teeth = None, {}
             lo, hi = case.levels.hard, case.levels.dense
             self.window = ((lo + hi) / 2, max(hi - lo, 1.0) * 2.5)
             self.structures, self._sections = {}, {}
@@ -222,6 +235,8 @@ class Session:
                 "shape": list(self.vol.data.shape[::-1]), "spacing": self.vol.spacing.round(4).tolist(),
                 "device": self.vol.device, "bounds": [lo.tolist(), hi.tolist()],
                 "window": [round(self.window[0]), round(self.window[1])],
+                "levels": {"hard": round(float(self.case.levels.hard)), "dense": round(float(self.case.levels.dense)),
+                           "min": round(float(self._cval))},
                 "learned_edge_shift_mm": round(prior[0], 3) if prior[1] else None}
 
     def bounds(self):
@@ -351,7 +366,7 @@ class Session:
             cache[key] = item
         return item[1]
 
-    def overlays(self, axis: str, pos: float, visible: list[str]) -> list[dict]:
+    def overlays(self, axis: str, pos: float, visible: list[str], heat: bool = False) -> list[dict]:
         out = []
         n = SLICES[axis]["normal"]
         uv = [SLICES[axis]["u"], SLICES[axis]["v"]]
@@ -362,7 +377,21 @@ class Session:
                 T = item["transform"]
                 sec = self._sectioner(f"scan:{sid}", apply(T, item["scan"].vertices), item["scan"].faces,
                                       (id(item["scan"]), T.tobytes()))
-                out.append({"id": sid, "color": item["color"], "width": 1.6, "segments": sec.cut(n, pos, uv)})
+                if not heat or item["reg"] is None:
+                    out.append({"id": sid, "color": item["color"], "width": 1.6, "segments": sec.cut(n, pos, uv)})
+                    continue
+                # Контур по цвету отклонения от КТ: где скан лёг на эмаль, а где нет.
+                segs, faces = sec.cut(n, pos, uv, with_faces=True)
+                if not len(faces):
+                    continue
+                dev = np.abs(item["reg"].deviation)
+                d = np.nanmax(np.where(np.isnan(dev[item["scan"].faces[faces]]), -1, dev[item["scan"].faces[faces]]), 1)
+                segs = np.asarray(segs).reshape(-1, 4)
+                for color, mask in ((DEV_COLORS[0], (d >= 0) & (d <= 0.1)), (DEV_COLORS[1], (d > 0.1) & (d <= 0.2)),
+                                    (DEV_COLORS[2], d > 0.2), (DEV_COLORS[3], d < 0)):
+                    if mask.any():
+                        out.append({"id": sid, "color": color, "width": 1.6 if color != DEV_COLORS[3] else 1.0,
+                                    "segments": segs[mask].reshape(-1).tolist()})
             for key, mesh in self.structures.items():
                 if key in visible:
                     sec = self._sectioner(f"structure:{key}", np.asarray(mesh.vertices), np.asarray(mesh.faces),
@@ -502,7 +531,8 @@ class Session:
             self.models_dir = models_dir
             self.structures = {k: trimesh.Trimesh(m.vertices, m.faces, process=False)
                                for k, m in result.meshes.items() if shown(k)}
-        self.case.use_teeth({jaw: result.meshes.get(f"{jaw}_teeth") for jaw in ("upper", "lower")})
+        self.guide_teeth = {jaw: result.meshes.get(f"{jaw}_teeth") for jaw in ("upper", "lower")}
+        self.case.use_teeth(self.guide_teeth)
         # Сканы, совмещённые до сегментации по одной плотности, — заново по зубам.
         # Принятые и поправленные вручную остаются как есть.
         for sid, item in list(self.scans.items()):
@@ -631,10 +661,105 @@ class Session:
         return {"out_dir": out_dir, "files": sorted(files + ["case.json"]),
                 "notes": ["сканов нет — структуры КТ в координатах КТ (DICOM)"], "bite": None, "frame": "dicom"}
 
+    # --- кейс: сохранить и открыть ----------------------------------------------
+    def save_case(self, path: str | None = None) -> dict:
+        """Кейс в один файл: путь к КТ, сканы (сетки — внутри, чтобы не зависеть от исходных файлов) с
+        положениями, автоматические положения (для обучения), структуры сегментации, окно КТ."""
+        import json
+
+        self._require_ct()
+        path = path or self.case_path
+        if not path:
+            raise ValueError("укажите, куда сохранить кейс")
+        if not path.lower().endswith(CASE_EXT):
+            path += CASE_EXT
+        arrays = {}
+        meta = {"version": 1, "ct_path": self.ct_path, "window": list(self.window), "scans": [], "structures": [],
+                "guide": []}
+        for i, (sid, item) in enumerate(self.scans.items()):
+            scan = item["scan"]
+            arrays[f"scan{i}_v"], arrays[f"scan{i}_f"] = scan.vertices, scan.faces
+            auto = item["auto"]
+            meta["scans"].append({
+                "name": scan.name, "path": item["path"], "color": item["color"], "jaw": item["jaw"],
+                "reg_jaw": item["reg"].jaw if item["reg"] is not None else None,
+                "transform": None if item["transform"] is None else np.asarray(item["transform"]).tolist(),
+                "auto": None if auto is None else np.asarray(auto.transform).tolist(), "accepted": item["accepted"]})
+        for k, (key, mesh) in enumerate(self.structures.items()):
+            arrays[f"st{k}_v"], arrays[f"st{k}_f"] = np.asarray(mesh.vertices), np.asarray(mesh.faces)
+            meta["structures"].append(key)
+        for jaw, mesh in self.guide_teeth.items():
+            if mesh is not None and len(mesh.faces):
+                arrays[f"guide_{jaw}_v"], arrays[f"guide_{jaw}_f"] = np.asarray(mesh.vertices), np.asarray(mesh.faces)
+                meta["guide"].append(jaw)
+        arrays["meta"] = np.array(json.dumps(meta, ensure_ascii=False))
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            np.savez_compressed(f, **arrays)
+        os.replace(tmp, path)  # прерванная запись не портит прежний файл
+        self.case_path = path
+        self._remember(path)
+        return {"path": path, "name": os.path.basename(path)}
+
+    def open_case(self, path: str, progress=None, ct_path: str | None = None) -> dict:
+        """Открыть сохранённый кейс: КТ по пути из кейса (или ct_path, если КТ переносили), сканы на своих местах,
+        метрики пересчитываются, структуры и опора совмещения — из файла, без повторной сегментации."""
+        import json
+        from types import SimpleNamespace
+
+        from ..segment import Mesh
+
+        with np.load(path, allow_pickle=False) as z:
+            meta = json.loads(str(z["meta"]))
+            arrays = {k: z[k] for k in z.files if k != "meta"}
+        ct = ct_path or meta["ct_path"]
+        if not os.path.exists(ct):
+            raise FileNotFoundError(f"КТ этого кейса не найден: {ct} — его переместили или удалили")
+        self.load_ct(ct, progress)
+        with self.lock:
+            self.window = tuple(meta.get("window", self.window))
+            self.structures = {key: trimesh.Trimesh(arrays[f"st{k}_v"], arrays[f"st{k}_f"], process=False)
+                               for k, key in enumerate(meta["structures"])}
+            self.scans = {}
+        self.guide_teeth = {jaw: Mesh(arrays[f"guide_{jaw}_v"], arrays[f"guide_{jaw}_f"]) for jaw in meta["guide"]}
+        if self.guide_teeth:
+            self.case.use_teeth(self.guide_teeth)
+        for i, sm in enumerate(meta["scans"]):
+            if progress:
+                progress(0.6 + 0.4 * i / max(len(meta["scans"]), 1), f"Сканы: {sm['name']}")
+            scan = Scan(sm["name"], arrays[f"scan{i}_v"], arrays[f"scan{i}_f"])
+            sid = uuid.uuid4().hex[:8]
+            item = {"scan": scan, "path": sm["path"], "color": sm["color"], "jaw": sm["jaw"], "reg": None, "auto": None,
+                    "transform": None, "accepted": False, "guided": False}
+            if sm["transform"] is not None:
+                reg = self.case.evaluate(scan, np.asarray(sm["transform"], float), jaw=sm["reg_jaw"])
+                item.update(reg=reg, transform=reg.transform, guided=reg.jaw in self.case.guided)
+                auto = np.asarray(sm["auto"], float) if sm["auto"] is not None else reg.transform
+                item["auto"] = reg if np.allclose(auto, reg.transform) else SimpleNamespace(transform=auto, jaw=reg.jaw)
+                item["accepted"] = sm["accepted"]
+            with self.lock:
+                self.scans[sid] = item
+        self.case_path = path
+        self._remember(path)
+        return self.state()
+
+    def _remember(self, path: str):
+        recent = [p for p in self.settings.get("recent", []) if os.path.normcase(p) != os.path.normcase(path)]
+        self.settings["recent"] = [path] + recent[: RECENT - 1]
+        self._save_settings()
+
+    def recent_cases(self) -> list[dict]:
+        return [{"path": p, "name": os.path.splitext(os.path.basename(p))[0], "exists": os.path.isfile(p)}
+                for p in self.settings.get("recent", [])]
+
     def state(self) -> dict:
         from .. import __version__
 
         return {"version": __version__, "ct": self.ct_info(), "scans": [self.scan_info(s) for s in self.scans],
+                "case": None if not self.case_path else {"path": self.case_path,
+                                                         "name": os.path.splitext(os.path.basename(self.case_path))[0]},
+                "recent": self.recent_cases(),
                 "models_dir": self.models_dir, "models": self.models_status(), **self.structures_info(),
                 "segment_parts": self.segment_parts_info(),
                 **self.landmarks_info(),

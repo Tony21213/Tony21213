@@ -134,7 +134,7 @@ def make_handler(session: Session, jobs: Jobs):
                 return self.binary(s.ct_surface())
             if p == ["overlays"] and method == "POST":
                 b = self.body()
-                return self.json(s.overlays(b["axis"], float(b["pos"]), b.get("visible", [])))
+                return self.json(s.overlays(b["axis"], float(b["pos"]), b.get("visible", []), bool(b.get("heat"))))
             if p == ["scans"] and method == "POST":
                 return self.json(s.add_scan(self.body()["path"]))
             if len(p) == 3 and p[0] == "scans":
@@ -157,6 +157,11 @@ def make_handler(session: Session, jobs: Jobs):
                 if action == "remove":
                     s.remove_scan(sid)
                     return self.json({"ok": True})
+            if p == ["case", "save"] and method == "POST":
+                return self.json(s.save_case(self.body().get("path")))
+            if p == ["case", "open"] and method == "POST":
+                b = self.body()
+                return self.job("Открываю кейс", lambda progress: s.open_case(b["path"], progress, b.get("ct_path")))
             if p == ["models"]:
                 return self.json(s.models_status())
             if p == ["models", "download"] and method == "POST":

@@ -312,3 +312,18 @@ select:focus, input[type=text]:focus { border-color: var(--accent); }
 .warn-btn svg { width: 14px; height: 14px; }
 .warn-btn.on { border-color: var(--warn); }
 .card.correcting { border-color: var(--accent); margin-top: 10px; }
+
+/* кейс: открыть / сохранить, недавние */
+.case-actions { display: flex; gap: 4px; }
+.case-actions .btn svg { width: 14px; height: 14px; }
+.card.recent { padding: 4px; }
+.card.recent .item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 3px; cursor: pointer; }
+.card.recent .item:hover { background: var(--panel-3); }
+.card.recent .item svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.card.recent .item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* развернуть вид на всю рабочую область (двойной щелчок, Esc — обратно) */
+.main.one-max .view:not(.max) { display: none; }
+.main.one-max .view.max { grid-column: 1 / -1; grid-row: 1 / -1; }
+/* окно КТ */
+.wl-preset { position: absolute; right: 8px; top: 6px; z-index: 3; height: 22px; font-size: 11.5px; padding: 0 4px;
+  background: rgba(20, 22, 26, .75); border: 1px solid var(--line); border-radius: 3px; color: var(--muted); }

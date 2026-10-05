@@ -205,3 +205,28 @@ def test_groups():
     assert group_of("teeth/tooth_36") == "Зубы" and group_of("pulp/pulp_11") == "Зубы"
     assert group_of("mandibular_canal") == "Каналы" and group_of("teeth/implant") == "Ортопедия и импланты"
     assert group_of("nasal_cavity") == "Пазухи и дыхательные пути" and group_of("что-то") == "Другое"
+
+
+def test_case_file_round_trip(case_files, tmp_path):
+    """Кейс в файл и обратно: КТ, скан на своём месте, принятие и автоматическое положение для обучения."""
+    d, _verts = case_files
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s.load_ct(str(d / "ct.nii.gz"))
+    sid = s.add_scan(str(d / "lower.stl"))["id"]
+    s.register(sid)
+    moved = np.asarray(s.scans[sid]["transform"]).copy()
+    moved[:3, 3] += [0.3, 0, 0]
+    s.evaluate(sid, moved)
+    s.accept(sid)
+    path = s.save_case(str(tmp_path / "кейс"))["path"]
+    assert path.endswith(".ccdcase")
+
+    t = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    assert t.recent_cases()[0]["path"] == path
+    state = t.open_case(path)
+    item = next(iter(t.scans.values()))
+    assert np.allclose(item["transform"], moved) and item["accepted"]
+    assert not np.allclose(item["auto"].transform, moved)  # что предлагала программа — тоже сохранено
+    assert state["case"]["name"] == "кейс" and state["scans"][0]["registered"]
+    with pytest.raises(FileNotFoundError, match="не найден"):
+        t.open_case(path, ct_path=str(tmp_path / "нет"))
