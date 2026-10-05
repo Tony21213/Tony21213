@@ -153,6 +153,43 @@ async function segment() {
   });
 }
 
+// Что сегментировать: части КТ (настройка хранится в программе); с открытым КТ — сразу сегментировать.
+function partsDialog() {
+  const p = state.parts;
+  if (!p) return;
+  const chosen = new Set(p.selected);
+  const canRun = state.ct && state.models?.ready;
+  const back = document.createElement('div');
+  back.className = 'modal-back';
+  const list = () => p.parts.map((x) => `<div class="item ${chosen.has(x.id) ? '' : 'off'}" data-part="${x.id}">
+    <span class="check ${chosen.has(x.id) ? 'on' : ''}"></span>${x.title}</div>`).join('');
+  back.innerHTML = `<div class="modal"><h3>Что сегментировать</h3>
+    <p>Лишние части не считаются — быстрее. Зубы для совмещения сканов программа находит всегда.</p>
+    <div class="card tree" data-list>${list()}</div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn ghost" data-x>Отмена</button>
+    <button class="btn ${canRun ? '' : 'primary'}" data-save>Сохранить</button>
+    ${canRun ? `<button class="btn primary" data-run>${icons.play}Сегментировать</button>` : ''}</div></div>`;
+  document.body.appendChild(back);
+  const save = async () => {
+    state.parts = await post('settings/segment_parts', { parts: [...chosen] });
+    back.remove();
+    render();
+  };
+  back.addEventListener('click', async (e) => {
+    const item = e.target.closest('[data-part]');
+    if (item) {
+      if (chosen.has(item.dataset.part)) chosen.delete(item.dataset.part); else chosen.add(item.dataset.part);
+      $('[data-list]', back).innerHTML = list();
+    } else if (e.target.closest('[data-x]') || e.target === back) back.remove();
+    else if (e.target.closest('[data-save]')) await save().catch((err) => toast(err.message));
+    else if (e.target.closest('[data-run]')) {
+      if (!chosen.size) return toast('Выберите хотя бы одну часть');
+      await save().catch((err) => toast(err.message));
+      segment();
+    }
+  });
+}
+
 // ---------- модели сегментации: загрузка в фоне, не мешает работе ----------
 const mb = (b) => (b / 1048576).toFixed(b < 10485760 ? 1 : 0);
 const eta = (s) => (s == null ? '' : s < 60 ? `ещё ${Math.max(1, Math.round(s))} с` : `ещё ${Math.round(s / 60)} мин`);
@@ -321,11 +358,13 @@ function renderCt() {
   const info = `<div class="card"><div class="card-head"><h3>${ct.name}</h3><button class="btn ghost sm" data-a="ctdir" title="Открыть другое КТ">Другое…</button></div>
     <div class="kv"><span>Размер</span><b>${ct.shape.join(' × ')}</b><span>Воксель</span><b>${ct.spacing.map((v) => fmt(v, 2)).join(' × ')} мм</b>
     ${ct.device ? `<span>Аппарат</span><b>${ct.device}</b>` : ''}</div></div>`;
+  const partsButton = '<button class="btn ghost wide sm" style="margin-top:6px" data-a="parts">Что сегментировать…</button>';
   if (!state.structures.length) {
-    const ready = state.models?.ready;
+    const ready = state.models?.ready && state.parts?.selected.length;
+    const chosen = (state.parts?.parts || []).filter((p) => state.parts.selected.includes(p.id)).map((p) => p.title);
     return `<h2>КТ</h2>${info}
-      <button class="btn primary wide" data-a="segment" ${ready ? '' : 'disabled'}>${icons.play}Сегментировать</button>
-      <p class="muted small">${ready ? 'Зубы с номерами FDI, челюсти, каналы, пазухи, дыхательные пути, импланты.' : 'Сначала скачайте модели сегментации.'}</p>${modelsCard()}`;
+      <button class="btn primary wide" data-a="segment" ${ready ? '' : 'disabled'}>${icons.play}Сегментировать</button>${partsButton}
+      <p class="muted small">${!state.models?.ready ? 'Сначала скачайте модели сегментации.' : chosen.length ? `${chosen.join(', ')}.` : 'Не выбрано, что сегментировать.'}</p>${modelsCard()}`;
   }
   const groups = {};
   for (const s of state.structures) (groups[s.group] ??= []).push(s);
@@ -339,7 +378,7 @@ function renderCt() {
         <span class="check ${state.visible.has(s.key) ? 'on' : ''}"></span><i class="dot" style="background:${s.color}"></i>${s.name}</div>`).join('') : ''}</div>`;
   }).join('');
   return `<h2>КТ</h2>${info}<div class="label">Структуры — ${state.structures.length}; видимые попадут в экспорт</div>
-    <div class="card tree">${tree}</div>`;
+    <div class="card tree">${tree}</div>${partsButton}`;
 }
 
 function renderScans() {
@@ -434,7 +473,7 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   const action = { ct: () => openCt('ct'), ctdir: () => openCt('ctdir'), scan: addScans, segment, export: doExport,
-    getmodels: downloadModels, stopmodels: () => post('models/cancel') }[d.a];
+    getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog }[d.a];
   action?.();
 });
 
@@ -451,6 +490,7 @@ document.addEventListener('keydown', (e) => {
   const s = await get('state');
   state.modelsDir = s.models_dir;
   state.models = s.models;
+  state.parts = s.segment_parts;
   $('#version').textContent = s.version ? `v${s.version}` : '';
   render();
   if (s.ct) {

@@ -71,6 +71,67 @@ def test_surfaces_in_patient_coordinates(segmented):
     assert hard.volume == pytest.approx(mand.volume + a.volume, rel=0.02)
 
 
+def test_only_wanted_structures(models):
+    """Нужна только нижняя челюсть — модель зубов не считается, лишние поверхности не строятся."""
+    seg = Segmenter(models, device="cpu")
+    assert [m.name for m in seg.plan(lambda k: k == "mandible")] == ["bones"]
+    assert [m.name for m in seg.plan(lambda k: k == "teeth/tooth_11")] == ["teeth"]  # у bones нет меток зубов
+    result = seg.run(phantom.make_volume(), want=lambda k: k == "mandible")
+    assert set(result.meshes) == {"mandible"} and set(result.labels) == {"bones"}
+
+
+def test_teeth_region_from_whole_head_model(tmp_path, monkeypatch):
+    """Область модели зубов — по меткам зубов модели всего снимка (craniofacial), а не по плотности:
+    на КЛКТ с большим полем по плотности область раздувается на всю голову."""
+    from casedesigner.segment import labels_box
+
+    grid = Volume(np.zeros((40, 50, 60), np.float32), np.full(3, 0.5), np.array([-10.0, -20.0, -5.0]), np.eye(3))
+    labels = np.zeros(grid.data.shape, np.int64)
+    labels[10:20, 5:25, 30:50] = 2  # «зубы»: z 10–19, y 5–24, x 30–49 вокселей
+    lo, hi = labels_box(grid, labels, [2], (1.0, 2.0, 3.0))
+    assert lo == pytest.approx(grid.to_world(np.array([[30, 5, 10]]))[0] - [1, 2, 3], abs=0.6)
+    assert hi == pytest.approx(grid.to_world(np.array([[49, 24, 19]]))[0] + [1, 2, 3], abs=0.6)
+    assert labels_box(grid, np.zeros_like(labels), [2], (1, 1, 1)) is None
+
+    # Сегментатор: модель всего снимка с меткой teeth_upper задаёт область модели зубов.
+    linear_model(str(tmp_path / "head"), "head", ["background", "bone", "teeth_upper"], [0.0, 1.0, 2.0],
+                 [0.0, -0.7, -2.6], {"mandible": ["bone"]}, (64, 96, 96), priority=1)
+    linear_model(str(tmp_path / "teeth"), "teeth", ["background", "tooth_11"], [0.0, 2.0], [0.0, -3.8],
+                 {"teeth/tooth_11": ["tooth_11"]}, (64, 96, 96), region={"around": "teeth", "margin_mm": [1, 1, 1]},
+                 priority=2)
+    from casedesigner import segment
+
+    monkeypatch.setattr(segment, "teeth_box", lambda *a: pytest.fail("область по плотности, а не по модели головы"))
+    seg = Segmenter(str(tmp_path), device="cpu")
+    assert [m.name for m in seg.plan(lambda k: k == "teeth/tooth_11")] == ["head", "teeth"]  # head — ради области
+    result = seg.run(phantom.make_volume(), want=lambda k: k == "teeth/tooth_11")
+    assert set(result.meshes) == {"teeth/tooth_11"}
+    head_grid, head_labels = result.labels["head"]
+    teeth_grid, _ = result.labels["teeth"]
+    lo, hi = labels_box(head_grid, head_labels, [2], (1, 1, 1))
+    n = np.array(teeth_grid.data.shape[::-1]) - 1
+    corners = teeth_grid.to_world(np.array([[x, y, z] for x in (0, n[0]) for y in (0, n[1]) for z in (0, n[2])]))
+    assert np.all(corners.min(axis=0) <= lo + 0.5) and np.all(corners.max(axis=0) >= hi - 0.5)
+
+
+def test_canal_kept_only_inside_mandible():
+    """Куски канала вне нижней челюсти отбрасываются, внутри — остаются целиком."""
+    from casedesigner.segment import Mesh, keep_inside
+
+    grid = Volume(np.zeros((40, 40, 80), np.float32), np.full(3, 0.5), np.zeros(3), np.eye(3))
+    mask = np.zeros(grid.data.shape, bool)
+    mask[5:35, 5:35, 5:40] = True  # «челюсть»: x 2.5–20 мм, y и z 2.5–17.5 мм
+    inside = trimesh.creation.icosphere(subdivisions=2, radius=2.0)
+    outside = inside.copy()
+    inside.apply_translation([10, 10, 10])
+    outside.apply_translation([32, 10, 10])  # за челюстью
+    both = trimesh.util.concatenate([inside, outside])
+    kept = keep_inside(Mesh(both.vertices, both.faces), grid, mask)
+    assert len(kept.faces) == len(inside.faces)
+    assert np.allclose(kept.vertices.mean(axis=0), [10, 10, 10], atol=0.1)
+    assert keep_inside(Mesh(outside.vertices, outside.faces), grid, mask) is None
+
+
 def test_sliding_window_matches_single_pass(tmp_path):
     for name, patch in (("small", (16, 24, 20)), ("big", (128, 128, 128))):
         linear_model(str(tmp_path / name), name, ["background", "bone"], [0, 1], [0, -0.7], {"mandible": ["bone"]}, patch)

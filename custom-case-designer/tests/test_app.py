@@ -124,7 +124,10 @@ def test_segmentation_reregisters_scans(case_files, tmp_path, monkeypatch):
         def __init__(self, folder, device="auto"):
             self.models = []
 
-        def run(self, vol, progress=None):
+        def plan(self, want=None):
+            return []
+
+        def run(self, vol, progress=None, want=None):
             return SegmentationResult(meshes={f"{j}_teeth": phantom.teeth_mesh(j) for j in ("upper", "lower")})
 
     monkeypatch.setattr(app_session, "Segmenter", Segmenter)
@@ -142,6 +145,46 @@ def test_segmentation_reregisters_scans(case_files, tmp_path, monkeypatch):
     pose = np.array(scans[auto]["transform"]) @ phantom.scan_pose(2)  # скан → КТ после совмещения
     assert np.linalg.norm(apply(pose, truth) - truth, axis=1).max() < 0.15
     assert scans[kept]["accepted"] and scans[kept]["transform"] == before
+
+
+def test_segment_parts_setting(case_files, tmp_path, monkeypatch):
+    """«Что сегментировать»: выбор сохраняется; невыбранное не показывается и не считается,
+    а зубы для совмещения нужны всегда."""
+    from casedesigner.app import session as app_session
+    from casedesigner.segment import SegmentationResult
+
+    asked = []
+
+    class Segmenter:
+        def __init__(self, folder, device="auto"):
+            self.models = []
+
+        def plan(self, want=None):
+            return []
+
+        def run(self, vol, progress=None, want=None):
+            asked.extend(k for k in ("mandibular_canal", "mandible", "upper_teeth", "lower_teeth", "skull") if want(k))
+            meshes = {f"{j}_teeth": phantom.teeth_mesh(j) for j in ("upper", "lower")}
+            meshes["mandibular_canal"] = meshes["mandible"] = phantom.teeth_mesh("lower")
+            return SegmentationResult(meshes=meshes)
+
+    monkeypatch.setattr(app_session, "Segmenter", Segmenter)
+    d, _truth = case_files
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    assert set(s.segment_parts_info()["selected"]) == {p for p, _t, _k in app_session.SEGMENT_PARTS}  # по умолчанию всё
+    with pytest.raises(ValueError):
+        s.set_segment_parts(["нет такой"])
+    s.set_segment_parts(["jaws"])
+    assert Session(memory_path=str(tmp_path / "memory.jsonl")).segment_parts_info()["selected"] == ["jaws"]  # сохранено
+
+    s.load_ct(str(d / "ct.nii.gz"))
+    res = s.segment(models_dir="модели")
+    assert sorted(asked) == ["lower_teeth", "mandible", "upper_teeth"]  # каналы и череп не считаются
+    assert [i["key"] for i in res["structures"]] == ["mandible"]  # зубы не показаны…
+    assert s.case.guided == {"upper", "lower"}  # …но опора совмещения — по ним
+    s.set_segment_parts([])
+    with pytest.raises(ValueError, match="не выбрано"):
+        s.segment(models_dir="модели")
 
 
 def test_errors_are_readable(server):

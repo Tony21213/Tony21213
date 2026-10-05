@@ -39,6 +39,30 @@ SCAN_COLORS = ["#7fb2ff", "#ffb86b", "#b48cff", "#6be0c1"]
 UNGUIDED = ("КТ не сегментировано: зубы найдены только по плотности, и на снимке с большим полем скан может сесть "
             "со сдвигом вдоль дуги на несколько миллиметров — метрики этого не покажут. Сегментируйте КТ: скан "
             "совместится заново по зубам.")
+# Что сегментировать (настройка): часть → ключи структур; ключ на «/» или «_» — начало ключа.
+SEGMENT_PARTS = [
+    ("teeth", "Зубы с номерами FDI", ("teeth/tooth_", "upper_teeth", "lower_teeth")),
+    ("pulp", "Пульпа зубов", ("pulp/",)),
+    ("jaws", "Верхняя и нижняя челюсть", ("mandible", "maxilla")),
+    ("canals", "Каналы нижней челюсти", ("mandibular_canal", "incisive_canal", "lingual_canal")),
+    ("prosthetics", "Импланты, коронки, мосты", ("teeth/implant", "teeth/crown", "teeth/bridge")),
+    ("sinuses", "Гайморовы и лобные пазухи", ("maxillary_sinus", "frontal_sinus")),
+    ("airway", "Полость носа, нёбо, глотка", ("nasal_cavity", "pharynx", "nasopharynx", "oropharynx", "hypopharynx",
+                                              "soft_palate", "hard_palate")),
+    ("skull", "Череп", ("skull",)),
+    ("ears", "Слуховые проходы", ("auditory_canal_",)),
+]
+# Зубы из сегментации нужны совмещению (CaseCT.use_teeth), даже если их не показывать.
+GUIDE_KEYS = ("upper_teeth", "lower_teeth")
+
+
+def part_of(key: str) -> str | None:
+    for part, _title, keys in SEGMENT_PARTS:
+        if any(key.startswith(k) if k.endswith(("/", "_")) else key == k for k in keys):
+            return part
+    return None
+
+
 GROUPS = [
     ("Кости", ("mandible", "maxilla", "skull", "hard_palate")),
     ("Зубы", ("upper_teeth", "lower_teeth", "teeth/", "pulp/")),
@@ -81,7 +105,40 @@ class Session:
         self.landmarks: dict[str, np.ndarray] = {}
         self.suggested: set[str] = set()  # предложены программой и ещё не подтверждены врачом
         self.articulators_path = os.path.join(os.path.dirname(self.memory.path), "articulators.json")
+        self.settings_path = os.path.join(os.path.dirname(self.memory.path), "settings.json")
+        self.settings = self._load_settings()
         self.jaw = JawCase()  # артикуляция: монтаж, суставы, движения, контакты (интерфейс — позже)
+
+    # --- настройки (рядом с памятью совмещений) -----------------------------
+    def _load_settings(self) -> dict:
+        import json
+
+        known = [p for p, _t, _k in SEGMENT_PARTS]
+        settings = {"segment_parts": known}
+        try:
+            with open(self.settings_path, encoding="utf-8") as f:
+                saved = json.load(f)
+            settings["segment_parts"] = [p for p in known if p in saved.get("segment_parts", [])]
+        except (OSError, ValueError, AttributeError):  # нет файла или он испорчен — всё по умолчанию
+            pass
+        return settings
+
+    def set_segment_parts(self, parts: list[str]) -> dict:
+        import json
+
+        known = [p for p, _t, _k in SEGMENT_PARTS]
+        unknown = sorted(set(parts) - set(known))
+        if unknown:
+            raise ValueError(f"нет таких частей: {', '.join(unknown)}")
+        self.settings["segment_parts"] = [p for p in known if p in parts]
+        os.makedirs(os.path.dirname(self.settings_path), exist_ok=True)
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self.settings, f, ensure_ascii=False, indent=1)
+        return self.segment_parts_info()
+
+    def segment_parts_info(self) -> dict:
+        return {"parts": [{"id": p, "title": t} for p, t, _k in SEGMENT_PARTS],
+                "selected": list(self.settings["segment_parts"])}
 
     # --- КТ -----------------------------------------------------------------
     def load_ct(self, path: str, progress=None) -> dict:
@@ -287,23 +344,30 @@ class Session:
 
     # --- структуры ----------------------------------------------------------
     def segment(self, models_dir: str | None = None, device: str = "auto", progress=None) -> dict:
+        """Сегментировать выбранные в настройке части КТ (segment_parts); зубы для совмещения — всегда."""
         self._require_ct()
         models_dir = models_dir or self.models_dir
         if not models_dir:
             raise ValueError("укажите папку моделей сегментации")
+        parts = set(self.settings["segment_parts"])
+        if not parts:
+            raise ValueError("не выбрано, что сегментировать: откройте «Что сегментировать…»")
+        shown = lambda key: part_of(key) in parts or part_of(key) is None  # noqa: E731
         segmenter = Segmenter(models_dir, device=device)
         names = {m.name: m.title for m in segmenter.models}
+        planned = {m.name for m in segmenter.plan(lambda k: shown(k) or k in GUIDE_KEYS)}
         done = {}
 
         def report(model, n, total):
             done[model] = n / total
             if progress:
-                progress(sum(done.values()) / len(names), f"{names[model]}: окно {n}/{total}")
+                progress(sum(done.values()) / len(planned), f"{names[model]}: окно {n}/{total}")
 
-        result = segmenter.run(self.vol, progress=report)
+        result = segmenter.run(self.vol, progress=report, want=lambda k: shown(k) or k in GUIDE_KEYS)
         with self.lock:
             self.models_dir = models_dir
-            self.structures = {k: trimesh.Trimesh(m.vertices, m.faces, process=False) for k, m in result.meshes.items()}
+            self.structures = {k: trimesh.Trimesh(m.vertices, m.faces, process=False)
+                               for k, m in result.meshes.items() if shown(k)}
         self.case.use_teeth({jaw: result.meshes.get(f"{jaw}_teeth") for jaw in ("upper", "lower")})
         # Сканы, совмещённые до сегментации по одной плотности, — заново по зубам.
         # Принятые и поправленные вручную остаются как есть.
@@ -438,5 +502,6 @@ class Session:
 
         return {"version": __version__, "ct": self.ct_info(), "scans": [self.scan_info(s) for s in self.scans],
                 "models_dir": self.models_dir, "models": self.models_status(), **self.structures_info(),
+                "segment_parts": self.segment_parts_info(),
                 **self.landmarks_info(),
                 "articulation": self.jaw.state()}

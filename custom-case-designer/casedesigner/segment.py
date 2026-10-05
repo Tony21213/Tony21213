@@ -34,10 +34,21 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import SimpleITK as sitk
-from scipy import sparse
+from scipy import ndimage, sparse
 from skimage import measure
 
 from .volume import Volume
+
+# Метки зубов у моделей, которые считают весь снимок (craniofacial): по ним ставится область модели
+# зубов. По одной плотности на КЛКТ с большим полем область раздувается на всю голову, и модель
+# зубов (обучена на зубных рядах) находит каналы и зубы в черепе.
+TEETH_LABELS = ("teeth_upper", "teeth_lower")
+# Плюс вся нижняя челюсть той же модели: нижнечелюстной канал начинается на ветви, позади зубов.
+JAW_LABELS = ("mandible",)
+JAW_MARGIN_MM = 3.0
+# Структура лежит внутри другой: её куски вне той (с запасом) — ложные находки.
+INSIDE = {"mandibular_canal": "mandible", "incisive_canal": "mandible", "lingual_canal": "mandible"}
+INSIDE_MARGIN_MM = 2.0
 
 
 @dataclass
@@ -204,12 +215,14 @@ def taubin(vertices: np.ndarray, faces: np.ndarray, iterations: int = 10, lam: f
     return v
 
 
-def output_meshes(logits: np.ndarray, grid: Volume, model: Model, smooth: int = 10):
-    """Поверхность каждой найденной структуры в мм пациента и карта меток."""
+def output_meshes(logits: np.ndarray, grid: Volume, model: Model, smooth: int = 10, keys=None):
+    """Поверхность каждой найденной структуры (или только keys) в мм пациента и карта меток."""
     labels = np.argmax(logits, axis=0)
     index = {name: i for i, name in enumerate(model.labels)}
     meshes = {}
     for key, members in model.outputs.items():
+        if keys is not None and key not in keys:
+            continue
         idx = [index[m] for m in members]
         mask = np.isin(labels, idx)
         if mask.sum() < 8:
@@ -224,6 +237,44 @@ def output_meshes(logits: np.ndarray, grid: Volume, model: Model, smooth: int = 
         world = grid.to_world((verts - 1 + lo)[:, ::-1])
         meshes[key] = Mesh(taubin(world, faces, smooth), faces.astype(np.int64))
     return meshes, labels
+
+
+def labels_box(grid: Volume, labels: np.ndarray, members, margin_mm) -> tuple[np.ndarray, np.ndarray] | None:
+    """Область по меткам другой модели (мм пациента) плюс запас; None — меток почти нет."""
+    where = np.argwhere(np.isin(labels, members))
+    if len(where) < 200:
+        return None
+    pts = grid.to_world(where[:, ::-1])
+    lo, hi = np.percentile(pts, [0.5, 99.5], axis=0)  # без одиночных ложных вокселей
+    margin = np.array(margin_mm, float)
+    return lo - margin, hi + margin
+
+
+def keep_inside(mesh: Mesh, grid: Volume, mask: np.ndarray, share: float = 0.5) -> Mesh | None:
+    """Куски сетки (связные части), у которых не меньше share вершин внутри маски на сетке grid."""
+    faces = np.asarray(mesh.faces)
+    if not len(faces):
+        return None
+    import trimesh
+
+    part = trimesh.graph.connected_component_labels(
+        trimesh.Trimesh(mesh.vertices, faces, process=False).face_adjacency, node_count=len(faces))
+    idx = np.round(grid.to_index(mesh.vertices)).astype(int)[:, ::-1]  # (z, y, x)
+    ok = np.all((idx >= 0) & (idx < mask.shape), axis=1)
+    inside = np.zeros(len(mesh.vertices), bool)
+    inside[ok] = mask[tuple(idx[ok].T)]
+    vertex_part = np.full(len(mesh.vertices), -1)
+    vertex_part[faces.ravel()] = np.repeat(part, 3)
+    used = vertex_part >= 0
+    total = np.bincount(vertex_part[used], minlength=part.max() + 1)
+    within = np.bincount(vertex_part[used], weights=inside[used], minlength=part.max() + 1)
+    keep_faces = faces[(within / np.maximum(total, 1) >= share)[part]]
+    if not len(keep_faces):
+        return None
+    kept = np.unique(keep_faces)
+    remap = np.full(len(mesh.vertices), -1)
+    remap[kept] = np.arange(len(kept))
+    return Mesh(np.asarray(mesh.vertices)[kept], remap[keep_faces])
 
 
 def teeth_box(vol: Volume, margin_mm) -> tuple[np.ndarray, np.ndarray]:
@@ -261,24 +312,69 @@ class Segmenter:
             self.models = [m for m in self.models if m.name in only]
         self.device = device
 
-    def run(self, vol: Volume, smooth: int = 10, progress=None) -> SegmentationResult:
-        result = SegmentationResult(models=list(self.models))
-        boxes = {}
-        for model in self.models:
+    def plan(self, want=None) -> list[Model]:
+        """Какие модели считать: дающие нужные структуры (want(key) → bool; None — все) и модели на весь
+        снимок с метками зубов, если нужна модель зубов — по ним ставится её область."""
+        need = [m for m in self.models if want is None or any(want(k) for k in m.outputs)]
+        if any(m.region.get("around") == "teeth" for m in need):
+            need += [m for m in self.models if m not in need and m.region.get("around", "whole") == "whole"
+                     and set(TEETH_LABELS) & set(m.labels)]
+        return sorted(need, key=lambda m: (m.priority, m.name))
+
+    def run(self, vol: Volume, smooth: int = 10, progress=None, want=None) -> SegmentationResult:
+        result = SegmentationResult(models=self.plan(want))
+        found = {}
+        # Сначала модели на весь снимок: по их меткам зубов ставится область модели зубов.
+        for model in sorted(result.models, key=lambda m: m.region.get("around", "whole") != "whole"):
             region = model.region.get("around", "whole")
             roi = None
             if region == "teeth":
-                key = tuple(model.region.get("margin_mm", (10, 10, 10)))
-                if key not in boxes:
-                    boxes[key] = teeth_box(vol, key)
-                roi = boxes[key]
+                roi = self._teeth_region(vol, result, tuple(model.region.get("margin_mm", (10, 10, 10))))
             elif region != "whole":
                 raise ValueError(f"{model.name}: неизвестная область {region!r}")
             grid = to_grid(vol, model.spacing, model.orientation, roi)
             logits = predict(model.session(self.device), model, grid.data, progress)
-            meshes, labels = output_meshes(logits, grid, model, smooth)
+            keys = None if want is None else [k for k in model.outputs if want(k)]
+            found[model.name], labels = output_meshes(logits, grid, model, smooth, keys)
             del logits
-            for key, mesh in meshes.items():
-                result.meshes.setdefault(key, mesh)
             result.labels[model.name] = (grid, labels)
+        for model in result.models:  # одна и та же структура — из модели с меньшим priority
+            for key, mesh in found[model.name].items():
+                result.meshes.setdefault(key, mesh)
+        self._keep_inside(result)
         return result
+
+    def _teeth_region(self, vol: Volume, result: SegmentationResult, margin) -> tuple[np.ndarray, np.ndarray]:
+        for model in result.models:
+            members = [model.labels.index(lab) for lab in TEETH_LABELS if lab in model.labels]
+            if members and model.name in result.labels:
+                box = labels_box(*result.labels[model.name], members, margin)
+                if box is not None:
+                    jaw = [model.labels.index(lab) for lab in JAW_LABELS if lab in model.labels]
+                    jaw_box = labels_box(*result.labels[model.name], jaw, [JAW_MARGIN_MM] * 3) if jaw else None
+                    if jaw_box is not None:
+                        box = (np.minimum(box[0], jaw_box[0]), np.maximum(box[1], jaw_box[1]))
+                    return box
+        return teeth_box(vol, margin)  # без такой модели — по плотности
+
+    def _keep_inside(self, result: SegmentationResult):
+        """Куски структуры вне структуры-вместилища (каналы вне нижней челюсти) — ложные находки."""
+        for key, container in INSIDE.items():
+            source = next((m for m in result.models if container in m.outputs and m.name in result.labels), None)
+            if key not in result.meshes or source is None:
+                continue
+            grid, labels = result.labels[source.name]
+            mask = np.isin(labels, [source.labels.index(lab) for lab in source.outputs[container]])
+            if not mask.any():
+                continue
+            steps = int(np.ceil(INSIDE_MARGIN_MM / grid.spacing.min()))
+            where = np.argwhere(mask)  # запас — только в рамке вместилища
+            lo = np.maximum(where.min(axis=0) - steps - 1, 0)
+            hi = np.minimum(where.max(axis=0) + steps + 2, mask.shape)
+            box = tuple(slice(a, b) for a, b in zip(lo, hi))
+            mask[box] = ndimage.binary_dilation(mask[box], iterations=steps)
+            kept = keep_inside(result.meshes[key], grid, mask)
+            if kept is None:
+                del result.meshes[key]
+            else:
+                result.meshes[key] = kept
