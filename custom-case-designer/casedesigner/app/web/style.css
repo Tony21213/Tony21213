@@ -264,3 +264,20 @@ select:focus, input[type=text]:focus { border-color: var(--accent); }
   box-shadow: var(--shadow); max-width: 640px;
 }
 .toast.info { background: #13241c; border-color: rgba(62, 207, 142, .4); color: #b9f0d5; }
+
+/* --- первая версия: спокойное оформление без градиентов и свечения --- */
+:root {
+  --bg: #1b1d21; --bg-2: #1f2226; --panel: #24272c; --panel-2: #2a2e34; --panel-3: #33373e;
+  --line: #34383f; --line-2: #42474f; --text: #e4e6ea; --muted: #9aa1ab; --faint: #6c737d;
+  --accent: #4a86c8; --accent-2: #5d95d3; --accent-soft: rgba(74, 134, 200, .16);
+  --radius: 4px; --radius-s: 3px; --shadow: 0 2px 8px rgba(0, 0, 0, .35);
+}
+.topbar { background: var(--panel); }
+.brand { font-weight: 600; }
+.brand .version { color: var(--faint); font-weight: 400; margin-left: 6px; font-size: 12px; }
+.case-chip:empty { display: none; }
+.btn, .card, .seg, .metric, .modal, .toast { box-shadow: none !important; background-image: none !important; }
+.btn.primary { background: var(--accent); border-color: var(--accent); }
+.card.sel { border-color: var(--accent); }
+.muted.small { font-size: 12px; margin: 8px 2px 0; }
+.label { margin-top: 14px; }

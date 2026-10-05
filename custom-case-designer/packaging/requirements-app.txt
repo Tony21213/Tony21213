@@ -1,0 +1,10 @@
+# Первая версия приложения (КТ, сегментация, совмещение сканов, экспорт) — только это.
+numpy>=1.24
+scipy>=1.10
+scikit-image>=0.21
+SimpleITK>=2.3
+trimesh>=4.0
+pillow>=10
+pywebview>=5
+# расчёт сегментации на любой видеокарте с DirectX 12 (NVIDIA, AMD, Intel); без неё — на процессоре
+onnxruntime-directml>=1.17

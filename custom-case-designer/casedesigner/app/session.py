@@ -355,14 +355,16 @@ class Session:
                reference: str | None = None) -> dict:
         self._require_ct()
         regs = [item["reg"] for item in self.scans.values() if item["reg"] is not None]
-        if not regs:
-            raise ValueError("нет совмещённых сканов")
         meshes = {}
         from ..segment import Mesh
 
         for key, mesh in self.structures.items():
             if include is None or key in include:
                 meshes[key] = Mesh(np.asarray(mesh.vertices), np.asarray(mesh.faces))
+        if not regs:  # без сканов — только КТ: структуры в координатах КТ (DICOM)
+            if not meshes:
+                raise ValueError("нечего экспортировать: сегментируйте КТ или совместите сканы")
+            return self._export_ct_only(out_dir, meshes)
         if not self.structures:  # без сегментации — хотя бы зубы из КТ по плотности (как в 3D)
             meshes["ct_teeth"] = self.case.surfaces(step=1)["ct_teeth"]
         matrix, name = self.reference(reference) if frame == "reference" else (None, "")
@@ -371,7 +373,25 @@ class Session:
         return {"out_dir": out_dir, "files": sorted(report["files"]), "notes": report["notes"],
                 "bite": report["ct_bite_vs_scans"], "frame": report["frame"]}
 
+    def _export_ct_only(self, out_dir: str, meshes: dict) -> dict:
+        import json
+
+        os.makedirs(out_dir, exist_ok=True)
+        files = []
+        for key, m in meshes.items():
+            path = os.path.join(out_dir, *key.split("/")) + ".stl"
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            trimesh.Trimesh(m.vertices, m.faces, process=False).export(path)
+            files.append(key + ".stl")
+        with open(os.path.join(out_dir, "case.json"), "w", encoding="utf-8") as f:
+            json.dump({"frame": "dicom", "note": "координаты пациента из DICOM (мм)", "files": sorted(files)}, f,
+                      ensure_ascii=False, indent=1)
+        return {"out_dir": out_dir, "files": sorted(files + ["case.json"]),
+                "notes": ["сканов нет — структуры КТ в координатах КТ (DICOM)"], "bite": None, "frame": "dicom"}
+
     def state(self) -> dict:
-        return {"ct": self.ct_info(), "scans": [self.scan_info(s) for s in self.scans],
+        from .. import __version__
+
+        return {"version": __version__, "ct": self.ct_info(), "scans": [self.scan_info(s) for s in self.scans],
                 "models_dir": self.models_dir, **self.structures_info(), **self.landmarks_info(),
                 "articulation": self.jaw.state()}

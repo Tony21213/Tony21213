@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 rem Сборка Custom Case Designer для Windows 10/11.
 rem Нужен Python 3.10-3.12 (python.org, галочка "Add python.exe to PATH").
 rem Результат: dist\CustomCaseDesigner\CustomCaseDesigner.exe
@@ -11,7 +12,7 @@ if not exist .venv (
 call .venv\Scripts\activate.bat || goto :error
 python -m pip install --upgrade pip
 rem onnxruntime-directml — расчёт на любой видеокарте с DirectX 12 (NVIDIA, AMD, Intel)
-pip install numpy scipy scikit-image SimpleITK trimesh pillow pywebview onnxruntime-directml pyinstaller || goto :error
+pip install -r packaging\requirements-app.txt pyinstaller || goto :error
 
 pyinstaller --noconfirm packaging\casedesigner.spec || goto :error
 

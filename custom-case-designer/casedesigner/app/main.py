@@ -47,10 +47,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     models = args.models
-    if models is None:  # рядом с приложением
-        here = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
-        candidate = os.path.join(here, "models")
-        models = candidate if os.path.isdir(candidate) else None
+    if models is None:  # рядом с exe, в корне проекта (запуск из исходников) или в текущей папке
+        if getattr(sys, "frozen", False):
+            places = [os.path.dirname(os.path.abspath(sys.executable))]
+        else:
+            places = [os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), os.getcwd()]
+        found = [os.path.join(p, "models") for p in places if os.path.isdir(os.path.join(p, "models"))]
+        models = found[0] if found else None
     server = serve(Session(args.memory, models), args.port)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
 
