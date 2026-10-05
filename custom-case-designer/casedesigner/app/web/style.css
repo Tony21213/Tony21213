@@ -327,3 +327,12 @@ select:focus, input[type=text]:focus { border-color: var(--accent); }
 /* окно КТ */
 .wl-preset { position: absolute; right: 8px; top: 6px; z-index: 3; height: 22px; font-size: 11.5px; padding: 0 4px;
   background: rgba(20, 22, 26, .75); border: 1px solid var(--line); border-radius: 3px; color: var(--muted); }
+
+/* выбор серии, подсказка по клавишам */
+.series .item { display: flex; align-items: center; gap: 8px; }
+.series .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check.radio { border-radius: 50%; }
+.keys { display: grid; grid-template-columns: 170px 1fr; gap: 6px 12px; align-items: center; margin-bottom: 10px; }
+.keys kbd { font: inherit; font-size: 12px; padding: 2px 7px; border: 1px solid var(--line-2); border-radius: 6px; color: var(--text); justify-self: start; }
+.keys span { color: var(--muted); }
+.help-btn { width: 28px; padding: 0; justify-content: center; }

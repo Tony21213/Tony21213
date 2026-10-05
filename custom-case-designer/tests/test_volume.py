@@ -1,11 +1,13 @@
+import io
 import os
+import tarfile
 import zipfile
 
 import numpy as np
 import pytest
 import SimpleITK as sitk
 
-from casedesigner.volume import load_volume
+from casedesigner.volume import load_volume, series_of
 
 
 def rotated_image(spacing=(0.25, 0.25, 0.3)):
@@ -37,13 +39,12 @@ def test_nifti(tmp_path):
     check_geometry(load_volume(path), img, arr)
 
 
-def write_dicom_series(img, folder):
+def write_dicom_series(img, folder, series="1.2.826.0.1.3680043.2.1125.1.42", description=""):
     os.makedirs(folder, exist_ok=True)
     writer = sitk.ImageFileWriter()
     writer.KeepOriginalImageUIDOn()
     writer.SetImageIO("GDCMImageIO")  # у файлов серии нет расширения, как у многих аппаратов
     direction = img.GetDirection()
-    series = "1.2.826.0.1.3680043.2.1125.1.42"
     for k in range(img.GetDepth()):
         s = img[:, :, k]
         s.SetMetaData("0020|000e", series)
@@ -54,6 +55,8 @@ def write_dicom_series(img, folder):
         s.SetMetaData("0028|0030", f"{img.GetSpacing()[1]:.6f}\\{img.GetSpacing()[0]:.6f}")
         s.SetMetaData("0018|0050", f"{img.GetSpacing()[2]:.6f}")
         s.SetMetaData("0008|0060", "CT")
+        if description:
+            s.SetMetaData("0008|103e", description)
         writer.SetFileName(os.path.join(folder, f"IM{k:04d}"))
         writer.Execute(s)
 
@@ -73,6 +76,48 @@ def test_dicom_folder_and_zip(tmp_path):
         for name in os.listdir(folder):
             z.write(folder / name, f"export/{name}")
     check_geometry(load_volume(str(archive)), img, arr)
+
+
+@pytest.mark.parametrize("suffix", [".tar", ".tar.gz", ".tgz", ".tar.xz"])
+def test_tar_archives(tmp_path, suffix):
+    img, arr = rotated_image()
+    folder = tmp_path / "series"
+    write_dicom_series(img, str(folder))
+    archive = tmp_path / f"ct{suffix}"
+    mode = {".tar": "w", ".tar.gz": "w:gz", ".tgz": "w:gz", ".tar.xz": "w:xz"}[suffix]
+    with tarfile.open(archive, mode) as t:
+        t.add(folder, "export/CT")
+        evil = tarfile.TarInfo("../outside.txt")  # имя, ведущее из папки распаковки, пропускается
+        evil.size = 1
+        t.addfile(evil, io.BytesIO(b"x"))
+    series = series_of(str(archive))
+    assert len(series) == 1 and series[0]["files"] == arr.shape[0] and series[0]["modality"] == "CT"
+    check_geometry(load_volume(str(archive), series[0]["id"]), img, arr)
+    check_geometry(load_volume(str(archive)), img, arr)
+
+
+def test_two_series_in_zip_and_nifti_in_archive(tmp_path):
+    img, arr = rotated_image()
+    write_dicom_series(img, str(tmp_path / "a"))
+    small = sitk.RegionOfInterest(img, [img.GetSize()[0], img.GetSize()[1], 3], [0, 0, 0])
+    write_dicom_series(small, str(tmp_path / "b"), "1.2.826.0.1.3680043.2.1125.9.9", "scout")
+    archive = tmp_path / "two.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        for sub in ("a", "b"):
+            for name in os.listdir(tmp_path / sub):
+                z.write(tmp_path / sub / name, f"{sub}/{name}")
+    series = series_of(str(archive))
+    assert [s["files"] for s in series] == [arr.shape[0], 3]
+    assert series[1]["description"] == "scout"
+    assert load_volume(str(archive), series[1]["id"]).data.shape[0] == 3
+    check_geometry(load_volume(str(archive)), img, arr)
+
+    sitk.WriteImage(img, str(tmp_path / "ct.nii.gz"))
+    nifti = tmp_path / "nifti.zip"
+    with zipfile.ZipFile(nifti, "w") as z:
+        z.write(tmp_path / "ct.nii.gz", "case/ct.nii.gz")
+    assert series_of(str(nifti)) == []
+    check_geometry(load_volume(str(nifti)), img, arr)
 
 
 @pytest.mark.parametrize("suffix", [".nii.gz", ".mha", ".nrrd", ".mhd"])

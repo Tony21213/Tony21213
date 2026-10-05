@@ -16,7 +16,7 @@ from .server import serve
 from .session import Session
 
 FILE_TYPES = {
-    "ct": ("КТ (*.nii;*.nii.gz;*.mha;*.mhd;*.nrrd;*.dcm;*.zip)", "Все файлы (*.*)"),
+    "ct": ("КТ (*.nii;*.nii.gz;*.mha;*.mhd;*.nrrd;*.dcm;*.zip;*.7z;*.rar;*.tar;*.tar.gz;*.tgz)", "Все файлы (*.*)"),
     "scan": ("Сканы (*.stl;*.ply;*.obj)", "Все файлы (*.*)"),
     "case": ("Кейс (*.ccdcase)", "Все файлы (*.*)"),
 }

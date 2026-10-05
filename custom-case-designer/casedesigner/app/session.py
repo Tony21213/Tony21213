@@ -207,14 +207,20 @@ class Session:
                 "selected": list(self.settings["segment_parts"])}
 
     # --- КТ -----------------------------------------------------------------
-    def load_ct(self, path: str, progress=None) -> dict:
-        vol = load_volume(path)
+    def ct_series(self, path: str) -> list[dict]:
+        """Серии DICOM в папке или архиве — чтобы выбрать, какую открыть (у файла КТ — пусто)."""
+        from ..volume import series_of
+
+        return series_of(path)
+
+    def load_ct(self, path: str, progress=None, series: str | None = None) -> dict:
+        vol = load_volume(path, series)
         if progress:
             progress(0.5, "Ищу коронки зубов")
         prior = self.memory.prior(vol.device)
         case = CaseCT(vol, *prior)
         with self.lock:
-            self.ct_path, self.vol, self.case = path, vol, case
+            self.ct_path, self.vol, self.case, self.ct_series_id = path, vol, case, series
             self.case_path, self.guide_teeth = None, {}
             lo, hi = case.levels.hard, case.levels.dense
             self.window = ((lo + hi) / 2, max(hi - lo, 1.0) * 2.5)
@@ -640,14 +646,29 @@ class Session:
         if not self.structures:  # без сегментации — хотя бы зубы из КТ по плотности (как в 3D)
             meshes["ct_teeth"] = self.case.surfaces(step=1)["ct_teeth"]
         matrix, name = self.reference(reference) if frame == "reference" else (None, "")
+        self.last_export = out_dir
         report = export_case(out_dir, regs, meshes, bite=bite, frame=frame, ct=self.case, reference=matrix,
                              reference_name=name)
         return {"out_dir": out_dir, "files": sorted(report["files"]), "notes": report["notes"],
                 "bite": report["ct_bite_vs_scans"], "frame": report["frame"]}
 
+    def open_export_folder(self):
+        """Показать папку последнего экспорта в проводнике (только её — путь не приходит снаружи)."""
+        import subprocess
+        import sys
+
+        folder = getattr(self, "last_export", None)
+        if not folder or not os.path.isdir(folder):
+            raise ValueError("экспорта ещё не было")
+        if sys.platform.startswith("win"):
+            os.startfile(folder)  # noqa: S606 — своя папка экспорта
+        else:
+            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", folder])
+
     def _export_ct_only(self, out_dir: str, meshes: dict) -> dict:
         import json
 
+        self.last_export = out_dir
         os.makedirs(out_dir, exist_ok=True)
         files = []
         for key, m in meshes.items():
@@ -674,7 +695,8 @@ class Session:
         if not path.lower().endswith(CASE_EXT):
             path += CASE_EXT
         arrays = {}
-        meta = {"version": 1, "ct_path": self.ct_path, "window": list(self.window), "scans": [], "structures": [],
+        meta = {"version": 1, "ct_path": self.ct_path, "ct_series": getattr(self, "ct_series_id", None),
+                "window": list(self.window), "scans": [], "structures": [],
                 "guide": []}
         for i, (sid, item) in enumerate(self.scans.items()):
             scan = item["scan"]
@@ -716,7 +738,7 @@ class Session:
         ct = ct_path or meta["ct_path"]
         if not os.path.exists(ct):
             raise FileNotFoundError(f"КТ этого кейса не найден: {ct} — его переместили или удалили")
-        self.load_ct(ct, progress)
+        self.load_ct(ct, progress, meta.get("ct_series"))
         with self.lock:
             self.window = tuple(meta.get("window", self.window))
             self.structures = {key: trimesh.Trimesh(arrays[f"st{k}_v"], arrays[f"st{k}_f"], process=False)

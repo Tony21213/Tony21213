@@ -118,8 +118,13 @@ def make_handler(session: Session, jobs: Jobs):
             if p == ["jobs", p[-1]] and len(p) == 2:
                 return self.json(jobs.get(p[1]))
             if p == ["ct"] and method == "POST":
-                path = self.body()["path"]
-                return self.job("Открываю КТ", lambda progress: s.load_ct(path, progress))
+                b = self.body()
+                return self.job("Открываю КТ", lambda progress: s.load_ct(b["path"], progress, b.get("series")))
+            if p == ["ct", "series"] and method == "POST":
+                return self.json(s.ct_series(self.body()["path"]))
+            if p == ["export", "open"] and method == "POST":
+                s.open_export_folder()
+                return self.json({"ok": True})
             if p == ["ct", "geometry"]:
                 return self.json(s.slice_geometry(q["axis"]))
             if p == ["ct", "slice"]:

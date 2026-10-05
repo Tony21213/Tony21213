@@ -62,7 +62,7 @@ const app = {
   manipTarget() {
     const s = scanById(state.selected);
     if (state.step !== 'scans' || state.correcting?.id !== s?.id || !s?.registered || !viewer.objects.has(s.id)) return null;
-    return { id: s.id, centre: viewer.scanCentre(s.id) };
+    return { id: s.id, centre: viewer.scanCentre(s.id) }; // центр всего скана
   },
   moveScan(id, M) { moveScan(id, M); },
   settledScan: (id) => !state.moving.has(id),
@@ -175,11 +175,45 @@ async function loadStructures(list) {
 }
 
 // ---------- действия ----------
+const SERIES_MIN = 20; // серии короче — скауты и отдельные снимки, их не предлагаем
+
+// Какую серию открыть, если в папке или архиве их несколько; undefined — отмена.
+function seriesDialog(list) {
+  return new Promise((done) => {
+    let pick = list[0].id;
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    const rows = () => list.map((x) => `<div class="item ${x.id === pick ? '' : 'off'}" data-series="${x.id}">
+      <span class="check radio ${x.id === pick ? 'on' : ''}"></span><span class="grow">${x.description || 'без описания'}</span>
+      <span class="muted small">${x.modality || ''} ${x.size ? x.size.join(' × ') : `${x.files} ${plural(x.files, 'файл', 'файла', 'файлов')}`}</span></div>`).join('');
+    back.innerHTML = `<div class="modal"><h3>Несколько серий</h3><p>Выберите, какую открыть. Первая — самая длинная.</p>
+      <div class="card tree series" data-list>${rows()}</div>
+      <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn ghost" data-x>Отмена</button>
+      <button class="btn primary" data-ok>Открыть</button></div></div>`;
+    document.body.appendChild(back);
+    const close = (value) => { back.remove(); document.removeEventListener('keydown', key, true); done(value); };
+    const key = (e) => { if (e.key === 'Escape') close(undefined); if (e.key === 'Enter') close(pick); };
+    document.addEventListener('keydown', key, true);
+    back.addEventListener('click', (e) => {
+      const item = e.target.closest('[data-series]');
+      if (item) { pick = item.dataset.series; $('[data-list]', back).innerHTML = rows(); }
+      else if (e.target.closest('[data-ok]')) close(pick);
+      else if (e.target.closest('[data-x]') || e.target === back) close(undefined);
+    });
+    back.addEventListener('dblclick', (e) => { if (e.target.closest('[data-series]')) close(pick); });
+  });
+}
+
 async function openCt(kind) {
-  const paths = await choose(kind, kind === 'ctdir' ? 'Папка DICOM' : 'Файл КТ');
+  const paths = await choose(kind, kind === 'ctdir' ? 'Папка DICOM' : 'Файл КТ или архив');
   if (!paths) return;
+  const all = await busy('Читаю КТ', () => post('ct/series', { path: paths[0] }));
+  if (!all) return;
+  const list = all.filter((x) => Math.max(x.files, x.size?.[2] || 0) >= SERIES_MIN);
+  const series = list.length > 1 ? await seriesDialog(list) : list[0]?.id ?? null;
+  if (series === undefined) return;
   await busy('Открываю КТ', async () => {
-    state.ct = await run('ct', { path: paths[0] }, () => {});
+    state.ct = await run('ct', { path: paths[0], series }, () => {});
     app.window = state.ct.window;
     app.cursor = [...state.ct.focus];
     for (const s of state.scans) { s.transform = null; s.registered = false; s.accepted = false; viewer.setVisible(s.id, false); }
@@ -520,6 +554,26 @@ async function openCase(path) {
   if (opened) location.reload(); // интерфейс собирается заново по открытому кейсу
 }
 
+// ---------- подсказка: мышь и клавиши ----------
+const KEYS = [
+  ['Срезы', [['Колесо', 'приблизить'], ['Колесо над ползунком', 'листать срезы (Shift — по 5)'], ['Левая кнопка', 'перекрестие'],
+    ['Средняя кнопка', 'сдвинуть изображение'], ['Правая кнопка', 'яркость и контраст КТ'], ['Двойной щелчок', 'развернуть вид · Esc — обратно']]],
+  ['Коррекция скана', [['Кольцо', 'повернуть'], ['Центр', 'сдвинуть'], ['← → ↑ ↓', 'сдвиг 0,05 мм (Shift — 0,25)'],
+    ['Ctrl + ← →', 'поворот 0,1° (Shift — 0,5°)'], ['Ctrl+Z / Ctrl+Y', 'отменить / вернуть']]],
+  ['Кейс', [['Ctrl+S', 'сохранить (Shift — как…)'], ['Ctrl+O', 'открыть'], ['?', 'эта подсказка']]],
+];
+
+function helpDialog() {
+  if ($('.modal-back.help')) return;
+  const back = document.createElement('div');
+  back.className = 'modal-back help';
+  back.innerHTML = `<div class="modal"><h3>Мышь и клавиши</h3>${KEYS.map(([group, rows]) => `<div class="label">${group}</div>
+    <div class="keys">${rows.map(([k, v]) => `<kbd>${k}</kbd><span>${v}</span>`).join('')}</div>`).join('')}
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn primary" data-x>Понятно</button></div></div>`;
+  document.body.appendChild(back);
+  back.addEventListener('click', (e) => { if (e.target === back || e.target.closest('[data-x]')) back.remove(); });
+}
+
 // ---------- панели ----------
 function metricsHtml(s) {
   const st = s.stats;
@@ -544,9 +598,9 @@ function renderCt() {
     const recent = state.recent.filter((r) => r.exists);
     const recentHtml = recent.length ? `<div class="label">Недавние кейсы</div><div class="card recent">${recent.map((r) =>
       `<div class="item" data-recent="${r.path}" title="${r.path}">${icons.folder}<span>${r.name}</span></div>`).join('')}</div>` : '';
-    return `${recentHtml}<h2>КТ</h2><p class="lead">КЛКТ: папка DICOM, архив или файл NIfTI, MHA, NRRD.</p>
+    return `${recentHtml}<h2>КТ</h2><p class="lead">КЛКТ: папка DICOM, архив (zip, 7z, rar, tar) или файл NIfTI, MHA, NRRD.</p>
       <button class="btn primary wide" data-a="ctdir">${icons.folder}Открыть папку DICOM</button>
-      <button class="btn ghost wide" style="margin-top:6px" data-a="ct">или файл…</button>${modelsCard()}`;
+      <button class="btn ghost wide" style="margin-top:6px" data-a="ct">или архив, файл…</button>${modelsCard()}`;
   }
   const info = `<div class="card"><div class="card-head"><h3>${ct.name}</h3><button class="btn ghost sm" data-a="ctdir" title="Открыть другое КТ">Другое…</button></div>
     <div class="kv"><span>Размер</span><b>${ct.shape.join(' × ')}</b><span>Воксель</span><b>${ct.spacing.map((v) => fmt(v, 2)).join(' × ')} мм</b>
@@ -621,6 +675,7 @@ function renderExport() {
     : '<p class="muted small">Сканов нет — структуры КТ в координатах КТ (DICOM).</p>';
   const result = res ? `<div class="card"><div class="card-head">${icons.check}<h3>Готово — ${res.files.length} ${plural(res.files.length, 'файл', 'файла', 'файлов')}</h3></div>
       <div class="path" title="${res.out_dir}">${res.out_dir}</div>
+      <button class="btn ghost wide sm" style="margin-top:8px" data-a="openout">${icons.folder}Открыть папку</button>
       ${(res.notes || []).map((n) => `<div class="warning">${icons.warn}<span>${n}</span></div>`).join('')}</div>` : '';
   return `<h2>Экспорт</h2><p class="lead">STL всех видимых объектов в единой системе координат и case.json с матрицами.</p>
     <div class="label">Система координат</div>${frames}
@@ -642,7 +697,8 @@ function render() {
   const ct = state.ct;
   $('#caseChip').textContent = ct ? `${state.caseInfo?.name || ct.name}${state.scans.length ? ` · сканов: ${state.scans.length}` : ''}` : '';
   $('#caseActions').innerHTML = `<button class="btn ghost sm" data-case="open" title="Открыть кейс (Ctrl+O)">${icons.folder}Открыть</button>
-    <button class="btn ghost sm" data-case="save" title="Сохранить кейс (Ctrl+S)" ${ct ? '' : 'disabled'}>${icons.check}Сохранить</button>`;
+    <button class="btn ghost sm" data-case="save" title="Сохранить кейс (Ctrl+S)" ${ct ? '' : 'disabled'}>${icons.check}Сохранить</button>
+    <button class="btn ghost sm help-btn" data-a="help" title="Мышь и клавиши (?)">?</button>`;
   $('#empty3d').innerHTML = ct || state.scans.length ? '' : '<span>Откройте КТ</span>';
   const legend = $('#legend');
   legend.hidden = !(state.heat && state.scans.some((s) => s.registered));
@@ -698,7 +754,8 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   const action = { ct: () => openCt('ct'), ctdir: () => openCt('ctdir'), scan: addScans, segment, export: doExport,
-    getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog }[d.a];
+    getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog,
+    openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog }[d.a];
   action?.();
 });
 
@@ -711,6 +768,8 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     return stepHistory((key === 'z' || key === 'я') && !e.shiftKey);
   }
+  if (e.key === 'Escape' && $('.modal-back.help')) return $('.modal-back.help').remove();
+  if (e.key === '?' || (e.key === ',' && e.shiftKey && e.code === 'Slash')) return helpDialog();
   if (e.key === 'Escape' && $('.main').classList.contains('one-max')) return app.toggleMax($('.view.max'));
   SliceView.onKey(e); // стрелки — точная поправка скана в срезе под мышью
 });
