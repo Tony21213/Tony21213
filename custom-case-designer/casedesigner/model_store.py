@@ -96,6 +96,46 @@ def _sha256(path: str) -> "hashlib._Hash":
     return h
 
 
+def _fetch(url: str, part: str, size: int, sha: str, title: str, on_bytes, cancel) -> None:
+    """Скачать url в part (с докачкой) и проверить размер и SHA-256; on_bytes(сколько добавилось, сброс)."""
+    have = os.path.getsize(part) if os.path.isfile(part) else 0
+    if have > size:  # чужой или испорченный хвост — заново
+        os.remove(part)
+        have = 0
+    h = _sha256(part) if have else hashlib.sha256()
+    if have < size:
+        req = urllib.request.Request(url, headers={"User-Agent": "CustomCaseDesigner"})
+        if have:
+            req.add_header("Range", f"bytes={have}-")
+        try:
+            resp = urllib.request.urlopen(req, timeout=TIMEOUT_S)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"сервер моделей ответил {e.code} ({url})") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"нет связи с сервером моделей: {e.reason}") from e
+        with resp:
+            if have and resp.status != 206:  # докачка не поддержана — с начала
+                on_bytes(-have, True)
+                have, h = 0, hashlib.sha256()
+            with open(part, "ab" if have else "wb") as f:
+                while True:
+                    if cancel is not None and cancel.is_set():
+                        raise Cancelled("загрузка остановлена — её можно продолжить")
+                    try:
+                        block = resp.read(CHUNK)
+                    except OSError as e:
+                        raise RuntimeError(f"связь прервалась: {e} — загрузку можно продолжить") from e
+                    if not block:
+                        break
+                    f.write(block)
+                    h.update(block)
+                    have += len(block)
+                    on_bytes(len(block), False)
+    if have != size or h.hexdigest() != sha:
+        os.remove(part)
+        raise RuntimeError(f"{title}: файл повреждён или не тот (не совпала контрольная сумма) — скачайте заново")
+
+
 def download(folder: str, progress=None, cancel: threading.Event | None = None, base_url: str | None = None) -> dict:
     """Скачать недостающие модели в folder; progress(доля, сообщение, **сведения); cancel — остановить.
 
@@ -112,50 +152,106 @@ def download(folder: str, progress=None, cancel: threading.Event | None = None, 
         target = os.path.join(folder, name)
         os.makedirs(target, exist_ok=True)
         part = os.path.join(target, "model.onnx.part")
-        have = os.path.getsize(part) if os.path.isfile(part) else 0
-        if have > size:  # чужой или испорченный хвост — заново
-            os.remove(part)
-            have = 0
-        h = _sha256(part) if have else hashlib.sha256()
-        if have < size:
-            req = urllib.request.Request(base + f"{name}.onnx", headers={"User-Agent": "CustomCaseDesigner"})
-            if have:
-                req.add_header("Range", f"bytes={have}-")
-            try:
-                resp = urllib.request.urlopen(req, timeout=TIMEOUT_S)
-            except urllib.error.HTTPError as e:
-                raise RuntimeError(f"сервер моделей ответил {e.code} ({base}{name}.onnx)") from e
-            except urllib.error.URLError as e:
-                raise RuntimeError(f"нет связи с сервером моделей: {e.reason}") from e
-            with resp:
-                if have and resp.status != 206:  # докачка не поддержана — с начала
-                    done -= have
-                    have, h = 0, hashlib.sha256()
-                with open(part, "ab" if have else "wb") as f:
-                    while True:
-                        if cancel is not None and cancel.is_set():
-                            raise Cancelled("загрузка остановлена — её можно продолжить")
-                        try:
-                            block = resp.read(CHUNK)
-                        except OSError as e:
-                            raise RuntimeError(f"связь прервалась: {e} — загрузку можно продолжить") from e
-                        if not block:
-                            break
-                        f.write(block)
-                        h.update(block)
-                        have += len(block)
-                        done += len(block)
-                        if progress:
-                            elapsed = max(time.monotonic() - started, 1e-3)
-                            speed = (done - start_done) / elapsed
-                            progress(done / total, title, done=done, total=total, model=name, index=index,
-                                     count=len(todo), speed=speed, eta_s=(total - done) / speed if speed > 0 else None)
-        if have != size or h.hexdigest() != sha:
-            os.remove(part)
-            raise RuntimeError(f"{title}: файл повреждён или не тот (не совпала контрольная сумма) — скачайте заново")
+
+        def on_bytes(n, reset, title=title, name=name, index=index):
+            nonlocal done
+            done += n
+            if progress and not reset:
+                elapsed = max(time.monotonic() - started, 1e-3)
+                speed = (done - start_done) / elapsed
+                progress(done / total, title, done=done, total=total, model=name, index=index,
+                         count=len(todo), speed=speed, eta_s=(total - done) / speed if speed > 0 else None)
+
+        _fetch(base + f"{name}.onnx", part, size, sha, title, on_bytes, cancel)
         os.replace(part, os.path.join(target, "model.onnx"))
         shutil.copyfile(os.path.join(SPECS, f"{name}.json"), os.path.join(target, "model.json"))
     return status(folder)
+
+
+# --- модели автоматических ориентиров (ALI-CBCT) ------------------------------------------------
+# Файл в папке <модели>/landmarks → (размер, SHA-256). В релизе файлы лежат плоско:
+# «ali-<точка>-<масштаб>.onnx». Таблицу печатает tools/prepare_landmarks.py.
+LANDMARK_RELEASE = "landmarks-v1"
+LANDMARK_URL = f"https://github.com/Tony21213/Tony21213/releases/download/{LANDMARK_RELEASE}/"
+LANDMARK_TITLE = "Автоматические ориентиры на КТ"
+LANDMARK_FILES: dict[str, tuple[int, str]] = {
+    "ANS/1.onnx": (29277027, "029c2346660fdfb88b208f5babf7fe3b9b78d0c94b2bfbaaab57b2415fa623ad"),
+    "ANS/0-3.onnx": (29277027, "1cdd2365ac38bfbde233b00472b93bb48c84d432923ec1d90a03c883135d2bdc"),
+    "Ba/1.onnx": (29277027, "651582a77a933743d2f8f4a1af1d1ead607ce1ea3faadf5f6ccdea8c39225a0f"),
+    "Ba/0-3.onnx": (29277027, "bdcedb4532bd586c8d86f0341dd705604e88f050ef3ee2a4bc72b8f6943450d2"),
+    "IF/1.onnx": (29277027, "3926fc39b4766b1af1baf5c476eaf47effa9c4d5fc6d7376bdc171c84d2098dd"),
+    "IF/0-3.onnx": (29277027, "321b8c44802da4205e60b509a850c92b252e4fbcf61365f3ff0a9367b491d16b"),
+    "LCo/1.onnx": (29277027, "1f4f86d88cf29ec58280d58073ec95430e6027662e123beda9f35cecb8b10a2c"),
+    "LCo/0-3.onnx": (29277027, "a9c47a67c31999dcb5e866a2d68679f320b5b92d7664e656c2116cf38f5297b9"),
+    "LOr/1.onnx": (29277027, "0944a7cd81fc575c4778a3aecf131e53779000cab2c2165cb8449ca57924b481"),
+    "LOr/0-3.onnx": (29277027, "547750dad929317361d4288b2e36ea279188aa836dd0a54a07fc447e5d2b8a77"),
+    "LPo/1.onnx": (29277027, "62f0cf80be2f6e0ff51ecf1243e1faf348c37d9671da3648a26f0c8babc2616a"),
+    "LPo/0-3.onnx": (29277027, "70fe26ce67638a8ed3749fe74a6b23b5e96eb03574a654b1f132f073aafe6b71"),
+    "N/1.onnx": (29277027, "fd6ccf9b677d5852bc59cb153bbe6b7e7efda321a27d7763a2a22b0431ea1a4c"),
+    "N/0-3.onnx": (29277027, "86c4931fd4c089bb81d3eee778991be68233bec857229b2401d1de81cafe9c3c"),
+    "PNS/1.onnx": (29277027, "e1ed2bfbb70de1fda4375cca252ccc37fd64ce49810ab1618d2a5b7165ef84f0"),
+    "PNS/0-3.onnx": (29277027, "857c40e977f8e15fd857bc9f502c11f873623e85fab92bcfa85fadb0ea567fdc"),
+    "RCo/1.onnx": (29277027, "184c4b70b0fa988c82837732b4723c9294dfc1ad788e36dabd64042557524128"),
+    "RCo/0-3.onnx": (29277027, "9b06e61b524f0b66cab040f082d30bd89fc2f8ca7cb2d295a6d3db3ec7777717"),
+    "ROr/1.onnx": (29277027, "ee88fb16e9a3b7b653457bd8131820ad30c83d966005d0f3cb35db818f62b80f"),
+    "ROr/0-3.onnx": (29277027, "50e264d7fe5a06ca79186b4fc89785bce256f17e3ecd45957afd4f98d3e538c9"),
+    "RPo/1.onnx": (29277027, "be9842ec0505f1c172186e9026e4e43866743dc982e73639e6cfedd4bf8ac826"),
+    "RPo/0-3.onnx": (29277027, "652ef52d0c9a190e8d98ae8834246f12e2778c313f29254e0f2a9f239ae3ac5b"),
+    "S/1.onnx": (29277027, "4a4d3e062d2fe953a2b209c72d6e0fb4c3b3a5693d20909e2f0c9c68aa9e9f3e"),
+    "S/0-3.onnx": (29277027, "3ae6b726a68d05f467d89455aee143166acd76e620194fcd2e5f7aca6472efda"),
+}
+
+
+def landmarks_dir(folder: str | None) -> str | None:
+    return os.path.join(folder, "landmarks") if folder else None
+
+
+def _landmark_asset(rel: str) -> str:
+    point, scale = rel[:-len(".onnx")].split("/")
+    return f"ali-{point}-{scale}.onnx"
+
+
+def landmarks_status(folder: str | None) -> dict:
+    """Скачаны ли модели ориентиров и сколько осталось (с учётом недокачанного)."""
+    root = landmarks_dir(folder)
+    left = 0
+    for rel, (size, _sha) in LANDMARK_FILES.items():
+        path = os.path.join(root, rel) if root else ""
+        if path and os.path.isfile(path) and os.path.getsize(path) == size:
+            continue
+        part = path + ".part" if path else ""
+        left += size - (os.path.getsize(part) if part and os.path.isfile(part) else 0)
+    total = sum(s for s, _h in LANDMARK_FILES.values())
+    return {"folder": root, "ready": bool(LANDMARK_FILES) and left == 0, "total_bytes": total, "left_bytes": left,
+            "title": LANDMARK_TITLE, "license": "ALI-CBCT (Gillot M. et al., DCBIA-OrthoLab), лицензия 3D Slicer"}
+
+
+def download_landmarks(folder: str, progress=None, cancel: threading.Event | None = None,
+                       base_url: str | None = None) -> dict:
+    """Скачать модели ориентиров в <folder>/landmarks; прогресс — как у download."""
+    base = (base_url or os.environ.get("CCD_MODELS_URL") or LANDMARK_URL).rstrip("/") + "/"
+    root = landmarks_dir(folder)
+    st = landmarks_status(folder)
+    total, done = st["total_bytes"], st["total_bytes"] - st["left_bytes"]
+    started, start_done = time.monotonic(), done
+    todo = [rel for rel, (size, _h) in LANDMARK_FILES.items()
+            if not (os.path.isfile(os.path.join(root, rel)) and os.path.getsize(os.path.join(root, rel)) == size)]
+    for index, rel in enumerate(todo, 1):
+        size, sha = LANDMARK_FILES[rel]
+        target = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+
+        def on_bytes(n, reset, index=index):
+            nonlocal done
+            done += n
+            if progress and not reset:
+                speed = (done - start_done) / max(time.monotonic() - started, 1e-3)
+                progress(done / total, LANDMARK_TITLE, done=done, total=total, model="landmarks", index=index,
+                         count=len(todo), speed=speed, eta_s=(total - done) / speed if speed > 0 else None)
+
+        _fetch(base + _landmark_asset(rel), target + ".part", size, sha, LANDMARK_TITLE, on_bytes, cancel)
+        os.replace(target + ".part", target)
+    return landmarks_status(folder)
 
 
 def _table(folder: str):

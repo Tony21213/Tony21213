@@ -62,6 +62,14 @@ def main(argv=None):
 
         ready = [d for d in found + [model_store.default_dir()] if model_store.status(d)["ready"]]
         models = (ready or found or [None])[0]  # скачанные кнопкой могут лежать в папке пользователя
+    from .. import __version__
+    from . import errorlog
+
+    try:
+        errorlog.setup(version=__version__)
+        errorlog.install_hooks()
+    except OSError as e:  # нет доступа к папке пользователя — работать и без журнала
+        print(f"Журнал ошибок недоступен: {e}", file=sys.stderr)
     server = serve(Session(args.memory, models), args.port)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
 

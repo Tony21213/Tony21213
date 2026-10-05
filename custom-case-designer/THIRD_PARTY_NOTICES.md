@@ -44,5 +44,20 @@ Custom Case Designer использует следующие открытые б
 - **nnU-Net** (архитектура и обучение всех моделей выше) — Apache-2.0.
   Isensee F. et al., *Nature Methods* 18, 203–211 (2021).
 
+## Автоматические ориентиры
+
+- **ALI-CBCT** — сети поиска цефалометрических точек на КЛКТ (переведены в
+  ONNX, веса хранятся в float16). Gillot M., Miranda F., Baquero B. et al.,
+  "Automatic landmark identification in cone-beam computed tomography",
+  *Orthodontics & Craniofacial Research* (2023),
+  https://doi.org/10.1111/ocr.12642. Веса — из релиза `v0.1-v2.0_models`
+  репозитория DCBIA-OrthoLab/SlicerAutomatedDentalTools, распространяемого
+  под лицензией 3D Slicer (BSD-подобная):
+  https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalTools. Алгоритм
+  поиска (агент, шаги, итоговые пробы) повторён в
+  `casedesigner/auto_landmarks.py` без исходного кода.
+- **MONAI** (архитектура DenseNet этих сетей; нужна только при переводе
+  весов, `tools/prepare_landmarks.py`) — Apache-2.0.
+
 Код и веса OdentAI не используются: для них не указана лицензия,
 разрешающая переиспользование.

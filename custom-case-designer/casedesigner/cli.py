@@ -3,6 +3,7 @@
     python -m casedesigner register КТ --scan upper.stl --scan lower.stl --models модели -o результат
     python -m casedesigner segment КТ --models модели -o результат
     python -m casedesigner motion выгрузка_P-ART.zip -o отчёт
+    python -m casedesigner landmarks КТ --models модели/landmarks -o точки.json
 """
 
 import argparse
@@ -59,6 +60,33 @@ def cmd_segment(args):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         trimesh.Trimesh(mesh.vertices, mesh.faces, process=False).export(path)
     print(f"Готово за {time.perf_counter() - started:.0f} с: {args.out} (координаты пациента DICOM, мм)")
+
+
+def cmd_landmarks(args):
+    from . import auto_landmarks as al
+    from . import landmarks as lmk
+
+    started = time.perf_counter()
+    models = al.Models(args.models, device=args.device)
+    if not models.available():
+        raise ValueError(f"{args.models}: нет моделей ориентиров (tools/prepare_landmarks.py или кнопка в программе)")
+    vol = load_volume(args.ct)
+    found = al.find(vol, models, keys=args.only, workers=args.workers,
+                    progress=lambda f, m: print(f"\r  {m}", end="" if f < 1 else "\n", flush=True))
+    out = {}
+    for key, f in found.items():
+        name = lmk.BY_KEY[key].name if key in lmk.BY_KEY else key
+        if f.point is None:
+            print(f"  {name}: не найдена — {f.note}")
+            continue
+        out[key] = {"name": name, "point": f.point.round(2).tolist(), "note": f.note}
+        print(f"  {name}: {', '.join(f'{v:.1f}' for v in f.point)} мм{' — ' + f.note if f.note else ''}")
+    planes = {k: lmk.PLANES[k]["name"] for k in lmk.PLANES if lmk.plane({k: np.array(v["point"]) for k, v in out.items()}, k)}
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump({"landmarks": out, "coordinates": "мм пациента DICOM (LPS)", "planes": planes}, fh,
+                      ensure_ascii=False, indent=1)
+    print(f"Готово за {time.perf_counter() - started:.0f} с; плоскости: {', '.join(planes.values()) or 'нет'}")
 
 
 def cmd_register(args):
@@ -248,6 +276,15 @@ def main(argv=None):
     seg.add_argument("-o", "--out", required=True, help="папка результата")
     _segment_options(seg, required=True)
     seg.set_defaults(func=cmd_segment)
+
+    lm = sub.add_parser("landmarks", help="цефалометрические точки на КТ автоматически (ALI-CBCT)")
+    lm.add_argument("ct", help="КТ: папка DICOM, архив, .nii.gz, .mha, .nrrd")
+    lm.add_argument("--models", required=True, help="папка моделей ориентиров (<точка>/<масштаб>.onnx)")
+    lm.add_argument("--only", nargs="+", help="только эти точки (Po_R Po_L Or_R Or_L Co_R Co_L N S ANS PNS Ba IP)")
+    lm.add_argument("--device", choices=("auto", "cpu"), default="cpu")
+    lm.add_argument("--workers", type=int, default=2, help="точек одновременно (2)")
+    lm.add_argument("-o", "--out", help="файл JSON с точками")
+    lm.set_defaults(func=cmd_landmarks)
 
     mot = sub.add_parser("motion", help="записи движений нижней челюсти (P-ART и др.): разобрать и проанализировать")
     mot.add_argument("case", help="выгрузка: папка, архив .zip или файл движения (.xml, .jawMotion, .csv, .txt, .h5)")

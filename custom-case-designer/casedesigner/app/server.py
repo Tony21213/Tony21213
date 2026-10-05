@@ -14,6 +14,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import errorlog
 from .session import Session
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -41,8 +42,10 @@ class Jobs:
                 job["status"], job["progress"] = "done", 1.0
             except USER_ERRORS as e:
                 job["status"], job["error"] = "error", str(e).strip("'")
+                errorlog.message(f"{title}: {type(e).__name__}: {e}")
             except Exception as e:  # noqa: BLE001 — показать пользователю, а не уронить сервер
                 traceback.print_exc()
+                errorlog.error(title, e)
                 job["status"], job["error"] = "error", f"{type(e).__name__}: {e}"
 
         threading.Thread(target=run, daemon=True).start()
@@ -95,9 +98,11 @@ def make_handler(session: Session, jobs: Jobs):
                     return self.static(url.path)
                 self.api(method, parts[1:], query)
             except USER_ERRORS as e:
+                errorlog.message(f"{method} {url.path}: {type(e).__name__}: {e}")
                 self.json({"error": str(e).strip("'")}, 400)
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
+                errorlog.error(f"{method} {url.path}", e)
                 self.json({"error": f"{type(e).__name__}: {e}"}, 500)
 
         def static(self, path: str):
@@ -122,6 +127,13 @@ def make_handler(session: Session, jobs: Jobs):
                 return self.job("Открываю КТ", lambda progress: s.load_ct(b["path"], progress, b.get("series")))
             if p == ["ct", "series"] and method == "POST":
                 return self.json(s.ct_series(self.body()["path"]))
+            if p == ["log"] and method == "POST":  # ошибка в интерфейсе
+                b = self.body()
+                errorlog.error("интерфейс", details=f"{str(b.get('message', ''))[:2000]}\n{str(b.get('stack', ''))[:6000]}")
+                return self.json({"ok": True})
+            if p == ["log", "open"] and method == "POST":
+                s.open_log_folder()
+                return self.json({"ok": True})
             if p == ["export", "open"] and method == "POST":
                 s.open_export_folder()
                 return self.json({"ok": True})
@@ -187,6 +199,13 @@ def make_handler(session: Session, jobs: Jobs):
                     b = self.body()
                     return self.json(s.set_landmark(b["key"], b.get("point")))
                 return self.json(s.landmarks_info())
+            if p == ["landmarks", "models"]:
+                return self.json(s.landmark_models_status())
+            if p == ["landmarks", "models", "download"] and method == "POST":
+                return self.job("Загрузка моделей ориентиров", lambda progress: s.download_landmark_models(progress))
+            if p == ["landmarks", "auto"] and method == "POST":
+                b = self.body()
+                return self.job("Ищу ориентиры", lambda progress: s.auto_landmarks(progress, b.get("keys")))
             if p == ["landmarks", "suggest"] and method == "POST":
                 return self.json(s.suggest_landmarks())
             if p == ["export"] and method == "POST":

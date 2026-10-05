@@ -14,6 +14,7 @@ import numpy as np
 import trimesh
 
 from .. import articulators as arts
+from . import errorlog
 from .. import model_store
 from .. import landmarks as lmk
 from ..fusion import CaseCT, Registration, Scan, deviation_colors, export_case
@@ -149,6 +150,17 @@ def mesh_bytes(vertices: np.ndarray, faces: np.ndarray) -> bytes:
     return np.array([len(v), len(f)], np.uint32).tobytes() + v.tobytes() + f.tobytes()
 
 
+
+def open_folder(folder: str):
+    """Показать папку в проводнике (Windows) или файловом менеджере."""
+    import subprocess
+    import sys
+
+    if sys.platform.startswith("win"):
+        os.startfile(folder)  # noqa: S606 — своя папка программы
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", folder])
+
 class Session:
     def __init__(self, memory_path: str | None = None, models_dir: str | None = None):
         self.lock = threading.RLock()
@@ -211,9 +223,11 @@ class Session:
         """Серии DICOM в папке или архиве — чтобы выбрать, какую открыть (у файла КТ — пусто)."""
         from ..volume import series_of
 
+        errorlog.private(path, "КТ")
         return series_of(path)
 
     def load_ct(self, path: str, progress=None, series: str | None = None) -> dict:
+        errorlog.private(path, "КТ")
         vol = load_volume(path, series)
         if progress:
             progress(0.5, "Ищу коронки зубов")
@@ -408,7 +422,9 @@ class Session:
 
     # --- сканы -------------------------------------------------------------
     def add_scan(self, path: str) -> dict:
+        errorlog.private(path, "скан")
         scan = Scan.load(path)
+        errorlog.private(scan.name, "скан")
         sid = uuid.uuid4().hex[:8]
         with self.lock:
             color = SCAN_COLORS[len(self.scans) % len(SCAN_COLORS)]
@@ -597,6 +613,50 @@ class Session:
             self.suggested.discard(key)
         return self.landmarks_info()
 
+    def _landmark_folder(self) -> str | None:
+        """Папка моделей ориентиров: рядом с моделями сегментации или в папке пользователя."""
+        from ..auto_landmarks import Models
+
+        places = [model_store.landmarks_dir(d) for d in (self.models_dir, model_store.default_dir()) if d]
+        usable = [p for p in places if os.path.isdir(p) and Models(p).available()]
+        return (usable or places or [None])[0]
+
+    def landmark_models_status(self) -> dict:
+        from ..auto_landmarks import Models
+
+        folder = self._landmark_folder()
+        st = model_store.landmarks_status(os.path.dirname(folder) if folder else None)
+        st["available"] = Models(folder).available() if folder and os.path.isdir(folder) else []
+        st["usable"] = bool(st["available"])
+        return st
+
+    def download_landmark_models(self, progress=None) -> dict:
+        """Скачать модели ориентиров (докачка, проверка SHA-256)."""
+        folder = self.models_dir or model_store.default_dir()
+        self._download_cancel = threading.Event()
+        model_store.download_landmarks(folder, progress, self._download_cancel)
+        return self.landmark_models_status()
+
+    def auto_landmarks(self, progress=None, keys=None) -> dict:
+        """Найти ориентиры на КТ нейросетью (ALI-CBCT). Поставленное врачом не трогается; найденное — «проверьте»."""
+        from .. import auto_landmarks as al
+
+        self._require_ct()
+        folder = self._landmark_folder()
+        models = al.Models(folder) if folder and os.path.isdir(folder) else None
+        if models is None or not models.available():
+            raise ValueError("нет моделей ориентиров: скачайте их в программе")
+        self._landmark_cancel = threading.Event()
+        found = al.find(self.vol, models, keys, progress, cancel=self._landmark_cancel)
+        with self.lock:
+            for key, f in found.items():
+                if f.point is not None and key in lmk.BY_KEY and (key not in self.landmarks or key in self.suggested):
+                    self.landmarks[key] = np.asarray(f.point, float)
+                    self.suggested.add(key)
+        info = self.landmarks_info()
+        info["auto"] = {k: {"found": f.point is not None, "note": f.note} for k, f in found.items()}
+        return info
+
     def suggest_landmarks(self) -> dict:
         """Предложить мыщелки и порионы по сегментации (не трогая поставленные врачом)."""
         found = {}
@@ -632,6 +692,7 @@ class Session:
     def export(self, out_dir: str, bite: str = "scan", frame: str = "exocad", include: list[str] | None = None,
                reference: str | None = None) -> dict:
         self._require_ct()
+        errorlog.private(out_dir, "папка экспорта")
         regs = [item["reg"] for item in self.scans.values() if item["reg"] is not None]
         meshes = {}
         from ..segment import Mesh
@@ -654,16 +715,18 @@ class Session:
 
     def open_export_folder(self):
         """Показать папку последнего экспорта в проводнике (только её — путь не приходит снаружи)."""
-        import subprocess
-        import sys
-
         folder = getattr(self, "last_export", None)
         if not folder or not os.path.isdir(folder):
             raise ValueError("экспорта ещё не было")
-        if sys.platform.startswith("win"):
-            os.startfile(folder)  # noqa: S606 — своя папка экспорта
-        else:
-            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", folder])
+        open_folder(folder)
+
+    @staticmethod
+    def open_log_folder():
+        """Показать папку журнала ошибок."""
+        folder = errorlog.folder()
+        if not folder or not os.path.isdir(folder):
+            raise ValueError("журнал ошибок не ведётся")
+        open_folder(folder)
 
     def _export_ct_only(self, out_dir: str, meshes: dict) -> dict:
         import json
@@ -690,12 +753,15 @@ class Session:
 
         self._require_ct()
         path = path or self.case_path
+        errorlog.private(path, "кейс")
         if not path:
             raise ValueError("укажите, куда сохранить кейс")
         if not path.lower().endswith(CASE_EXT):
             path += CASE_EXT
         arrays = {}
         meta = {"version": 1, "ct_path": self.ct_path, "ct_series": getattr(self, "ct_series_id", None),
+                "landmarks": {k: np.asarray(v, float).tolist() for k, v in self.landmarks.items()},
+                "suggested": sorted(self.suggested),
                 "window": list(self.window), "scans": [], "structures": [],
                 "guide": []}
         for i, (sid, item) in enumerate(self.scans.items()):
@@ -732,9 +798,15 @@ class Session:
 
         from ..segment import Mesh
 
+        errorlog.private(path, "кейс")
+        errorlog.private(ct_path, "КТ")
         with np.load(path, allow_pickle=False) as z:
             meta = json.loads(str(z["meta"]))
             arrays = {k: z[k] for k in z.files if k != "meta"}
+        errorlog.private(meta.get("ct_path"), "КТ")
+        for sm in meta.get("scans", []):
+            errorlog.private(sm.get("path"), "скан")
+            errorlog.private(sm.get("name"), "скан")
         ct = ct_path or meta["ct_path"]
         if not os.path.exists(ct):
             raise FileNotFoundError(f"КТ этого кейса не найден: {ct} — его переместили или удалили")
@@ -745,6 +817,9 @@ class Session:
                                for k, key in enumerate(meta["structures"])}
             self.scans = {}
         self.guide_teeth = {jaw: Mesh(arrays[f"guide_{jaw}_v"], arrays[f"guide_{jaw}_f"]) for jaw in meta["guide"]}
+        with self.lock:
+            self.landmarks = {k: np.asarray(v, float) for k, v in meta.get("landmarks", {}).items() if k in lmk.BY_KEY}
+            self.suggested = set(meta.get("suggested", [])) & set(self.landmarks)
         if self.guide_teeth:
             self.case.use_teeth(self.guide_teeth)
         for i, sm in enumerate(meta["scans"]):

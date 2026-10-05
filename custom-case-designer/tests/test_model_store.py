@@ -126,3 +126,19 @@ def test_bundled_specs_match_sources():
         assert {k: bundled.get(k) for k in expected} == expected, name
         assert bundled["priority"] == spec["priority"]
         assert {lab for labs in bundled["outputs"].values() for lab in labs} <= set(bundled["labels"]), name
+
+
+def test_landmark_models_download_and_status(monkeypatch, tmp_path):
+    blobs = {"RPo/1.onnx": os.urandom(50_000), "RPo/0-3.onnx": os.urandom(60_000)}
+    monkeypatch.setattr(ms, "LANDMARK_FILES", {k: (len(b), hashlib.sha256(b).hexdigest()) for k, b in blobs.items()})
+    monkeypatch.setattr(ms, "CHUNK", 8192)
+    st = ms.landmarks_status(str(tmp_path))
+    assert not st["ready"] and st["left_bytes"] == 110_000
+    srv, url = serve({ms._landmark_asset(k): b for k, b in blobs.items()})
+    seen = []
+    st = ms.download_landmarks(str(tmp_path), lambda f, m, **i: seen.append(f), base_url=url)
+    srv.shutdown()
+    assert st["ready"] and st["left_bytes"] == 0 and seen[-1] == pytest.approx(1.0)
+    for k, b in blobs.items():
+        assert (tmp_path / "landmarks" / k).read_bytes() == b
+    assert ms._landmark_asset("RPo/0-3.onnx") == "ali-RPo-0-3.onnx"

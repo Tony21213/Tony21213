@@ -25,6 +25,10 @@ const state = {
   windowName: 'auto', // набор окна КТ ('' — подобрано вручную)
   caseInfo: null, recent: [], // сохранённый кейс и недавние кейсы
 };
+// Ошибки интерфейса — в журнал программы (пути и имена сервер вычищает).
+const reportError = (message, stack) => post('log', { message: String(message || ''), stack: String(stack || '') }).catch(() => {});
+window.addEventListener('error', (e) => reportError(e.message, e.error?.stack));
+window.addEventListener('unhandledrejection', (e) => reportError(e.reason?.message || e.reason, e.reason?.stack));
 let overlayVersion = 0; // меняется, когда сервер принял новое положение скана: контуры — заново
 
 const app = {
@@ -569,9 +573,14 @@ function helpDialog() {
   back.className = 'modal-back help';
   back.innerHTML = `<div class="modal"><h3>Мышь и клавиши</h3>${KEYS.map(([group, rows]) => `<div class="label">${group}</div>
     <div class="keys">${rows.map(([k, v]) => `<kbd>${k}</kbd><span>${v}</span>`).join('')}</div>`).join('')}
-    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn primary" data-x>Понятно</button></div></div>`;
+    <div class="row" style="justify-content:space-between;margin-top:14px">
+    <button class="btn ghost sm" data-log title="Ошибки программы, без имён пациентов и путей">${icons.folder}Журнал ошибок</button>
+    <button class="btn primary" data-x>Понятно</button></div></div>`;
   document.body.appendChild(back);
-  back.addEventListener('click', (e) => { if (e.target === back || e.target.closest('[data-x]')) back.remove(); });
+  back.addEventListener('click', (e) => {
+    if (e.target.closest('[data-log]')) post('log/open').catch((err) => toast(err.message));
+    else if (e.target === back || e.target.closest('[data-x]')) back.remove();
+  });
 }
 
 // ---------- панели ----------

@@ -218,6 +218,8 @@ def test_case_file_round_trip(case_files, tmp_path):
     moved[:3, 3] += [0.3, 0, 0]
     s.evaluate(sid, moved)
     s.accept(sid)
+    s.set_landmark("N", [1.0, -60.0, 40.0])
+    s.landmarks["S"], s.suggested = np.array([0.0, 10.0, 45.0]), {"S"}  # найдена программой, не проверена
     path = s.save_case(str(tmp_path / "кейс"))["path"]
     assert path.endswith(".ccdcase")
 
@@ -228,5 +230,6 @@ def test_case_file_round_trip(case_files, tmp_path):
     assert np.allclose(item["transform"], moved) and item["accepted"]
     assert not np.allclose(item["auto"].transform, moved)  # что предлагала программа — тоже сохранено
     assert state["case"]["name"] == "кейс" and state["scans"][0]["registered"]
+    assert np.allclose(t.landmarks["N"], [1.0, -60.0, 40.0]) and t.suggested == {"S"}
     with pytest.raises(FileNotFoundError, match="не найден"):
         t.open_case(path, ct_path=str(tmp_path / "нет"))
