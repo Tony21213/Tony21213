@@ -16,9 +16,13 @@ const TRANSLUCENT = { mandible: 0.42, maxilla: 0.42, skull: 0.3, maxillary_sinus
 
 const state = {
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
-  gizmo: null, modelsDir: null, frame: 'exocad', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
+  modelsDir: null, frame: 'exocad', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
   models: null, download: null, downloadError: null,
+  opacity: {}, // объект → прозрачность, заданная кнопкой (иначе — по умолчанию)
+  warnOpen: new Set(), // карточки сканов с раскрытым списком предупреждений
+  moving: new Map(), // скан → номер последней ручной поправки, ещё не оценённой сервером
 };
+let overlayVersion = 0; // меняется, когда сервер принял новое положение скана: контуры — заново
 
 const app = {
   cursor: [0, 0, 0],
@@ -30,12 +34,22 @@ const app = {
   visibleKeys: () => [...state.scans.filter((s) => s.transform).map((s) => s.id), ...state.visible],
   landmarkPoints: () => [],
   placeLandmark: () => {},
+  overlayVersion: () => overlayVersion,
+  // Манипулятор на срезах: выбранный совмещённый скан на шаге «Сканы» и его центр (мм пациента).
+  manipTarget() {
+    const s = scanById(state.selected);
+    if (state.step !== 'scans' || !s?.registered || !viewer.objects.has(s.id)) return null;
+    return { id: s.id, centre: viewer.scanCentre(s.id) };
+  },
+  moveScan(id, M) { moveScan(id, M); },
+  settledScan: (id) => !state.moving.has(id),
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const panel = $('#panel');
-const viewer = new Viewer3D($('#view3d'), { onTransformEnd: (id) => evaluateManual(id) });
+const viewer = new Viewer3D($('#view3d'));
 const slices = [...document.querySelectorAll('.view[data-axis]')].map((el) => new SliceView(el, el.dataset.axis, app));
+window.ccd = { app, slices, viewer, state }; // для проверки интерфейса в браузере
 
 // ---------- общие помощники ----------
 function toast(text, kind = 'error') {
@@ -272,23 +286,41 @@ async function register(ids, body = {}) {
       await showScan(info);
     }
     app.setCursor(app.cursor);
-    if (!viewer.gizmoTarget) viewer.fit('front');
+    viewer.fit('front');
   });
 }
 
 const registerPending = () => register(state.scans.filter((s) => !s.registered).map((s) => s.id));
 
+// Ручная поправка с манипулятора на срезе: M — матрица 4×4 в мм пациента, применяется поверх положения скана.
 let evalTimer = null;
-function evaluateManual(id) {
+function moveScan(id, M) {
+  const T = viewer.getTransform(id);
+  const R = T.map((_, r) => [0, 1, 2, 3].map((c) => M[r].reduce((sum, m, k) => sum + m * T[k][c], 0)));
+  viewer.setTransform(id, R);
+  state.moving.set(id, (state.moving.get(id) || 0) + 1);
+  evaluateManual(id, 250); // серия нажатий стрелок — одной оценкой
+}
+
+function evaluateManual(id, delay = 0) {
   clearTimeout(evalTimer);
   evalTimer = setTimeout(async () => {
+    const mark = state.moving.get(id);
     const info = await run(`scans/${id}/evaluate`, { transform: viewer.getTransform(id) }).catch((e) => toast(e.message));
     if (!info) return;
+    const later = state.moving.get(id) !== mark; // пока считалось, скан ещё подвинули — положение не трогаем
     updateScan(info);
-    await showScan(info);
+    if (!later) {
+      state.moving.delete(id);
+      await showScan(info);
+    } else {
+      const rgb = state.heat && info.registered ? new Uint8Array(await get(`scans/${id}/colors`)) : null;
+      viewer.setColors(id, rgb);
+    }
+    overlayVersion += 1;
     app.setCursor(app.cursor);
     render();
-  }, 0);
+  }, delay);
 }
 
 async function refine(id) {
@@ -299,6 +331,8 @@ async function resetAuto(id) {
   const s = scanById(id);
   if (!s.auto_transform) return;
   viewer.setTransform(id, s.auto_transform);
+  state.moving.set(id, (state.moving.get(id) || 0) + 1);
+  slices.forEach((v) => v.settled(id));
   evaluateManual(id);
 }
 
@@ -310,9 +344,15 @@ async function accept(id) {
   render();
 }
 
-function gizmo(mode) {
-  state.gizmo = state.gizmo === mode ? null : mode;
-  if (state.gizmo && state.selected) viewer.attach(state.selected, state.gizmo); else viewer.detach();
+// Прозрачность объекта в 3D: кнопкой — прозрачный ↔ непрозрачный (по умолчанию — как задано для структуры).
+const defaultOpacity = (key) => (scanById(key) ? 1 : TRANSLUCENT[key] ?? 1);
+const opacityOf = (key) => state.opacity[key] ?? defaultOpacity(key);
+function toggleOpacity(keys) {
+  const next = keys.every((k) => opacityOf(k) < 1) ? 1 : 0.35;
+  for (const k of keys) {
+    state.opacity[k] = next;
+    viewer.setOpacity(k, next);
+  }
   render();
 }
 
@@ -348,6 +388,12 @@ function metricsHtml(s) {
   </div>`;
 }
 
+// Кнопка прозрачности: наполовину залитый кружок — объект прозрачный, залитый — непрозрачный.
+function opacityButton(keys, attr) {
+  const clear = keys.every((k) => opacityOf(k) < 1);
+  return `<button class="opacity-btn ${clear ? 'clear' : ''}" ${attr} title="${clear ? 'Сделать непрозрачным' : 'Сделать прозрачным'}"><i></i></button>`;
+}
+
 function renderCt() {
   const ct = state.ct;
   if (!ct) {
@@ -373,9 +419,9 @@ function renderCt() {
     const open = state.groupsOpen.has(title);
     const check = on === items.length ? 'on' : on ? 'mixed' : '';
     return `<div class="group"><div class="ghead" data-group="${title}"><span class="check ${check}" data-groupcheck="${title}"></span>
-      <b>${title}</b><span>${on}/${items.length}</span><span style="transform:rotate(${open ? 90 : 0}deg);display:flex">${icons.chevron.replace('<svg', '<svg width="14" height="14"')}</span></div>
+      <b>${title}</b>${opacityButton(items.map((s) => s.key), `data-gopacity="${title}"`)}<span>${on}/${items.length}</span><span style="transform:rotate(${open ? 90 : 0}deg);display:flex">${icons.chevron.replace('<svg', '<svg width="14" height="14"')}</span></div>
       ${open ? items.map((s) => `<div class="item ${state.visible.has(s.key) ? '' : 'off'}" data-toggle="${s.key}">
-        <span class="check ${state.visible.has(s.key) ? 'on' : ''}"></span><i class="dot" style="background:${s.color}"></i>${s.name}</div>`).join('') : ''}</div>`;
+        <span class="check ${state.visible.has(s.key) ? 'on' : ''}"></span><i class="dot" style="background:${s.color}"></i><span class="grow">${s.name}</span>${opacityButton([s.key], `data-opacity="${s.key}"`)}</div>`).join('') : ''}</div>`;
   }).join('');
   return `<h2>КТ</h2>${info}<div class="label">Структуры — ${state.structures.length}; видимые попадут в экспорт</div>
     <div class="card tree">${tree}</div>${partsButton}`;
@@ -387,17 +433,20 @@ function renderScans() {
   const cards = state.scans.map((s) => {
     const status = s.accepted ? '<span class="badge ok">принят</span>' : s.registered ? '' : '<span class="badge">не совмещён</span>';
     const jaw = s.jaw ? `<span class="badge">${JAWS[s.jaw]}</span>` : '';
-    const warnings = (s.warnings || []).map((w) => `<div class="warning">${icons.warn}<span>${w}</span></div>`).join('');
+    const list = s.warnings || [];
+    const open = state.warnOpen.has(s.id);
+    const warnBtn = list.length ? `<button class="warn-btn ${open ? 'on' : ''}" data-warns="${s.id}" title="Предупреждения">${icons.warn}<b>${list.length}</b></button>` : '';
+    const warnings = open ? list.map((w) => `<div class="warning">${icons.warn}<span>${w}</span></div>`).join('') : '';
     return `<div class="card ${s.id === state.selected ? 'sel' : ''}" data-select="${s.id}">
       <div class="card-head"><i class="dot" style="background:${s.color}"></i><h3 title="${s.path}">${s.name}</h3>${jaw}${status}
+        ${warnBtn}${s.registered ? opacityButton([s.id], `data-opacity="${s.id}"`) : ''}
         <button class="btn icon ghost" data-remove="${s.id}" title="Убрать">${icons.trash}</button></div>
       ${metricsHtml(s)}${warnings}
       ${s.registered ? '' : `<button class="btn wide" data-register="${s.id}">${icons.play}Совместить</button>`}</div>`;
   }).join('');
   const tools = sel?.registered ? `
     <div class="label">Ручная поправка — ${sel.name}</div>
-    <div class="seg"><button data-gizmo="translate" class="${state.gizmo === 'translate' ? 'on' : ''}">Сдвиг (G)</button>
-      <button data-gizmo="rotate" class="${state.gizmo === 'rotate' ? 'on' : ''}">Поворот (R)</button></div>
+    <p class="muted small" style="margin-top:0">На срезе: внутри кольца — сдвиг, за кольцо — поворот. Стрелки — точно, Ctrl+←/→ — поворот, Shift — крупнее.</p>
     <div class="row" style="margin-top:8px"><button class="btn grow" data-refine="${sel.id}">${icons.refine}Уточнить</button>
       <button class="btn icon" data-reset="${sel.id}" title="Вернуть автоматическое положение" ${sel.auto_transform ? '' : 'disabled'}>${icons.undo}</button>
       <button class="btn ok grow" data-accept="${sel.id}" ${sel.accepted ? 'disabled' : ''}>${icons.check}${sel.accepted ? 'Принято' : 'Принять'}</button></div>` : '';
@@ -447,13 +496,22 @@ function render() {
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-gizmo],[data-refine],[data-reset],[data-accept],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-view],[data-heat]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-view],[data-heat]');
   if (!t || t.disabled) return;
   const d = t.dataset;
-  if (d.step) { state.step = d.step; return render(); }
+  if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return render(); }
   if (d.remove) { e.stopPropagation(); return removeScan(d.remove); }
   if (d.register) return register([d.register]);
-  if (d.gizmo) return gizmo(d.gizmo);
+  if (d.opacity) { e.stopPropagation(); return toggleOpacity([d.opacity]); }
+  if (d.gopacity) {
+    e.stopPropagation();
+    return toggleOpacity(state.structures.filter((s) => s.group === d.gopacity).map((s) => s.key));
+  }
+  if (d.warns) {
+    e.stopPropagation();
+    state.warnOpen.has(d.warns) ? state.warnOpen.delete(d.warns) : state.warnOpen.add(d.warns);
+    return render();
+  }
   if (d.refine) return refine(d.refine);
   if (d.reset) return resetAuto(d.reset);
   if (d.accept) return accept(d.accept);
@@ -469,7 +527,7 @@ document.addEventListener('click', async (e) => {
   if ('heat' in d) { state.heat = !state.heat; for (const s of state.scans) await showScan(s); return render(); }
   if (d.select && !e.target.closest('button')) {
     state.selected = d.select;
-    if (state.gizmo) viewer.attach(state.selected, state.gizmo);
+    slices.forEach((v) => v.draw());
     return render();
   }
   const action = { ct: () => openCt('ct'), ctdir: () => openCt('ctdir'), scan: addScans, segment, export: doExport,
@@ -479,10 +537,7 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.target.closest('input,select')) return;
-  if (state.step !== 'scans' || !scanById(state.selected)?.registered) return;
-  if (e.key === 'g' || e.key === 'п') gizmo('translate');
-  if (e.key === 'r' || e.key === 'к') gizmo('rotate');
-  if (e.key === 'Escape' && state.gizmo) gizmo(state.gizmo);
+  SliceView.onKey(e); // стрелки — точная поправка скана в срезе под мышью
 });
 
 // ---------- старт: подхватить уже открытый кейс ----------

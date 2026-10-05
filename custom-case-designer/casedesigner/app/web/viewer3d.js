@@ -112,7 +112,7 @@ export class Viewer3D {
     this.remove(key);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-    g.setIndex(new THREE.BufferAttribute(opacity < 1 ? outward(vertices, faces) : faces, 1));
+    g.setIndex(new THREE.BufferAttribute(outward(vertices, faces), 1)); // наружу: прозрачность включается кнопкой
     g.computeVertexNormals();
     const mesh = new THREE.Mesh(g, this.material(color, opacity));
     mesh.renderOrder = order;
@@ -146,6 +146,12 @@ export class Viewer3D {
     const M = T.multiply(new THREE.Matrix4().makeTranslation(mesh.userData.centre));
     M.decompose(mesh.position, mesh.quaternion, mesh.scale);
     mesh.visible = true;
+  }
+
+  // Центр скана в мм пациента (вокруг него вращает манипулятор на срезах).
+  scanCentre(id) {
+    const mesh = this.objects.get(id);
+    return mesh ? [mesh.position.x, mesh.position.y, mesh.position.z] : null;
   }
 
   getTransform(id) {

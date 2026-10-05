@@ -127,6 +127,8 @@ def make_handler(session: Session, jobs: Jobs):
                 width = float(q["width"]) if "width" in q else None
                 region = tuple(float(q[k]) for k in ("ua", "ub", "va", "vb")) if "ua" in q else None
                 size = (int(q["cols"]), int(q["rows"])) if region else None
+                if q.get("format") == "raw":
+                    return self.binary(s.slice_raw(q["axis"], float(q["pos"]), level, width, region, size))
                 return self.send(s.slice_png(q["axis"], float(q["pos"]), level, width, region, size), "image/png")
             if p == ["ct", "surface"]:
                 return self.binary(s.ct_surface())

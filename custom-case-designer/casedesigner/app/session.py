@@ -73,6 +73,60 @@ GROUPS = [
 ]
 
 
+def _axis_aligned(direction: np.ndarray) -> bool:
+    """Оси КТ идут по осям пациента (с точностью до знака и перестановки) — так почти у всех КЛКТ."""
+    a = np.abs(np.asarray(direction, float))
+    return bool(np.allclose(a.max(axis=0), 1, atol=1e-4) and np.allclose(a.sum(axis=0), 1, atol=1e-4))
+
+
+class Sectioner:
+    """Быстрое сечение сетки плоскостью, перпендикулярной оси пациента.
+
+    Треугольники заранее упорядочены по нижнему краю вдоль каждой оси: для
+    плоскости берутся только те, что её пересекают, и отрезки считаются
+    сразу для всех. Сетка сканов с сотнями тысяч треугольников режется за
+    миллисекунды, а не за десятки.
+    """
+
+    def __init__(self, vertices: np.ndarray, faces: np.ndarray):
+        self.v = np.asarray(vertices, np.float64)
+        self.f = np.asarray(faces, np.int64)
+        self.axes = {}
+
+    def _axis(self, n: int):
+        if n not in self.axes:
+            z = self.v[self.f, n]  # (M, 3)
+            lo, hi = z.min(1), z.max(1)
+            order = np.argsort(lo, kind="stable")
+            self.axes[n] = (order, lo[order], hi)
+        return self.axes[n]
+
+    def cut(self, n: int, pos: float, uv: list[int]) -> list[float]:
+        """Отрезки сечения плоскостью «координата n = pos»: плоский список u1, v1, u2, v2, …"""
+        if not len(self.f):
+            return []
+        order, lo_sorted, hi = self._axis(n)
+        cand = order[: np.searchsorted(lo_sorted, pos, side="right")]
+        cand = cand[hi[cand] >= pos]
+        if not len(cand):
+            return []
+        tri = self.v[self.f[cand]]  # (K, 3, 3)
+        d = tri[..., n] - pos
+        d = np.where(d == 0, 1e-9, d)  # вершина ровно на плоскости — чуть выше: у треугольника ровно 2 пересечения
+        pts = []
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            cross = (d[:, a] > 0) != (d[:, b] > 0)
+            t = d[:, a] / np.where(cross, d[:, a] - d[:, b], 1.0)
+            p = tri[:, a] + (tri[:, b] - tri[:, a]) * t[:, None]
+            pts.append((cross, p[:, uv]))
+        (c0, p0), (c1, p1), (c2, p2) = pts
+        first = np.where(c0[:, None], p0, p1)
+        second = np.where((c0 & c1)[:, None], p1, p2)
+        keep = (c0.astype(int) + c1 + c2) == 2
+        seg = np.concatenate([first[keep], second[keep]], axis=1)
+        return np.round(seg.reshape(-1), 3).tolist()
+
+
 def group_of(key: str) -> str:
     if key in ("teeth/implant", "teeth/crown", "teeth/bridge"):
         return "Ортопедия и импланты"
@@ -188,12 +242,9 @@ class Session:
                 "u0": float(lo[s["u"]]), "du": step, "v0": v0, "dv": dv, "width": width, "height": height,
                 "range": [float(lo[s["normal"]]), float(hi[s["normal"]])], "step": step}
 
-    def slice_png(self, axis: str, pos: float, level: float | None = None, width: float | None = None,
-                  region=None, size=None) -> bytes:
-        """Срез картинкой; region=(ua, ub, va, vb) — только эта часть (мм по осям среза, края слева-направо и
-        сверху-вниз), size=(cols, rows) — в таком разрешении: при увеличении — резко, в разрешении экрана."""
-        from PIL import Image
-
+    def slice_values(self, axis: str, pos: float, region=None, size=None) -> np.ndarray:
+        """Яркость среза (строки × столбцы); region=(ua, ub, va, vb) — только эта часть (мм по осям среза,
+        края слева-направо и сверху-вниз), size=(cols, rows) — в таком разрешении."""
         g = self.slice_geometry(axis)
         s = SLICES[axis]
         if region is None:
@@ -201,45 +252,123 @@ class Session:
         else:
             (ua, ub, va, vb), (cols, rows) = region, (int(np.clip(n, 1, MAX_SLICE_PIXELS)) for n in size)
             us, vs = ua + (np.arange(cols) + 0.5) * (ub - ua) / cols, va + (np.arange(rows) + 0.5) * (vb - va) / rows
-        uu, vv = np.meshgrid(us, vs)
+        if _axis_aligned(self.vol.direction):
+            return self._plane(s, pos, us, vs)
+        uu, vv = np.meshgrid(us, vs)  # КТ повёрнут относительно осей пациента — общий путь
         pts = np.zeros((uu.size, 3))
         pts[:, s["u"]], pts[:, s["v"]], pts[:, s["normal"]] = uu.ravel(), vv.ravel(), pos
-        values = self.vol.sample(pts).reshape(uu.shape)
+        return self.vol.sample(pts).reshape(uu.shape)
+
+    def _plane(self, s: dict, pos: float, us: np.ndarray, vs: np.ndarray) -> np.ndarray:
+        """Срез КТ, лежащего по осям пациента: плоскость берётся из массива (линейно между соседними
+        слоями), в плоскости — билинейно по отдельности вдоль строк и столбцов. В десятки раз быстрее
+        трёхмерной интерполяции и даёт то же самое."""
+        vol = self.vol
+        data = vol.data
+        cval = self._cval
+        to_index = vol.to_index
+        k = {a: int(np.argmax(np.abs(vol.direction[a]))) for a in range(3)}  # ось пациента → ось индекса x,y,z
+
+        def along(a, values):  # индекс вдоль оси пациента a для значений values (остальные — любые)
+            pts = np.zeros((len(values), 3))
+            pts[:, s["normal"]] = pos
+            pts[:, a] = values
+            return to_index(pts)[:, k[a]]
+
+        def axis_of(index_axis):  # ось массива data ([z, y, x]) для оси индекса x/y/z
+            return 2 - index_axis
+
+        n_idx = float(along(s["normal"], np.array([pos]))[0])
+        n0 = int(np.floor(n_idx))
+        t = n_idx - n0
+        n_axis = axis_of(k[s["normal"]])
+        size_n = data.shape[n_axis]
+
+        def layer(i):
+            if 0 <= i < size_n:
+                return np.take(data, i, axis=n_axis).astype(np.float32)
+            return None
+
+        a, b = layer(n0), layer(n0 + 1)
+        if a is None and b is None:
+            return np.full((len(vs), len(us)), cval, np.float32)
+        a = a if a is not None else np.full_like(b, cval)
+        b = b if b is not None else np.full_like(a, cval)
+        plane = a * (1 - t) + b * t if t > 1e-6 else a
+        rest = [ax for ax in (0, 1, 2) if ax != n_axis]  # оси массива, оставшиеся в плоскости
+        u_ax, v_ax = rest.index(axis_of(k[s["u"]])), rest.index(axis_of(k[s["v"]]))
+        plane = plane if (v_ax, u_ax) == (0, 1) else plane.T  # строки — v, столбцы — u
+
+        def weights(idx, n):
+            i0 = np.floor(idx).astype(np.int64)
+            f = (idx - i0).astype(np.float32)
+            ok0, ok1 = (i0 >= 0) & (i0 < n), (i0 + 1 >= 0) & (i0 + 1 < n)
+            return np.clip(i0, 0, n - 1), np.clip(i0 + 1, 0, n - 1), f, ok0, ok1
+
+        iu0, iu1, fu, ou0, ou1 = weights(along(s["u"], us), plane.shape[1])
+        iv0, iv1, fv, ov0, ov1 = weights(along(s["v"], vs), plane.shape[0])
+        p = np.where(ov0[:, None], plane[iv0], cval)  # строки
+        q = np.where(ov1[:, None], plane[iv1], cval)
+        rows = p * (1 - fv)[:, None] + q * fv[:, None]
+        left = np.where(ou0[None], rows[:, iu0], cval)
+        right = np.where(ou1[None], rows[:, iu1], cval)
+        return left * (1 - fu)[None] + right * fu[None]
+
+    @property
+    def _cval(self) -> float:
+        if getattr(self, "_cval_for", None) is not self.vol:
+            self._cval_for, self._cval_value = self.vol, float(self.vol.data.min())
+        return self._cval_value
+
+    def _windowed(self, values: np.ndarray, level, width) -> np.ndarray:
         level = self.window[0] if level is None else level
         width = self.window[1] if width is None else width
-        img = np.clip((values - (level - width / 2)) / width * 255, 0, 255).astype(np.uint8)
+        return np.clip((values - (level - width / 2)) * (255.0 / width), 0, 255).astype(np.uint8)
+
+    def slice_png(self, axis: str, pos: float, level: float | None = None, width: float | None = None,
+                  region=None, size=None) -> bytes:
+        """Срез картинкой PNG (оттенки серого в окне level/width)."""
+        from PIL import Image
+
+        img = self._windowed(self.slice_values(axis, pos, region, size), level, width)
         buf = io.BytesIO()
         Image.fromarray(img).save(buf, format="PNG", compress_level=1)
         return buf.getvalue()
 
+    def slice_raw(self, axis: str, pos: float, level: float | None = None, width: float | None = None,
+                  region=None, size=None) -> bytes:
+        """Срез без сжатия — для интерфейса: столбцы и строки (uint32), затем байты серого построчно.
+        Сжатие PNG и его разбор в браузере дольше, чем передать байты по локальному соединению."""
+        img = self._windowed(self.slice_values(axis, pos, region, size), level, width)
+        return np.array([img.shape[1], img.shape[0]], np.uint32).tobytes() + np.ascontiguousarray(img).tobytes()
+
     # --- сечения сеток плоскостью среза --------------------------------------
-    def _section(self, mesh: trimesh.Trimesh, axis: str, pos: float) -> list[float]:
-        s = SLICES[axis]
-        normal = np.zeros(3)
-        normal[s["normal"]] = 1
-        origin = np.zeros(3)
-        origin[s["normal"]] = pos
-        lo, hi = mesh.bounds
-        if not lo[s["normal"]] <= pos <= hi[s["normal"]]:
-            return []
-        lines = trimesh.intersections.mesh_plane(mesh, normal, origin)
-        if not len(lines):
-            return []
-        return np.round(lines[:, :, [s["u"], s["v"]]].reshape(-1), 3).tolist()
+    def _sectioner(self, key: str, vertices: np.ndarray, faces: np.ndarray, version) -> "Sectioner":
+        cache = self.__dict__.setdefault("_sectioners", {})
+        item = cache.get(key)
+        if item is None or item[0] != version:
+            item = (version, Sectioner(vertices, faces))
+            cache[key] = item
+        return item[1]
 
     def overlays(self, axis: str, pos: float, visible: list[str]) -> list[dict]:
         out = []
+        n = SLICES[axis]["normal"]
+        uv = [SLICES[axis]["u"], SLICES[axis]["v"]]
         with self.lock:
             for sid, item in self.scans.items():
                 if item["transform"] is None or sid not in visible:
                     continue
-                mesh = trimesh.Trimesh(apply(item["transform"], item["scan"].vertices), item["scan"].faces,
-                                       process=False)
-                out.append({"id": sid, "color": item["color"], "width": 1.6, "segments": self._section(mesh, axis, pos)})
+                T = item["transform"]
+                sec = self._sectioner(f"scan:{sid}", apply(T, item["scan"].vertices), item["scan"].faces,
+                                      (id(item["scan"]), T.tobytes()))
+                out.append({"id": sid, "color": item["color"], "width": 1.6, "segments": sec.cut(n, pos, uv)})
             for key, mesh in self.structures.items():
                 if key in visible:
+                    sec = self._sectioner(f"structure:{key}", np.asarray(mesh.vertices), np.asarray(mesh.faces),
+                                          id(mesh))
                     out.append({"id": key, "color": structure(key).color, "width": 1.2,
-                                "segments": self._section(mesh, axis, pos)})
+                                "segments": sec.cut(n, pos, uv)})
         return [o for o in out if o["segments"]]
 
     # --- сканы -------------------------------------------------------------

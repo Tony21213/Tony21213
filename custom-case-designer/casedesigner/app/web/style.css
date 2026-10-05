@@ -297,3 +297,17 @@ select:focus, input[type=text]:focus { border-color: var(--accent); }
 #modelsCard .btn.sm { margin-top: 8px; }
 .license { color: var(--faint); font-size: 11px; margin: 10px 2px 0; line-height: 1.35; }
 .dl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* прозрачность объекта: залитый кружок — непрозрачный, наполовину — прозрачный */
+.opacity-btn { width: 22px; height: 22px; border: 0; background: transparent; padding: 0; display: inline-flex;
+  align-items: center; justify-content: center; cursor: pointer; border-radius: 3px; flex: none; }
+.opacity-btn:hover { background: var(--panel-3); }
+.opacity-btn i { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--muted); background: var(--muted); }
+.opacity-btn.clear i { background: linear-gradient(90deg, var(--muted) 50%, transparent 50%); }
+.tree .item { display: flex; align-items: center; gap: 6px; }
+.tree .item .grow { flex: 1; }
+/* предупреждения скана — под одной иконкой */
+.warn-btn { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 6px; border-radius: 3px;
+  border: 1px solid transparent; background: var(--warn-soft); color: var(--warn); cursor: pointer; font-size: 12px; }
+.warn-btn svg { width: 14px; height: 14px; }
+.warn-btn.on { border-color: var(--warn); }
