@@ -89,7 +89,7 @@ export class SliceView {
   onPointerDown(e) {
     if (!this.geometry || (e.button !== 1 && e.button !== 2)) return;
     e.preventDefault();
-    this.canvas.setPointerCapture(e.pointerId);
+    try { this.canvas.setPointerCapture(e.pointerId); } catch { /* указатель уже отпущен */ }
     const start = [e.clientX, e.clientY], pan = [...this.pan];
     const move = (ev) => {
       this.pan = [pan[0] + ev.clientX - start[0], pan[1] + ev.clientY - start[1]];
