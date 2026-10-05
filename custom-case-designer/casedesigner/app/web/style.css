@@ -123,6 +123,11 @@ button, input, select { font: inherit; color: inherit; }
 }
 .view.v3d { grid-row: 1 / span 3; background: radial-gradient(120% 90% at 50% 20%, #1a2030 0%, #0b0d12 60%, #07080b 100%); }
 .view canvas { display: block; width: 100%; height: 100%; }
+.slice-slider {
+  position: absolute; left: 12px; right: 12px; bottom: 6px; z-index: 2; height: 16px; margin: 0;
+  opacity: .55; cursor: pointer; transition: opacity .15s;
+}
+.view:hover .slice-slider, .slice-slider:focus { opacity: .95; }
 .view-label {
   position: absolute; left: 10px; top: 8px; z-index: 2;
   display: flex; align-items: center; gap: 8px; pointer-events: none;

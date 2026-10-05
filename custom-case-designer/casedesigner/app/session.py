@@ -33,7 +33,12 @@ SLICES = {
     "sagittal": {"normal": 0, "u": 1, "v": 2, "v_down": False},
 }
 SLICE_PIXELS = 512
+MAX_SLICE_PIXELS = 2048  # сторона картинки видимой части среза
 SCAN_COLORS = ["#7fb2ff", "#ffb86b", "#b48cff", "#6be0c1"]
+# Скан совмещён до сегментации — только по плотности (см. CaseCT.use_teeth).
+UNGUIDED = ("КТ не сегментировано: зубы найдены только по плотности, и на снимке с большим полем скан может сесть "
+            "со сдвигом вдоль дуги на несколько миллиметров — метрики этого не покажут. Сегментируйте КТ: скан "
+            "совместится заново по зубам.")
 GROUPS = [
     ("Кости", ("mandible", "maxilla", "skull", "hard_palate")),
     ("Зубы", ("upper_teeth", "lower_teeth", "teeth/", "pulp/")),
@@ -92,7 +97,7 @@ class Session:
             self.structures, self._sections = {}, {}
             self.landmarks, self.suggested = {}, set()
             for item in self.scans.values():
-                item.update(reg=None, auto=None, transform=None)
+                item.update(reg=None, auto=None, transform=None, guided=False)
         return self.ct_info()
 
     def ct_info(self) -> dict | None:
@@ -126,12 +131,20 @@ class Session:
                 "u0": float(lo[s["u"]]), "du": step, "v0": v0, "dv": dv, "width": width, "height": height,
                 "range": [float(lo[s["normal"]]), float(hi[s["normal"]])], "step": step}
 
-    def slice_png(self, axis: str, pos: float, level: float | None = None, width: float | None = None) -> bytes:
+    def slice_png(self, axis: str, pos: float, level: float | None = None, width: float | None = None,
+                  region=None, size=None) -> bytes:
+        """Срез картинкой; region=(ua, ub, va, vb) — только эта часть (мм по осям среза, края слева-направо и
+        сверху-вниз), size=(cols, rows) — в таком разрешении: при увеличении — резко, в разрешении экрана."""
         from PIL import Image
 
         g = self.slice_geometry(axis)
         s = SLICES[axis]
-        uu, vv = np.meshgrid(g["u0"] + g["du"] * np.arange(g["width"]), g["v0"] + g["dv"] * np.arange(g["height"]))
+        if region is None:
+            us, vs = g["u0"] + g["du"] * np.arange(g["width"]), g["v0"] + g["dv"] * np.arange(g["height"])
+        else:
+            (ua, ub, va, vb), (cols, rows) = region, (int(np.clip(n, 1, MAX_SLICE_PIXELS)) for n in size)
+            us, vs = ua + (np.arange(cols) + 0.5) * (ub - ua) / cols, va + (np.arange(rows) + 0.5) * (vb - va) / rows
+        uu, vv = np.meshgrid(us, vs)
         pts = np.zeros((uu.size, 3))
         pts[:, s["u"]], pts[:, s["v"]], pts[:, s["normal"]] = uu.ravel(), vv.ravel(), pos
         values = self.vol.sample(pts).reshape(uu.shape)
@@ -179,7 +192,7 @@ class Session:
         with self.lock:
             color = SCAN_COLORS[len(self.scans) % len(SCAN_COLORS)]
             self.scans[sid] = {"scan": scan, "path": path, "color": color, "jaw": None,
-                               "reg": None, "auto": None, "transform": None, "accepted": False}
+                               "reg": None, "auto": None, "transform": None, "accepted": False, "guided": False}
         return self.scan_info(sid)
 
     def remove_scan(self, sid: str):
@@ -196,7 +209,7 @@ class Session:
                 "auto_transform": None if item["auto"] is None else item["auto"].transform.tolist(),
                 "registered": reg is not None, "accepted": item["accepted"],
                 "stats": reg.stats if reg else None, "edge_shift_mm": round(reg.edge_shift, 3) if reg else None,
-                "warnings": reg.warnings if reg else [],
+                "warnings": (([] if item["guided"] else [UNGUIDED]) + reg.warnings) if reg else [],
                 "segments": [vars(s) for s in reg.segments] if reg else [],
                 "corrected_mm": self._corrected(sid)}
 
@@ -229,6 +242,7 @@ class Session:
                                  start=None if start is None else np.asarray(start, float))
         with self.lock:
             item["reg"], item["transform"], item["accepted"] = reg, reg.transform, False
+            item["guided"] = reg.jaw in self.case.guided
             if item["auto"] is None or (start is None and pairs is None):
                 item["auto"] = reg
         return self.scan_info(sid)
@@ -239,6 +253,7 @@ class Session:
         reg = self.case.evaluate(item["scan"], np.asarray(transform, float), jaw=item["reg"].jaw if item["reg"] else None)
         with self.lock:
             item["reg"], item["transform"], item["accepted"] = reg, reg.transform, False
+            item["guided"] = reg.jaw in self.case.guided
         return self.scan_info(sid)
 
     def set_jaw(self, sid: str, jaw: str | None):
@@ -289,7 +304,18 @@ class Session:
         with self.lock:
             self.models_dir = models_dir
             self.structures = {k: trimesh.Trimesh(m.vertices, m.faces, process=False) for k, m in result.meshes.items()}
-        return self.structures_info()
+        self.case.use_teeth({jaw: result.meshes.get(f"{jaw}_teeth") for jaw in ("upper", "lower")})
+        # Сканы, совмещённые до сегментации по одной плотности, — заново по зубам.
+        # Принятые и поправленные вручную остаются как есть.
+        for sid, item in list(self.scans.items()):
+            if item["reg"] is not None and not item["guided"] and not item["accepted"] and item["reg"] is item["auto"]:
+                if progress:
+                    progress(1.0, f"Совмещаю заново по зубам: {item['scan'].name}")
+                try:
+                    self.register(sid, item["jaw"])
+                except (ValueError, RuntimeError):  # не вышло — скан остаётся где был, с подсказкой
+                    pass
+        return {**self.structures_info(), "scans": [self.scan_info(s) for s in self.scans]}
 
     def structures_info(self) -> dict:
         def order(key):  # сначала целые структуры, затем зубы и пульпа по номеру FDI

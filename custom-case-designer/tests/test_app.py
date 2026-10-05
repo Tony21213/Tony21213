@@ -2,6 +2,7 @@
 
 import json
 import time
+import urllib.parse
 import urllib.request
 
 import numpy as np
@@ -69,6 +70,15 @@ def test_doctor_workflow(server, case_files, tmp_path):
     from PIL import Image
     import io
     assert Image.open(io.BytesIO(png)).size == (geo["width"], geo["height"])
+    # Видимая часть среза в разрешении экрана (масштаб, сдвиг): по сетке целого среза — та же картинка.
+    du, dv = geo["du"], geo["dv"]
+    whole = {"ua": geo["u0"] - du / 2, "ub": geo["u0"] + (geo["width"] - 0.5) * du, "va": geo["v0"] - dv / 2,
+             "vb": geo["v0"] + (geo["height"] - 0.5) * dv, "cols": geo["width"], "rows": geo["height"]}
+    query = f"ct/slice?axis=axial&pos={ct['focus'][2]}&"
+    same = call(server, query + urllib.parse.urlencode(whole))
+    assert np.array_equal(np.asarray(Image.open(io.BytesIO(same))), np.asarray(Image.open(io.BytesIO(png))))
+    part = dict(whole, ub=geo["u0"] + 0.25 * geo["width"] * du, vb=geo["v0"] + 0.2 * geo["height"] * dv, cols=300, rows=200)
+    assert Image.open(io.BytesIO(call(server, query + urllib.parse.urlencode(part)))).size == (300, 200)
 
     scan = call(server, "scans", {"path": str(d / "lower.stl")})
     raw = call(server, f"scans/{scan['id']}/mesh")
@@ -102,6 +112,36 @@ def test_doctor_workflow(server, case_files, tmp_path):
 
     state = call(server, "state")
     assert state["ct"]["name"] == "ct.nii.gz" and state["scans"][0]["accepted"]
+
+
+def test_segmentation_reregisters_scans(case_files, tmp_path, monkeypatch):
+    """После сегментации сканы, совмещённые по одной плотности, совмещаются заново по зубам;
+    принятый остаётся где был."""
+    from casedesigner.app import session as app_session
+    from casedesigner.segment import SegmentationResult
+
+    class Segmenter:  # вместо моделей ONNX — настоящие зубы фантома
+        def __init__(self, folder, device="auto"):
+            self.models = []
+
+        def run(self, vol, progress=None):
+            return SegmentationResult(meshes={f"{j}_teeth": phantom.teeth_mesh(j) for j in ("upper", "lower")})
+
+    monkeypatch.setattr(app_session, "Segmenter", Segmenter)
+    d, truth = case_files
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s.load_ct(str(d / "ct.nii.gz"))
+    auto, kept = (s.add_scan(str(d / "lower.stl"))["id"] for _ in range(2))
+    for sid in (auto, kept):
+        assert app_session.UNGUIDED in s.register(sid)["warnings"]
+    s.accept(kept)
+    before = s.scan_info(kept)["transform"]
+
+    scans = {i["id"]: i for i in s.segment(models_dir="модели")["scans"]}
+    assert scans[auto]["registered"] and app_session.UNGUIDED not in scans[auto]["warnings"]
+    pose = np.array(scans[auto]["transform"]) @ phantom.scan_pose(2)  # скан → КТ после совмещения
+    assert np.linalg.norm(apply(pose, truth) - truth, axis=1).max() < 0.15
+    assert scans[kept]["accepted"] and scans[kept]["transform"] == before
 
 
 def test_errors_are_readable(server):

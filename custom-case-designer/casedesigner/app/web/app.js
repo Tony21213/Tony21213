@@ -93,6 +93,8 @@ async function choose(kind, title) {
 }
 
 const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v) ? '—' : Number(v).toFixed(d));
+const plural = (n, one, few, many) => (n % 10 === 1 && n % 100 !== 11 ? one
+  : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? few : many);
 const cls = (v, good, fair) => (v <= good ? 'ok' : v <= fair ? 'warn' : 'bad');
 const scanById = (id) => state.scans.find((s) => s.id === id);
 const JAWS = { upper: 'верхняя', lower: 'нижняя' };
@@ -103,6 +105,7 @@ function updateScan(info) {
 }
 
 async function showScan(info) {
+  if (!viewer.objects.has(info.id)) viewer.setScan(info.id, await mesh(`scans/${info.id}/mesh`), info.color, null);
   if (info.transform) viewer.setTransform(info.id, info.transform);
   const rgb = state.heat && info.registered ? new Uint8Array(await get(`scans/${info.id}/colors`)) : null;
   viewer.setColors(info.id, rgb);
@@ -133,7 +136,7 @@ async function openCt(kind) {
     state.exported = null;
     await Promise.all(slices.map((s) => s.setCt(state.ct)));
     app.setCursor(app.cursor);
-    viewer.setMesh('ct_teeth', await mesh('ct/surface'), { color: '#e9e2d2', opacity: 0.9 });
+    viewer.setMesh('ct_teeth', await mesh('ct/surface'), { color: '#e9e2d2' });
     viewer.fit('front');
   });
 }
@@ -145,6 +148,7 @@ async function segment() {
     state.modelsDir = dir;
     progress({ progress: 1, message: 'Загружаю поверхности' });
     await loadStructures(res.structures);
+    for (const info of res.scans || []) { updateScan(info); await showScan(info); }  // совмещены заново по зубам
     app.setCursor(app.cursor);
   });
 }
@@ -370,7 +374,7 @@ function renderExport() {
       <button data-frame="dicom" class="${state.frame === 'dicom' ? 'on' : ''}">КТ (DICOM)</button></div>
       <p class="muted small">${state.frame === 'exocad' ? 'В координатах сканера exocad открывает сканы: структуры КТ встанут к ним, прикус — со сканов.' : 'Всё стоит как на КТ; сканы — на своих челюстях.'}</p>`
     : '<p class="muted small">Сканов нет — структуры КТ в координатах КТ (DICOM).</p>';
-  const result = res ? `<div class="card"><div class="card-head">${icons.check}<h3>Готово — ${res.files.length} файлов</h3></div>
+  const result = res ? `<div class="card"><div class="card-head">${icons.check}<h3>Готово — ${res.files.length} ${plural(res.files.length, 'файл', 'файла', 'файлов')}</h3></div>
       <div class="path" title="${res.out_dir}">${res.out_dir}</div>
       ${(res.notes || []).map((n) => `<div class="warning">${icons.warn}<span>${n}</span></div>`).join('')}</div>` : '';
   return `<h2>Экспорт</h2><p class="lead">STL всех видимых объектов в единой системе координат и case.json с матрицами.</p>
@@ -454,7 +458,7 @@ document.addEventListener('keydown', (e) => {
     app.window = s.ct.window;
     app.cursor = [...s.ct.focus];
     await Promise.all(slices.map((v) => v.setCt(s.ct)));
-    viewer.setMesh('ct_teeth', await mesh('ct/surface'), { color: '#e9e2d2', opacity: 0.9 });
+    viewer.setMesh('ct_teeth', await mesh('ct/surface'), { color: '#e9e2d2' });
   }
   for (const info of s.scans) {
     updateScan(info);

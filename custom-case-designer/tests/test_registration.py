@@ -65,6 +65,43 @@ def test_upper_scan_with_palate(jaw_ct):
     assert reg.scan.crowns.mean() < 0.6
 
 
+def test_segmented_teeth_guide_registration():
+    """С зубами из сегментации опора совмещения — только зубы: плотная тонкая «кость» у воздуха
+    (на реальном КЛКТ — раковины, стенки пазух) за коронку не принимается, скан встаёт точно."""
+    from casedesigner.fusion import CaseCT
+    from casedesigner.volume import Volume
+
+    base = phantom.make_volume()
+    vol = Volume(base.data.copy(), base.spacing, base.origin, base.direction)
+    # Пластинка плотности эмали в воздухе между дугами: по порогам — «коронка» с жевательными нормалями.
+    corners = vol.to_index(np.array([[x, y, z] for x in (-8, 8) for y in (2, 12) for z in (8, 12)]))
+    lo, hi = np.floor(corners.min(axis=0)).astype(int), np.ceil(corners.max(axis=0)).astype(int)
+    idx = np.stack(np.meshgrid(*[np.arange(lo[i], hi[i] + 1) for i in range(3)], indexing="ij"), -1).reshape(-1, 3)
+    world = vol.to_world(idx)
+    plate = (np.abs(world[:, 0]) < 6) & (world[:, 1] > 4) & (world[:, 1] < 10) & (np.abs(world[:, 2] - 10) < 0.5)
+    vol.data[tuple(idx[plate][:, ::-1].T)] = phantom.TOOTH
+    on_plate = lambda p: (np.abs(p[:, 0]) < 7) & (p[:, 1] > 3) & (p[:, 1] < 11) & (np.abs(p[:, 2] - 10) < 1.5)
+
+    ct = CaseCT(vol)
+    lower_teeth, _ = phantom.make_scan("lower")  # скан нижней челюсти в координатах КТ
+    assert on_plate(ct.fine_crowns(lower_teeth).points).sum() > 50  # без сегментации пластинка — «коронка»
+
+    ct.use_teeth({"upper": phantom.teeth_mesh("upper"), "lower": phantom.teeth_mesh("lower")})
+    assert ct.guided == {"upper", "lower"}
+    for jaw, target in ct.coarse.items():  # опора — поверхность зубов своей челюсти, нормали наружу
+        sign = 1 if jaw == "lower" else -1
+        assert np.all(sign * (target.points[:, 2] - phantom.OCCLUSAL_Z) < 1.0)
+        top = target.points[:, 2] > 8.0 if jaw == "lower" else target.points[:, 2] < 2 * phantom.OCCLUSAL_Z - 8.0
+        assert (sign * target.normals[top, 2] > 0).mean() > 0.6
+    assert not on_plate(ct.fine_crowns(lower_teeth).points).any()
+
+    for jaw, seed in (("lower", 2), ("upper", 3)):
+        verts, faces = phantom.make_scan(jaw)
+        reg = ct.register(Scan(jaw, apply(phantom.scan_pose(seed), verts), faces))
+        assert reg.jaw == jaw
+        assert true_error(reg, verts).max() < 0.15
+
+
 @pytest.fixture(scope="module")
 def models():
     return {jaw: phantom.make_model(jaw) for jaw in ("lower", "upper")}

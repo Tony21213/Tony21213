@@ -12,13 +12,18 @@ from .register import Target, apply, edge_offset, fit_score, icp, kabsch, occlus
 from .scan_teeth import crown_candidates
 from .structures import jaw_of
 from .segment import Mesh
-from .surface import extract_surface
+from .surface import Surface, extract_surface
 from .teeth import OCCLUSAL, Levels, crown_surface, split_jaws
 
 JAWS = ("upper", "lower")
 # Точка скана считается лежащей на коронке, если до неё ближе этого расстояния.
 MATCH_MM = 0.5
 FINE_SCHEDULE = ((1.0, 15), (0.5, 15), (0.3, 20), (0.2, 20))
+# С сегментацией коронки КТ — только у зубов: дальше этого от поверхности зуба — кость или артефакт.
+TEETH_NEAR_MM = 1.0
+# Опора начального поиска по сегментации — точки на поверхности зубов: мм² на точку и пределы их числа.
+TEETH_MM2_PER_POINT = 0.05
+TEETH_POINTS = (20_000, 400_000)
 
 
 @dataclass
@@ -77,10 +82,34 @@ class CaseCT:
             raise ValueError("в КТ не найдены коронки зубов")
         upper, lower = split_jaws(crowns)
         self.coarse = {"upper": Target(upper.points, upper.normals), "lower": Target(lower.points, lower.normals)}
+        self.guided: set[str] = set()  # челюсти, у которых опора — зубы из сегментации (use_teeth)
+
+    def use_teeth(self, meshes: dict) -> None:
+        """Зубы из сегментации — опора совмещения: {"upper": Mesh, "lower": Mesh}.
+
+        По одним порогам плотности «коронками» на КЛКТ с большим полем
+        оказывается и тонкая кость у воздуха (носовые раковины, стенки пазух):
+        начальный поиск по ним сажает скан со сдвигом вдоль дуги, а метрики
+        отклонения этого не видят (на реальном кейсе — 4 мм). С сегментацией
+        выбор челюсти и начальный поиск идут по поверхности её зубов, а точная
+        подгонка — по границе эмали только у этих зубов.
+        """
+        for jaw, mesh in meshes.items():
+            if jaw not in JAWS or mesh is None or not len(mesh.faces):
+                continue
+            teeth = trimesh.Trimesh(mesh.vertices, mesh.faces, process=False)
+            count = int(np.clip(teeth.area / TEETH_MM2_PER_POINT, *TEETH_POINTS))
+            points, face = trimesh.sample.sample_surface(teeth, count, seed=0)
+            outward = 1.0 if teeth.volume >= 0 else -1.0  # нормали — наружу, как у коронок по порогам
+            self.coarse[jaw] = Target(points, outward * teeth.face_normals[face])
+            self.guided.add(jaw)
 
     def fine_crowns(self, points: np.ndarray, margin: float = 3.0) -> Target:
         roi = (points.min(axis=0) - margin, points.max(axis=0) + margin)
         crowns = crown_surface(self.vol, self.levels, roi=roi, refine=True)
+        if self.guided and len(crowns.points):
+            near = np.min([self.coarse[j].tree.query(crowns.points)[0] for j in self.guided], axis=0)
+            crowns = Surface(crowns.points[near <= TEETH_NEAR_MM], crowns.normals[near <= TEETH_NEAR_MM])
         if len(crowns.points) < 100:
             raise ValueError("рядом со сканом в КТ нет коронок — проверьте положение скана")
         return Target(crowns.points, crowns.normals)

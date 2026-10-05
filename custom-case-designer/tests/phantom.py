@@ -182,6 +182,23 @@ def make_scan(jaw="lower", resolution=0.15, seed=1, palate=False):
     return verts, faces
 
 
+@functools.lru_cache(maxsize=None)
+def teeth_mesh(jaw="lower", resolution=0.4):
+    """Зубы челюсти с корнями в координатах КТ — как их отдаёт сегментация (upper_teeth, lower_teeth)."""
+    from casedesigner.segment import Mesh
+
+    lo, hi = np.array([-30.0, -6.0, -16.0]), np.array([30.0, 30.0, 12.0])
+    shape = np.ceil((hi - lo) / resolution).astype(int) + 1
+    grid = np.stack(np.meshgrid(*[lo[i] + resolution * np.arange(shape[i]) for i in range(3)], indexing="ij"), -1)
+    p = grid.reshape(-1, 3)
+    f = teeth_sdf(p, UPPER_VARIANT if jaw == "upper" else 0).reshape(shape)
+    verts, faces, _n, _ = measure.marching_cubes(np.pad(f, 1, constant_values=10.0), 0.0, spacing=(resolution,) * 3)
+    verts += lo - resolution
+    if jaw == "upper":
+        verts, faces = _mirror(verts), faces[:, ::-1]
+    return Mesh(verts, faces.astype(np.int64))
+
+
 def scan_pose(seed=2):
     """Случайное положение скана: его координаты не совпадают с КТ."""
     rng = np.random.default_rng(seed)

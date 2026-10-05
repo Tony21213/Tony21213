@@ -5,6 +5,8 @@
 """
 
 import os
+import re
+import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -93,6 +95,38 @@ def _from_sitk(image: sitk.Image, device: str | None = None) -> Volume:
     )
 
 
+def _read_image(path: str) -> sitk.Image:
+    """sitk.ReadImage, в том числе по пути не из латиницы.
+
+    На Windows читатели NIfTI, NRRD и MetaImage открывают файл по пути в
+    кодировке ANSI, и путь с кириллицей («D:\\Пациенты\\…») не находится
+    (DICOM читается). Тогда файл читается из копии во временной папке.
+    """
+    try:
+        return sitk.ReadImage(path)
+    except RuntimeError:
+        if path.isascii():
+            raise
+    tmp_root = tempfile.gettempdir()
+    if not tmp_root.isascii():
+        raise ValueError("не удалось открыть файл КТ по пути с нелатинскими буквами: переименуйте папку "
+                         "латиницей или откройте папку DICOM")
+    name = os.path.basename(path)
+    suffix = next((s for s in VOLUME_SUFFIXES if name.lower().endswith(s)), os.path.splitext(name)[1])
+    with tempfile.TemporaryDirectory(prefix="casedesigner_") as tmp:
+        copy = os.path.join(tmp, "volume" + suffix)
+        shutil.copyfile(path, copy)
+        if suffix == ".mhd":  # данные лежат в отдельном файле рядом с заголовком
+            with open(path, encoding="latin-1") as f:
+                header = f.read()
+            data = re.search(r"^ElementDataFile\s*=\s*(.+?)\s*$", header, re.M)
+            if data and data.group(1) != "LOCAL":
+                shutil.copyfile(os.path.join(os.path.dirname(path), data.group(1)), os.path.join(tmp, "volume.raw"))
+                with open(copy, "w", encoding="latin-1") as f:
+                    f.write(header[:data.start(1)] + "volume.raw" + header[data.end(1):])
+        return sitk.ReadImage(copy)
+
+
 def _largest_series(folder: str):
     """Самая длинная DICOM-серия в папке и вложенных папках (рядом часто лежат скауты)."""
     best = []
@@ -135,7 +169,7 @@ def load_volume(path) -> Volume:
                             dst.write(src.read())
             return _read_dicom_folder(tmp)
     if path.lower().endswith(VOLUME_SUFFIXES):
-        return _from_sitk(sitk.ReadImage(path))
+        return _from_sitk(_read_image(path))
     # Один файл DICOM: многокадровый — читаем как есть, срез серии — берём всю папку.
     image = sitk.ReadImage(path)
     if image.GetDimension() >= 3 and min(image.GetSize()[:3]) > 1:

@@ -12,6 +12,7 @@
     ]
   },
   "overlap": 0.5,
+  "priority": 2,
   "outputs": {
     "mandible": [
       "lower_jawbone"
@@ -441,8 +442,7 @@
     "cases": 532
   },
   "check": {
-    "max_abs_diff": 0.004340171813964844,
+    "max_abs_diff": 0.0046558380126953125,
     "argmax_agreement": 0.9999981689453125
-  },
-  "priority": 2
+  }
 }

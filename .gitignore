@@ -1,2 +1,8 @@
 __pycache__/
 .pytest_cache/
+# окружения, модели и сборка — только локально
+.venv/
+.venv-models/
+custom-case-designer/models/
+custom-case-designer/build/
+custom-case-designer/dist/

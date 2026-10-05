@@ -1,4 +1,6 @@
 // Срез КТ: картинка с сервера, контуры сканов и структур поверх, перекрестие других срезов.
+// Колесо — масштаб к точке под курсором (назад до конца — вписать), нажатое колесо или правая
+// кнопка — сдвиг, ползунок внизу — срезы (колесо над ползунком тоже листает срезы).
 import { get, post } from './api.js';
 
 export const AXES = {
@@ -7,6 +9,8 @@ export const AXES = {
   sagittal: { title: 'Сагиттальный', color: '#f5b84b' },
 };
 const NORMAL_AXIS = { axial: 2, coronal: 1, sagittal: 0 };
+const MAX_ZOOM = 40;
+const MAX_PIXELS = 2048; // сторона картинки видимой части среза (как на сервере)
 
 export class SliceView {
   constructor(el, axis, app) {
@@ -16,26 +20,42 @@ export class SliceView {
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d');
     el.innerHTML = `<div class="view-label"><i class="dot" style="background:${AXES[axis].color}"></i><b>${AXES[axis].title}</b><span class="pos"></span></div>
-      <div class="empty"><span>КТ не открыт</span></div>`;
+      <div class="empty"><span>КТ не открыт</span></div>
+      <input type="range" class="slice-slider" title="Срез" hidden style="accent-color:${AXES[axis].color}">`;
     el.appendChild(this.canvas);
     this.posLabel = el.querySelector('.pos');
     this.emptyEl = el.querySelector('.empty');
-    this.image = null;
+    this.slider = el.querySelector('.slice-slider');
+    this.image = null; // { img, ia, ib, ja, jb } — картинка и её край в пикселях полного среза
     this.overlays = [];
     this.seq = 0;
     this.zoom = 1;
-    new ResizeObserver(() => this.draw()).observe(el);
+    this.pan = [0, 0]; // сдвиг изображения, пиксели холста
+    new ResizeObserver(() => { this.draw(); this.refreshSoon(); }).observe(el);
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     this.canvas.addEventListener('click', (e) => this.onClick(e));
+    this.canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+    this.canvas.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); }); // без автопрокрутки
+    this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     this.canvas.addEventListener('dblclick', (e) => {
       const p = this.geometry && this.toWorld(e.offsetX, e.offsetY);
       if (p) this.app.placeLandmark(p);
     });
+    this.slider.addEventListener('input', () => this.setPos(Number(this.slider.value)));
+    this.slider.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (this.geometry) this.setPos(this.pos - Math.sign(e.deltaY) * this.sliceStep * (e.shiftKey ? 5 : 1));
+    }, { passive: false });
   }
 
   async setCt(info) {
     this.geometry = info ? await get(`ct/geometry?axis=${this.axis}`) : null;
+    this.sliceStep = info ? Math.min(...info.spacing) : 0.5;
     this.emptyEl.hidden = !!info;
+    this.slider.hidden = !info;
+    if (info) Object.assign(this.slider, { min: this.geometry.range[0], max: this.geometry.range[1], step: this.sliceStep });
+    this.zoom = 1;
+    this.pan = [0, 0];
     this.image = null;
     this.overlays = [];
     this.draw();
@@ -43,18 +63,47 @@ export class SliceView {
 
   get pos() { return this.app.cursor[NORMAL_AXIS[this.axis]]; }
 
+  setPos(value) {
+    const [lo, hi] = this.geometry.range;
+    const cursor = [...this.app.cursor];
+    cursor[NORMAL_AXIS[this.axis]] = Math.min(hi, Math.max(lo, value));
+    this.app.setCursor(cursor);
+  }
+
   onWheel(e) {
     e.preventDefault();
     if (!this.geometry) return;
-    if (e.ctrlKey) {
-      this.zoom = Math.min(8, Math.max(1, this.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-      return this.draw();
+    const before = this.layout();
+    const i = (e.offsetX - before.x0) / before.scale, j = (e.offsetY - before.y0) / before.scale;
+    this.zoom = Math.min(MAX_ZOOM, Math.max(1, this.zoom * Math.exp(-e.deltaY * 0.0015)));
+    if (this.zoom === 1) this.pan = [0, 0];
+    else { // точка под курсором остаётся на месте
+      const after = this.layout();
+      this.pan[0] += e.offsetX - (after.x0 + i * after.scale);
+      this.pan[1] += e.offsetY - (after.y0 + j * after.scale);
     }
-    const step = (e.shiftKey ? 2 : 0.5) * Math.sign(e.deltaY);
-    const [lo, hi] = this.geometry.range;
-    const cursor = [...this.app.cursor];
-    cursor[NORMAL_AXIS[this.axis]] = Math.min(hi, Math.max(lo, this.pos - step));
-    this.app.setCursor(cursor);
+    this.draw();
+    this.refreshSoon();
+  }
+
+  onPointerDown(e) {
+    if (!this.geometry || (e.button !== 1 && e.button !== 2)) return;
+    e.preventDefault();
+    this.canvas.setPointerCapture(e.pointerId);
+    const start = [e.clientX, e.clientY], pan = [...this.pan];
+    const move = (ev) => {
+      this.pan = [pan[0] + ev.clientX - start[0], pan[1] + ev.clientY - start[1]];
+      this.draw();
+      this.refreshSoon();
+    };
+    const up = () => {
+      this.canvas.removeEventListener('pointermove', move);
+      this.canvas.removeEventListener('pointerup', up);
+      this.canvas.style.cursor = '';
+    };
+    this.canvas.addEventListener('pointermove', move);
+    this.canvas.addEventListener('pointerup', up);
+    this.canvas.style.cursor = 'grabbing';
   }
 
   onClick(e) {
@@ -67,7 +116,7 @@ export class SliceView {
     const g = this.geometry;
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
     const scale = Math.min(w / g.width, h / g.height) * 0.98 * this.zoom;
-    return { scale, x0: (w - g.width * scale) / 2, y0: (h - g.height * scale) / 2 };
+    return { scale, x0: (w - g.width * scale) / 2 + this.pan[0], y0: (h - g.height * scale) / 2 + this.pan[1] };
   }
 
   // мм по осям среза → пиксели холста
@@ -86,19 +135,38 @@ export class SliceView {
     return p;
   }
 
-  // Загрузить картинку и контуры для текущего положения (старые ответы отбрасываются).
+  refreshSoon() {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.refresh(), 60);
+  }
+
+  // Загрузить видимую часть среза в разрешении экрана и контуры (старые ответы отбрасываются).
   async refresh() {
     if (!this.geometry) return;
     const seq = ++this.seq;
     const pos = this.pos;
     const [lvl, wid] = this.app.window;
-    const img = new Image();
-    img.src = `/api/ct/slice?axis=${this.axis}&pos=${pos.toFixed(2)}&level=${lvl}&width=${wid}`;
+    const g = this.geometry, L = this.layout();
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight, dpr = window.devicePixelRatio || 1;
+    // Видимая часть в пикселях полного среза (центр пикселя i — в u0 + i·du, края — ±0.5).
+    const ia = Math.max(-0.5, -L.x0 / L.scale), ib = Math.min(g.width - 0.5, (w - L.x0) / L.scale);
+    const ja = Math.max(-0.5, -L.y0 / L.scale), jb = Math.min(g.height - 0.5, (h - L.y0) / L.scale);
     const overlays = post('overlays', { axis: this.axis, pos, visible: this.app.visibleKeys() }).catch(() => []);
-    await img.decode().catch(() => null);
+    let image = null;
+    if (ib > ia && jb > ja && w && h) {
+      const px = (n) => Math.max(1, Math.min(MAX_PIXELS, Math.round(n * L.scale * dpr)));
+      const q = new URLSearchParams({
+        axis: this.axis, pos: pos.toFixed(2), level: lvl, width: wid,
+        ua: (g.u0 + ia * g.du).toFixed(3), ub: (g.u0 + ib * g.du).toFixed(3),
+        va: (g.v0 + ja * g.dv).toFixed(3), vb: (g.v0 + jb * g.dv).toFixed(3), cols: px(ib - ia), rows: px(jb - ja),
+      });
+      const img = new Image();
+      img.src = `/api/ct/slice?${q}`;
+      if (await img.decode().then(() => true, () => false)) image = { img, ia, ib, ja, jb };
+    }
     const ov = await overlays;
     if (seq !== this.seq) return;
-    this.image = img;
+    if (image) this.image = image;
     this.overlays = ov;
     this.draw();
   }
@@ -108,15 +176,20 @@ export class SliceView {
     const dpr = window.devicePixelRatio || 1;
     const w = c.clientWidth, h = c.clientHeight;
     if (!w || !h) return;
-    if (c.width !== Math.round(w * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+      c.width = Math.round(w * dpr);
+      c.height = Math.round(h * dpr);
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
     if (!this.geometry) return;
     this.posLabel.textContent = `${this.pos.toFixed(1)} мм`;
+    this.slider.value = this.pos;
     const g = this.geometry, L = this.layout();
     if (this.image) {
+      const { img, ia, ib, ja, jb } = this.image;
       ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(this.image, L.x0, L.y0, g.width * L.scale, g.height * L.scale);
+      ctx.drawImage(img, L.x0 + ia * L.scale, L.y0 + ja * L.scale, (ib - ia) * L.scale, (jb - ja) * L.scale);
     }
     for (const o of this.overlays) {
       ctx.strokeStyle = o.color;

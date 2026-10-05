@@ -21,7 +21,8 @@ a = Analysis(
     datas=datas,
     binaries=binaries,
     hiddenimports=hiddenimports,
-    excludes=["torch", "nnunetv2", "matplotlib", "pytest", "IPython", "tkinter"],
+    # Только для тестов и необязательных частей ядра (движения, эстетика) — в первую версию не входят.
+    excludes=["torch", "nnunetv2", "matplotlib", "pytest", "IPython", "tkinter", "onnx", "h5py", "mediapipe"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

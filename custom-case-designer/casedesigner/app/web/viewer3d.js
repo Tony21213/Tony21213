@@ -12,6 +12,20 @@ const VIEWS = {
   bottom: [0, -0.02, -1], // снизу — жевательные поверхности верхних зубов
 };
 
+// Грани замкнутой поверхности — лицевой стороной наружу (по знаку объёма); иначе как есть.
+function outward(v, f) {
+  let vol = 0;
+  for (let k = 0; k < f.length; k += 3) {
+    const a = 3 * f[k], b = 3 * f[k + 1], c = 3 * f[k + 2];
+    vol += v[a] * (v[b + 1] * v[c + 2] - v[b + 2] * v[c + 1]) - v[a + 1] * (v[b] * v[c + 2] - v[b + 2] * v[c])
+      + v[a + 2] * (v[b] * v[c + 1] - v[b + 1] * v[c]);
+  }
+  if (vol >= 0) return f;
+  const flipped = f.slice();
+  for (let k = 0; k < f.length; k += 3) { flipped[k + 1] = f[k + 2]; flipped[k + 2] = f[k + 1]; }
+  return flipped;
+}
+
 export class Viewer3D {
   constructor(el, { onTransformEnd } = {}) {
     this.el = el;
@@ -35,11 +49,15 @@ export class Viewer3D {
     this.camera.add(rim);
     this.scene.add(this.camera);
 
+    // Левая кнопка — вращение, колесо — масштаб к точке под курсором, нажатое колесо или правая — сдвиг.
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
     this.controls.rotateSpeed = 0.8;
     this.controls.screenSpacePanning = true;
+    this.controls.zoomToCursor = true;
+    this.controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
+    this.radius = 100; // размер сцены, мм (fit)
 
     this.gizmo = new TransformControls(this.camera, this.renderer.domElement);
     this.gizmo.setSpace('world');
@@ -54,10 +72,22 @@ export class Viewer3D {
     this.resize();
     const loop = () => {
       this.controls.update();
+      this.clip();
       this.renderer.render(this.scene, this.camera);
       requestAnimationFrame(loop);
     };
     loop();
+  }
+
+  // Ближняя и дальняя плоскости — по расстоянию до цели: при приближении колесом модель не срезается.
+  clip() {
+    const d = this.camera.position.distanceTo(this.controls.target);
+    const near = Math.max(0.02, d / 200), far = Math.max(d * 20, d + 4 * this.radius);
+    if (Math.abs(near - this.camera.near) > 1e-3 * near || Math.abs(far - this.camera.far) > 1e-3 * far) {
+      this.camera.near = near;
+      this.camera.far = far;
+      this.camera.updateProjectionMatrix();
+    }
   }
 
   resize() {
@@ -68,10 +98,12 @@ export class Viewer3D {
     this.camera.updateProjectionMatrix();
   }
 
+  // Полупрозрачное рисуется только лицевой стороной: без записи глубины двусторонняя поверхность
+  // показывает изнанку и дальние слои поверх ближних — изображение «ломается» полосами.
   material(color, opacity = 1) {
     return new THREE.MeshStandardMaterial({
       color, roughness: 0.55, metalness: 0.04, transparent: opacity < 1, opacity,
-      depthWrite: opacity >= 1, side: THREE.DoubleSide,
+      depthWrite: opacity >= 1, side: opacity < 1 ? THREE.FrontSide : THREE.DoubleSide,
     });
   }
 
@@ -80,7 +112,7 @@ export class Viewer3D {
     this.remove(key);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-    g.setIndex(new THREE.BufferAttribute(faces, 1));
+    g.setIndex(new THREE.BufferAttribute(opacity < 1 ? outward(vertices, faces) : faces, 1));
     g.computeVertexNormals();
     const mesh = new THREE.Mesh(g, this.material(color, opacity));
     mesh.renderOrder = order;
@@ -168,6 +200,7 @@ export class Viewer3D {
     mesh.material.opacity = opacity;
     mesh.material.transparent = opacity < 1;
     mesh.material.depthWrite = opacity >= 1;
+    mesh.material.side = opacity < 1 ? THREE.FrontSide : THREE.DoubleSide;
     mesh.material.needsUpdate = true;
   }
 
@@ -211,11 +244,10 @@ export class Viewer3D {
     const size = box.getSize(new THREE.Vector3()).length();
     const dir = new THREE.Vector3(...VIEWS[direction]).normalize();
     const dist = size / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))) * 1.05;
+    this.radius = size / 2;
     this.camera.position.copy(centre).addScaledVector(dir, dist);
-    this.camera.near = dist / 50;
-    this.camera.far = dist * 10;
-    this.camera.updateProjectionMatrix();
     this.controls.target.copy(centre);
+    this.clip();
     this.controls.update();
   }
 }

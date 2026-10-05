@@ -76,6 +76,13 @@ def cmd_register(args):
     if prior[1]:
         print(f"Аппарат {vol.device or 'не указан'}: выученный сдвиг границы эмали {prior[0]:+.3f} мм")
     ct = CaseCT(vol, *prior)
+    meshes = {}
+    if args.models:  # сначала сегментация: зубы из неё — опора совмещения (CaseCT.use_teeth)
+        meshes.update(_segment(vol, args))
+        ct.use_teeth({jaw: meshes.get(f"{jaw}_teeth") for jaw in JAWS})
+    else:
+        print("Без --models зубы в КТ ищутся только по плотности: на снимке с большим полем скан может сесть "
+              "со сдвигом вдоль дуги.")
     registrations = []
     for path in args.scan:
         scan = Scan.load(path)
@@ -90,9 +97,6 @@ def cmd_register(args):
         if memory and args.accept:
             memory.record(vol.device, reg, reg)
         registrations.append(reg)
-    meshes = {}
-    if args.models:
-        meshes.update(_segment(vol, args))
     if args.ct_surfaces:
         meshes.update(ct.surfaces())
     report = export_case(args.out, registrations, meshes, bite=args.bite, frame=args.frame, ct=ct)

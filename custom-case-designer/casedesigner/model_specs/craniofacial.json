@@ -7,6 +7,7 @@
     "around": "whole"
   },
   "overlap": 0.5,
+  "priority": 1,
   "outputs": {
     "mandible": [
       "mandible"
@@ -56,8 +57,7 @@
     "cases": 384
   },
   "check": {
-    "max_abs_diff": 0.00562286376953125,
+    "max_abs_diff": 0.0055408477783203125,
     "argmax_agreement": 0.9999895368303572
-  },
-  "priority": 1
+  }
 }

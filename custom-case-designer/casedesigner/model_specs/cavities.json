@@ -7,6 +7,7 @@
     "around": "whole"
   },
   "overlap": 0.5,
+  "priority": 3,
   "outputs": {
     "nasal_cavity": [
       "nasal_cavity_left",
@@ -26,6 +27,12 @@
     ],
     "hypopharynx": [
       "hypopharynx"
+    ],
+    "auditory_canal_right": [
+      "auditory_canal_right"
+    ],
+    "auditory_canal_left": [
+      "auditory_canal_left"
     ]
   },
   "license": "Apache-2.0",
@@ -78,8 +85,7 @@
     "cases": 492
   },
   "check": {
-    "max_abs_diff": 0.0018453598022460938,
+    "max_abs_diff": 0.001861572265625,
     "argmax_agreement": 1.0
-  },
-  "priority": 3
+  }
 }

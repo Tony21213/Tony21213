@@ -78,7 +78,7 @@ def test_patient_recording_is_checked_and_mounts(scans, tmp_path):
         xml.append(f'<Movement name="{r.name}">' + "".join(
             f'<Frame time="{t:.4f}">{" ".join(f"{v:.9f}" for v in M.ravel())}</Frame>'
             for t, M in zip(r.times, r.transforms)) + "</Movement>")
-    (tmp_path / "motion.xml").write_text("".join(xml) + "</JawMotion>")
+    (tmp_path / "motion.xml").write_text("".join(xml) + "</JawMotion>", encoding="utf-8")
     out = case.load_motion(str(tmp_path / "motion.xml"))
     assert out["recordings"] == 2
     check = out["scans_check"]
@@ -112,7 +112,7 @@ def test_fit_articulator_in_case(scans, tmp_path):
     xml = '<M units="mm"><Movement name="p">' + "".join(
         f'<Frame time="{t:.4f}">{" ".join(f"{v:.9f}" for v in M.ravel())}</Frame>'
         for t, M in zip(rec.times, rec.transforms)) + "</Movement></M>"
-    (tmp_path / "p.xml").write_text(xml)
+    (tmp_path / "p.xml").write_text(xml, encoding="utf-8")
     case.load_motion(str(tmp_path / "p.xml"))
     report = case.fit_articulator()
     assert report["enough"] and case.settings.sagittal_right_deg == pytest.approx(41, abs=0.3)

@@ -60,8 +60,10 @@ def write_dicom_series(img, folder):
 
 def test_dicom_folder_and_zip(tmp_path):
     img, arr = rotated_image()
+    # GDCM на Windows не пишет по пути с кириллицей — пишем латиницей и переименовываем: проверяется чтение.
+    write_dicom_series(img, str(tmp_path / "patient" / "series"))
+    os.replace(tmp_path / "patient", tmp_path / "Пациент КТ")
     folder = tmp_path / "Пациент КТ" / "series"
-    write_dicom_series(img, str(folder))
     check_geometry(load_volume(str(tmp_path / "Пациент КТ")), img, arr)
     # Один срез серии — читается вся папка.
     check_geometry(load_volume(str(folder / "IM0003")), img, arr)
@@ -71,6 +73,24 @@ def test_dicom_folder_and_zip(tmp_path):
         for name in os.listdir(folder):
             z.write(folder / name, f"export/{name}")
     check_geometry(load_volume(str(archive)), img, arr)
+
+
+@pytest.mark.parametrize("suffix", [".nii.gz", ".mha", ".nrrd", ".mhd"])
+def test_volume_file_in_cyrillic_folder(tmp_path, monkeypatch, suffix):
+    """NIfTI, MHA, NRRD, MHD из папки пациента с кириллицей (на Windows SimpleITK такой путь не открывает)."""
+    img, arr = rotated_image()
+    (tmp_path / "patient").mkdir()
+    sitk.WriteImage(img, str(tmp_path / "patient" / f"ct{suffix}"))
+    os.replace(tmp_path / "patient", tmp_path / "Пациент КТ")
+    read = sitk.ReadImage
+
+    def windows_like(path, *args, **kwargs):
+        if not str(path).isascii():
+            raise RuntimeError(f"Exception thrown in SimpleITK ImageFileReader_Execute: unable to open {path}")
+        return read(path, *args, **kwargs)
+
+    monkeypatch.setattr(sitk, "ReadImage", windows_like)
+    check_geometry(load_volume(str(tmp_path / "Пациент КТ" / f"ct{suffix}")), img, arr)
 
 
 def test_rejects_broken_spacing(tmp_path):

@@ -89,21 +89,27 @@ def export(nnunet_dir: str, out_dir: str, spec: dict, opset: int = 17, check: bo
         if same < 0.999:
             raise RuntimeError(f"ONNX отвечает иначе, чем PyTorch: совпадение меток {same:.4f}")
 
-    model = {
+    model = describe(spec, info)
+    with open(os.path.join(out_dir, "model.json"), "w", encoding="utf-8") as f:
+        json.dump(model, f, ensure_ascii=False, indent=2)
+    return model
+
+
+def describe(spec: dict, info: dict) -> dict:
+    """model.json для движка: что задано в описании выходов (spec) плюс сведения о сети (info)."""
+    return {
         "name": spec["name"],
         "title": spec.get("title", spec["name"]),
         "onnx": "model.onnx",
         "orientation": spec.get("orientation", "RAS"),
         "region": spec.get("region", {"around": "whole"}),
         "overlap": spec.get("overlap", 0.5),
+        "priority": spec.get("priority", 0),  # одна и та же структура — из модели с меньшим priority
         "outputs": spec["outputs"],
         "license": spec.get("license"),
         "attribution": spec.get("attribution"),
         **info,
     }
-    with open(os.path.join(out_dir, "model.json"), "w", encoding="utf-8") as f:
-        json.dump(model, f, ensure_ascii=False, indent=2)
-    return model
 
 
 def main(argv=None):

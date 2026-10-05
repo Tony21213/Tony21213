@@ -1,7 +1,9 @@
 """Загрузка моделей сегментации из программы: докачка, остановка, проверка контрольной суммы."""
 
 import hashlib
+import json
 import os
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -102,3 +104,25 @@ def test_cancel_keeps_part_and_bad_file_is_rejected(fake_models, tmp_path):
 def test_unreachable_server_is_readable(fake_models, tmp_path):
     with pytest.raises(RuntimeError, match="нет связи|ответил 404"):
         ms.download(str(tmp_path), base_url="http://127.0.0.1:9/")
+
+
+def test_bundled_specs_match_sources():
+    """model.json, который программа кладёт к скачанной модели, описывает те же выходы, что tools/models/*.json.
+
+    Раньше описание cavities отстало (без слуховых проходов), а перевод терял priority.
+    """
+    tools = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
+    sys.path.insert(0, tools)
+    try:
+        from export_nnunet_onnx import describe
+    finally:
+        sys.path.remove(tools)
+    for name in ms.MODELS:
+        with open(os.path.join(tools, "models", f"{name}.json"), encoding="utf-8") as f:
+            spec = json.load(f)
+        with open(os.path.join(ms.SPECS, f"{name}.json"), encoding="utf-8") as f:
+            bundled = json.load(f)
+        expected = describe(spec, {})
+        assert {k: bundled.get(k) for k in expected} == expected, name
+        assert bundled["priority"] == spec["priority"]
+        assert {lab for labs in bundled["outputs"].values() for lab in labs} <= set(bundled["labels"]), name
