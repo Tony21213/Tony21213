@@ -14,6 +14,7 @@ import numpy as np
 import trimesh
 
 from .. import articulators as arts
+from .. import model_store
 from .. import landmarks as lmk
 from ..fusion import CaseCT, Registration, Scan, deviation_colors, export_case
 from ..jawcase import JawCase
@@ -252,6 +253,23 @@ class Session:
         return {"scan": self.scan_info(sid), "record": {k: rec[k] for k in ("corrected_mm", "edge_shift_mm")},
                 "memory": self.memory.summary().get(self.vol.device or "unknown")}
 
+    # --- модели сегментации --------------------------------------------------
+    def models_status(self) -> dict:
+        return model_store.status(self.models_dir or model_store.default_dir())
+
+    def download_models(self, progress=None) -> dict:
+        """Скачать недостающие модели сегментации (докачка, проверка SHA-256); после — сегментация доступна."""
+        folder = self.models_dir or model_store.default_dir()
+        self._download_cancel = threading.Event()
+        result = model_store.download(folder, progress, self._download_cancel)
+        self.models_dir = folder
+        return result
+
+    def cancel_download(self):
+        cancel = getattr(self, "_download_cancel", None)
+        if cancel is not None:
+            cancel.set()
+
     # --- структуры ----------------------------------------------------------
     def segment(self, models_dir: str | None = None, device: str = "auto", progress=None) -> dict:
         self._require_ct()
@@ -393,5 +411,6 @@ class Session:
         from .. import __version__
 
         return {"version": __version__, "ct": self.ct_info(), "scans": [self.scan_info(s) for s in self.scans],
-                "models_dir": self.models_dir, **self.structures_info(), **self.landmarks_info(),
+                "models_dir": self.models_dir, "models": self.models_status(), **self.structures_info(),
+                **self.landmarks_info(),
                 "articulation": self.jaw.state()}

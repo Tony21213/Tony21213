@@ -17,6 +17,7 @@ const TRANSLUCENT = { mandible: 0.42, maxilla: 0.42, skull: 0.3, maxillary_sinus
 const state = {
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
   gizmo: null, modelsDir: null, frame: 'exocad', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
+  models: null, download: null, downloadError: null,
 };
 
 const app = {
@@ -138,12 +139,7 @@ async function openCt(kind) {
 }
 
 async function segment() {
-  let dir = state.modelsDir;
-  if (!dir) {
-    const paths = await choose('models', 'Папка моделей сегментации');
-    if (!paths) return;
-    dir = paths[0];
-  }
+  const dir = state.modelsDir || state.models?.folder;
   await busy('Сегментация КТ', async (progress) => {
     const res = await run('segment', { models_dir: dir }, progress);
     state.modelsDir = dir;
@@ -151,6 +147,57 @@ async function segment() {
     await loadStructures(res.structures);
     app.setCursor(app.cursor);
   });
+}
+
+// ---------- модели сегментации: загрузка в фоне, не мешает работе ----------
+const mb = (b) => (b / 1048576).toFixed(b < 10485760 ? 1 : 0);
+const eta = (s) => (s == null ? '' : s < 60 ? `ещё ${Math.max(1, Math.round(s))} с` : `ещё ${Math.round(s / 60)} мин`);
+
+async function downloadModels() {
+  if (state.download) return;
+  state.download = { progress: 0, info: {} };
+  state.downloadError = null;
+  renderModels();
+  try {
+    state.models = await run('models/download', {}, (job) => { state.download = job; renderModels(); });
+    state.modelsDir = state.models.folder;
+    toast('Модели сегментации установлены', 'info');
+  } catch (e) {
+    state.downloadError = e.message;
+    state.models = await get('models').catch(() => state.models);
+  } finally {
+    state.download = null;
+    render();
+  }
+}
+
+function modelsCard() {
+  const m = state.models;
+  if (!m || (m.ready && !state.download)) return '';
+  const d = state.download;
+  let body;
+  if (d) {
+    const i = d.info || {};
+    const pct = Math.round((d.progress || 0) * 100);
+    body = `<div class="dl-row"><span class="dl-name">${d.message || 'Подключаюсь…'}</span>${i.count > 1 ? `<span class="muted">${i.index}/${i.count}</span>` : ''}</div>
+      <div class="dl-bar"><i style="width:${pct}%"></i></div>
+      <div class="dl-row muted"><span>${i.total ? `${mb(i.done)} из ${mb(i.total)} МБ${i.speed ? ` · ${mb(i.speed)} МБ/с` : ''}` : ''}</span><span>${pct}%${i.eta_s != null ? ` · ${eta(i.eta_s)}` : ''}</span></div>
+      <button class="btn ghost sm" data-a="stopmodels">Остановить</button>`;
+  } else {
+    const partial = m.left_bytes < m.total_bytes;
+    body = `<p class="muted small" style="margin-top:0">Нужны для сегментации КТ. Скачиваются один раз — ${mb(m.left_bytes)} МБ.</p>
+      ${state.downloadError?.startsWith('загрузка остановлена') ? `<p class="muted small" style="margin-top:0">Остановлено: скачано ${mb(m.total_bytes - m.left_bytes)} из ${mb(m.total_bytes)} МБ.</p>`
+        : state.downloadError ? `<div class="warning">${icons.warn}<span>${state.downloadError}</span></div>` : ''}
+      <button class="btn wide" data-a="getmodels">${icons.export.replace('<svg', '<svg style="transform:rotate(180deg)"')}${partial ? 'Продолжить загрузку' : 'Скачать модели'}</button>`;
+  }
+  return `<div class="card" id="modelsCard"><div class="card-head"><h3>Модели сегментации</h3></div>${body}
+    <p class="license">${m.license}</p></div>`;
+}
+
+function renderModels() {
+  const card = $('#modelsCard');
+  if (card && state.step === 'ct') card.outerHTML = modelsCard();
+  else if (state.step === 'ct') render();
 }
 
 async function addScans() {
@@ -265,15 +312,16 @@ function renderCt() {
   if (!ct) {
     return `<h2>КТ</h2><p class="lead">КЛКТ: папка DICOM, архив или файл NIfTI, MHA, NRRD.</p>
       <button class="btn primary wide" data-a="ctdir">${icons.folder}Открыть папку DICOM</button>
-      <button class="btn ghost wide" style="margin-top:6px" data-a="ct">или файл…</button>`;
+      <button class="btn ghost wide" style="margin-top:6px" data-a="ct">или файл…</button>${modelsCard()}`;
   }
   const info = `<div class="card"><div class="card-head"><h3>${ct.name}</h3><button class="btn ghost sm" data-a="ctdir" title="Открыть другое КТ">Другое…</button></div>
     <div class="kv"><span>Размер</span><b>${ct.shape.join(' × ')}</b><span>Воксель</span><b>${ct.spacing.map((v) => fmt(v, 2)).join(' × ')} мм</b>
     ${ct.device ? `<span>Аппарат</span><b>${ct.device}</b>` : ''}</div></div>`;
   if (!state.structures.length) {
+    const ready = state.models?.ready;
     return `<h2>КТ</h2>${info}
-      <button class="btn primary wide" data-a="segment">${icons.play}Сегментировать</button>
-      <p class="muted small">${state.modelsDir ? 'Зубы с номерами FDI, челюсти, каналы, пазухи, дыхательные пути, импланты.' : 'Папка моделей не найдена рядом с программой — её спросят при запуске.'}</p>`;
+      <button class="btn primary wide" data-a="segment" ${ready ? '' : 'disabled'}>${icons.play}Сегментировать</button>
+      <p class="muted small">${ready ? 'Зубы с номерами FDI, челюсти, каналы, пазухи, дыхательные пути, импланты.' : 'Сначала скачайте модели сегментации.'}</p>${modelsCard()}`;
   }
   const groups = {};
   for (const s of state.structures) (groups[s.group] ??= []).push(s);
@@ -381,7 +429,8 @@ document.addEventListener('click', async (e) => {
     if (state.gizmo) viewer.attach(state.selected, state.gizmo);
     return render();
   }
-  const action = { ct: () => openCt('ct'), ctdir: () => openCt('ctdir'), scan: addScans, segment, export: doExport }[d.a];
+  const action = { ct: () => openCt('ct'), ctdir: () => openCt('ctdir'), scan: addScans, segment, export: doExport,
+    getmodels: downloadModels, stopmodels: () => post('models/cancel') }[d.a];
   action?.();
 });
 
@@ -397,6 +446,7 @@ document.addEventListener('keydown', (e) => {
 (async () => {
   const s = await get('state');
   state.modelsDir = s.models_dir;
+  state.models = s.models;
   $('#version').textContent = s.version ? `v${s.version}` : '';
   render();
   if (s.ct) {

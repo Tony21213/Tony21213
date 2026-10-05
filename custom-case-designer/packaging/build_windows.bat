@@ -16,11 +16,12 @@ pip install -r packaging\requirements-app.txt pyinstaller || goto :error
 
 pyinstaller --noconfirm packaging\casedesigner.spec || goto :error
 
-rem Модели сегментации: если рядом есть папка models (tools\prepare_models.py), кладём её к exe.
+rem Модели сегментации: если в корне проекта уже есть папка models, кладём её к exe;
+rem иначе их скачают кнопкой в программе.
 if exist models (
   xcopy /E /I /Y models dist\CustomCaseDesigner\models >nul
 ) else (
-  echo Внимание: папки models нет - сегментация будет недоступна, пока её не указать в приложении.
+  echo Моделей в сборке нет - их скачают кнопкой в программе.
 )
 echo.
 echo Готово: dist\CustomCaseDesigner\CustomCaseDesigner.exe

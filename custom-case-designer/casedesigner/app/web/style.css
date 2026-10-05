@@ -281,3 +281,14 @@ select:focus, input[type=text]:focus { border-color: var(--accent); }
 .card.sel { border-color: var(--accent); }
 .muted.small { font-size: 12px; margin: 8px 2px 0; }
 .label { margin-top: 14px; }
+
+/* загрузка моделей */
+.dl-row { display: flex; justify-content: space-between; gap: 10px; font-variant-numeric: tabular-nums; margin: 2px 0; }
+.dl-row.muted { color: var(--muted); font-size: 12px; min-height: 16px; }
+.dl-row b { font-weight: 600; }
+.dl-bar { height: 6px; border-radius: 3px; background: var(--panel-3); overflow: hidden; margin: 8px 0 6px; }
+.dl-bar i { display: block; height: 100%; background: var(--accent); transition: width .25s linear; }
+#modelsCard { margin-top: 14px; }
+#modelsCard .btn.sm { margin-top: 8px; }
+.license { color: var(--faint); font-size: 11px; margin: 10px 2px 0; line-height: 1.35; }
+.dl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

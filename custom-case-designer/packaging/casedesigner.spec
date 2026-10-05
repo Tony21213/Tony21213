@@ -9,6 +9,7 @@ root = os.path.abspath(os.path.join(SPECPATH, ".."))
 web = os.path.join(root, "casedesigner", "app", "web")
 
 datas = [(web, os.path.join("casedesigner", "app", "web"))]
+datas += [(os.path.join(root, "casedesigner", "model_specs"), os.path.join("casedesigner", "model_specs"))]
 datas += collect_data_files("trimesh")
 datas += collect_data_files("webview")
 binaries = collect_dynamic_libs("onnxruntime") + collect_dynamic_libs("SimpleITK")

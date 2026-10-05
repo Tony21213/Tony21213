@@ -27,13 +27,13 @@ class Jobs:
 
     def start(self, title: str, fn) -> str:
         job_id = uuid.uuid4().hex[:10]
-        job = {"id": job_id, "title": title, "status": "running", "progress": 0.0, "message": "", "result": None,
-               "error": None}
+        job = {"id": job_id, "title": title, "status": "running", "progress": 0.0, "message": "", "info": {},
+               "result": None, "error": None}
         with self.lock:
             self.items[job_id] = job
 
-        def progress(fraction, message=""):
-            job["progress"], job["message"] = float(fraction), message
+        def progress(fraction, message="", **info):
+            job["progress"], job["message"], job["info"] = float(fraction), message, info
 
         def run():
             try:
@@ -153,6 +153,13 @@ def make_handler(session: Session, jobs: Jobs):
                 if action == "remove":
                     s.remove_scan(sid)
                     return self.json({"ok": True})
+            if p == ["models"]:
+                return self.json(s.models_status())
+            if p == ["models", "download"] and method == "POST":
+                return self.job("Загрузка моделей", lambda progress: s.download_models(progress))
+            if p == ["models", "cancel"] and method == "POST":
+                s.cancel_download()
+                return self.json({"ok": True})
             if p == ["segment"] and method == "POST":
                 b = self.body()
                 return self.job("Сегментация", lambda progress: s.segment(b.get("models_dir"), b.get("device", "auto"),

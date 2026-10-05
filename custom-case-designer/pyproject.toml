@@ -19,6 +19,7 @@ casedesigner = "casedesigner.cli:main"
 packages = ["casedesigner", "casedesigner.app"]
 
 [tool.setuptools.package-data]
+"casedesigner" = ["model_specs/*.json"]
 "casedesigner.app" = ["web/*", "web/vendor/three/*"]
 
 [tool.pytest.ini_options]

@@ -1,0 +1,448 @@
+{
+  "name": "teeth",
+  "title": "Зубы, челюсти, каналы, пазухи, глотка (TotalSegmentator teeth, КЛКТ)",
+  "onnx": "model.onnx",
+  "orientation": "RAS",
+  "region": {
+    "around": "teeth",
+    "margin_mm": [
+      12,
+      12,
+      30
+    ]
+  },
+  "overlap": 0.5,
+  "outputs": {
+    "mandible": [
+      "lower_jawbone"
+    ],
+    "maxilla": [
+      "upper_jawbone"
+    ],
+    "upper_teeth": [
+      "upper_right_central_incisor_fdi11",
+      "upper_right_lateral_incisor_fdi12",
+      "upper_right_canine_fdi13",
+      "upper_right_first_premolar_fdi14",
+      "upper_right_second_premolar_fdi15",
+      "upper_right_first_molar_fdi16",
+      "upper_right_second_molar_fdi17",
+      "upper_right_third_molar_fdi18",
+      "upper_left_central_incisor_fdi21",
+      "upper_left_lateral_incisor_fdi22",
+      "upper_left_canine_fdi23",
+      "upper_left_first_premolar_fdi24",
+      "upper_left_second_premolar_fdi25",
+      "upper_left_first_molar_fdi26",
+      "upper_left_second_molar_fdi27",
+      "upper_left_third_molar_fdi28",
+      "upper_right_central_incisor_pulp_fdi111",
+      "upper_right_lateral_incisor_pulp_fdi112",
+      "upper_right_canine_pulp_fdi113",
+      "upper_right_first_premolar_pulp_fdi114",
+      "upper_right_second_premolar_pulp_fdi115",
+      "upper_right_first_molar_pulp_fdi116",
+      "upper_right_second_molar_pulp_fdi117",
+      "upper_right_third_molar_pulp_fdi118",
+      "upper_left_central_incisor_pulp_fdi121",
+      "upper_left_lateral_incisor_pulp_fdi122",
+      "upper_left_canine_pulp_fdi123",
+      "upper_left_first_premolar_pulp_fdi124",
+      "upper_left_second_premolar_pulp_fdi125",
+      "upper_left_first_molar_pulp_fdi126",
+      "upper_left_second_molar_pulp_fdi127",
+      "upper_left_third_molar_pulp_fdi128"
+    ],
+    "lower_teeth": [
+      "lower_left_central_incisor_fdi31",
+      "lower_left_lateral_incisor_fdi32",
+      "lower_left_canine_fdi33",
+      "lower_left_first_premolar_fdi34",
+      "lower_left_second_premolar_fdi35",
+      "lower_left_first_molar_fdi36",
+      "lower_left_second_molar_fdi37",
+      "lower_left_third_molar_fdi38",
+      "lower_right_central_incisor_fdi41",
+      "lower_right_lateral_incisor_fdi42",
+      "lower_right_canine_fdi43",
+      "lower_right_first_premolar_fdi44",
+      "lower_right_second_premolar_fdi45",
+      "lower_right_first_molar_fdi46",
+      "lower_right_second_molar_fdi47",
+      "lower_right_third_molar_fdi48",
+      "lower_left_central_incisor_pulp_fdi131",
+      "lower_left_lateral_incisor_pulp_fdi132",
+      "lower_left_canine_pulp_fdi133",
+      "lower_left_first_premolar_pulp_fdi134",
+      "lower_left_second_premolar_pulp_fdi135",
+      "lower_left_first_molar_pulp_fdi136",
+      "lower_left_second_molar_pulp_fdi137",
+      "lower_left_third_molar_pulp_fdi138",
+      "lower_right_central_incisor_pulp_fdi141",
+      "lower_right_lateral_incisor_pulp_fdi142",
+      "lower_right_canine_pulp_fdi143",
+      "lower_right_first_premolar_pulp_fdi144",
+      "lower_right_second_premolar_pulp_fdi145",
+      "lower_right_first_molar_pulp_fdi146",
+      "lower_right_second_molar_pulp_fdi147",
+      "lower_right_third_molar_pulp_fdi148"
+    ],
+    "mandibular_canal": [
+      "left_inferior_alveolar_canal",
+      "right_inferior_alveolar_canal"
+    ],
+    "incisive_canal": [
+      "left_mandibular_incisive_canal_fdi103",
+      "right_mandibular_incisive_canal_fdi104"
+    ],
+    "lingual_canal": [
+      "lingual_canal"
+    ],
+    "maxillary_sinus": [
+      "left_maxillary_sinus",
+      "right_maxillary_sinus"
+    ],
+    "pharynx": [
+      "pharynx"
+    ],
+    "teeth/tooth_11": [
+      "upper_right_central_incisor_fdi11",
+      "upper_right_central_incisor_pulp_fdi111"
+    ],
+    "teeth/tooth_12": [
+      "upper_right_lateral_incisor_fdi12",
+      "upper_right_lateral_incisor_pulp_fdi112"
+    ],
+    "teeth/tooth_13": [
+      "upper_right_canine_fdi13",
+      "upper_right_canine_pulp_fdi113"
+    ],
+    "teeth/tooth_14": [
+      "upper_right_first_premolar_fdi14",
+      "upper_right_first_premolar_pulp_fdi114"
+    ],
+    "teeth/tooth_15": [
+      "upper_right_second_premolar_fdi15",
+      "upper_right_second_premolar_pulp_fdi115"
+    ],
+    "teeth/tooth_16": [
+      "upper_right_first_molar_fdi16",
+      "upper_right_first_molar_pulp_fdi116"
+    ],
+    "teeth/tooth_17": [
+      "upper_right_second_molar_fdi17",
+      "upper_right_second_molar_pulp_fdi117"
+    ],
+    "teeth/tooth_18": [
+      "upper_right_third_molar_fdi18",
+      "upper_right_third_molar_pulp_fdi118"
+    ],
+    "teeth/tooth_21": [
+      "upper_left_central_incisor_fdi21",
+      "upper_left_central_incisor_pulp_fdi121"
+    ],
+    "teeth/tooth_22": [
+      "upper_left_lateral_incisor_fdi22",
+      "upper_left_lateral_incisor_pulp_fdi122"
+    ],
+    "teeth/tooth_23": [
+      "upper_left_canine_fdi23",
+      "upper_left_canine_pulp_fdi123"
+    ],
+    "teeth/tooth_24": [
+      "upper_left_first_premolar_fdi24",
+      "upper_left_first_premolar_pulp_fdi124"
+    ],
+    "teeth/tooth_25": [
+      "upper_left_second_premolar_fdi25",
+      "upper_left_second_premolar_pulp_fdi125"
+    ],
+    "teeth/tooth_26": [
+      "upper_left_first_molar_fdi26",
+      "upper_left_first_molar_pulp_fdi126"
+    ],
+    "teeth/tooth_27": [
+      "upper_left_second_molar_fdi27",
+      "upper_left_second_molar_pulp_fdi127"
+    ],
+    "teeth/tooth_28": [
+      "upper_left_third_molar_fdi28",
+      "upper_left_third_molar_pulp_fdi128"
+    ],
+    "teeth/tooth_31": [
+      "lower_left_central_incisor_fdi31",
+      "lower_left_central_incisor_pulp_fdi131"
+    ],
+    "teeth/tooth_32": [
+      "lower_left_lateral_incisor_fdi32",
+      "lower_left_lateral_incisor_pulp_fdi132"
+    ],
+    "teeth/tooth_33": [
+      "lower_left_canine_fdi33",
+      "lower_left_canine_pulp_fdi133"
+    ],
+    "teeth/tooth_34": [
+      "lower_left_first_premolar_fdi34",
+      "lower_left_first_premolar_pulp_fdi134"
+    ],
+    "teeth/tooth_35": [
+      "lower_left_second_premolar_fdi35",
+      "lower_left_second_premolar_pulp_fdi135"
+    ],
+    "teeth/tooth_36": [
+      "lower_left_first_molar_fdi36",
+      "lower_left_first_molar_pulp_fdi136"
+    ],
+    "teeth/tooth_37": [
+      "lower_left_second_molar_fdi37",
+      "lower_left_second_molar_pulp_fdi137"
+    ],
+    "teeth/tooth_38": [
+      "lower_left_third_molar_fdi38",
+      "lower_left_third_molar_pulp_fdi138"
+    ],
+    "teeth/tooth_41": [
+      "lower_right_central_incisor_fdi41",
+      "lower_right_central_incisor_pulp_fdi141"
+    ],
+    "teeth/tooth_42": [
+      "lower_right_lateral_incisor_fdi42",
+      "lower_right_lateral_incisor_pulp_fdi142"
+    ],
+    "teeth/tooth_43": [
+      "lower_right_canine_fdi43",
+      "lower_right_canine_pulp_fdi143"
+    ],
+    "teeth/tooth_44": [
+      "lower_right_first_premolar_fdi44",
+      "lower_right_first_premolar_pulp_fdi144"
+    ],
+    "teeth/tooth_45": [
+      "lower_right_second_premolar_fdi45",
+      "lower_right_second_premolar_pulp_fdi145"
+    ],
+    "teeth/tooth_46": [
+      "lower_right_first_molar_fdi46",
+      "lower_right_first_molar_pulp_fdi146"
+    ],
+    "teeth/tooth_47": [
+      "lower_right_second_molar_fdi47",
+      "lower_right_second_molar_pulp_fdi147"
+    ],
+    "teeth/tooth_48": [
+      "lower_right_third_molar_fdi48",
+      "lower_right_third_molar_pulp_fdi148"
+    ],
+    "pulp/pulp_11": [
+      "upper_right_central_incisor_pulp_fdi111"
+    ],
+    "pulp/pulp_12": [
+      "upper_right_lateral_incisor_pulp_fdi112"
+    ],
+    "pulp/pulp_13": [
+      "upper_right_canine_pulp_fdi113"
+    ],
+    "pulp/pulp_14": [
+      "upper_right_first_premolar_pulp_fdi114"
+    ],
+    "pulp/pulp_15": [
+      "upper_right_second_premolar_pulp_fdi115"
+    ],
+    "pulp/pulp_16": [
+      "upper_right_first_molar_pulp_fdi116"
+    ],
+    "pulp/pulp_17": [
+      "upper_right_second_molar_pulp_fdi117"
+    ],
+    "pulp/pulp_18": [
+      "upper_right_third_molar_pulp_fdi118"
+    ],
+    "pulp/pulp_21": [
+      "upper_left_central_incisor_pulp_fdi121"
+    ],
+    "pulp/pulp_22": [
+      "upper_left_lateral_incisor_pulp_fdi122"
+    ],
+    "pulp/pulp_23": [
+      "upper_left_canine_pulp_fdi123"
+    ],
+    "pulp/pulp_24": [
+      "upper_left_first_premolar_pulp_fdi124"
+    ],
+    "pulp/pulp_25": [
+      "upper_left_second_premolar_pulp_fdi125"
+    ],
+    "pulp/pulp_26": [
+      "upper_left_first_molar_pulp_fdi126"
+    ],
+    "pulp/pulp_27": [
+      "upper_left_second_molar_pulp_fdi127"
+    ],
+    "pulp/pulp_28": [
+      "upper_left_third_molar_pulp_fdi128"
+    ],
+    "pulp/pulp_31": [
+      "lower_left_central_incisor_pulp_fdi131"
+    ],
+    "pulp/pulp_32": [
+      "lower_left_lateral_incisor_pulp_fdi132"
+    ],
+    "pulp/pulp_33": [
+      "lower_left_canine_pulp_fdi133"
+    ],
+    "pulp/pulp_34": [
+      "lower_left_first_premolar_pulp_fdi134"
+    ],
+    "pulp/pulp_35": [
+      "lower_left_second_premolar_pulp_fdi135"
+    ],
+    "pulp/pulp_36": [
+      "lower_left_first_molar_pulp_fdi136"
+    ],
+    "pulp/pulp_37": [
+      "lower_left_second_molar_pulp_fdi137"
+    ],
+    "pulp/pulp_38": [
+      "lower_left_third_molar_pulp_fdi138"
+    ],
+    "pulp/pulp_41": [
+      "lower_right_central_incisor_pulp_fdi141"
+    ],
+    "pulp/pulp_42": [
+      "lower_right_lateral_incisor_pulp_fdi142"
+    ],
+    "pulp/pulp_43": [
+      "lower_right_canine_pulp_fdi143"
+    ],
+    "pulp/pulp_44": [
+      "lower_right_first_premolar_pulp_fdi144"
+    ],
+    "pulp/pulp_45": [
+      "lower_right_second_premolar_pulp_fdi145"
+    ],
+    "pulp/pulp_46": [
+      "lower_right_first_molar_pulp_fdi146"
+    ],
+    "pulp/pulp_47": [
+      "lower_right_second_molar_pulp_fdi147"
+    ],
+    "pulp/pulp_48": [
+      "lower_right_third_molar_pulp_fdi148"
+    ],
+    "teeth/implant": [
+      "implant"
+    ],
+    "teeth/crown": [
+      "crown"
+    ],
+    "teeth/bridge": [
+      "bridge"
+    ]
+  },
+  "license": "Apache-2.0 (веса TotalSegmentator); набор данных ToothFairy3 — CC BY-NC-SA 4.0",
+  "attribution": "Wasserthal J. et al., TotalSegmentator, Radiology: Artificial Intelligence (2023), https://github.com/wasserth/TotalSegmentator; Bolelli F. et al., Segmenting Maxillofacial Structures in CBCT Volumes, CVPR 2025 (ToothFairy3)",
+  "labels": [
+    "background",
+    "lower_jawbone",
+    "upper_jawbone",
+    "left_inferior_alveolar_canal",
+    "right_inferior_alveolar_canal",
+    "left_maxillary_sinus",
+    "right_maxillary_sinus",
+    "pharynx",
+    "bridge",
+    "crown",
+    "implant",
+    "upper_right_central_incisor_fdi11",
+    "upper_right_lateral_incisor_fdi12",
+    "upper_right_canine_fdi13",
+    "upper_right_first_premolar_fdi14",
+    "upper_right_second_premolar_fdi15",
+    "upper_right_first_molar_fdi16",
+    "upper_right_second_molar_fdi17",
+    "upper_right_third_molar_fdi18",
+    "upper_left_central_incisor_fdi21",
+    "upper_left_lateral_incisor_fdi22",
+    "upper_left_canine_fdi23",
+    "upper_left_first_premolar_fdi24",
+    "upper_left_second_premolar_fdi25",
+    "upper_left_first_molar_fdi26",
+    "upper_left_second_molar_fdi27",
+    "upper_left_third_molar_fdi28",
+    "lower_left_central_incisor_fdi31",
+    "lower_left_lateral_incisor_fdi32",
+    "lower_left_canine_fdi33",
+    "lower_left_first_premolar_fdi34",
+    "lower_left_second_premolar_fdi35",
+    "lower_left_first_molar_fdi36",
+    "lower_left_second_molar_fdi37",
+    "lower_left_third_molar_fdi38",
+    "lower_right_central_incisor_fdi41",
+    "lower_right_lateral_incisor_fdi42",
+    "lower_right_canine_fdi43",
+    "lower_right_first_premolar_fdi44",
+    "lower_right_second_premolar_fdi45",
+    "lower_right_first_molar_fdi46",
+    "lower_right_second_molar_fdi47",
+    "lower_right_third_molar_fdi48",
+    "left_mandibular_incisive_canal_fdi103",
+    "right_mandibular_incisive_canal_fdi104",
+    "lingual_canal",
+    "upper_right_central_incisor_pulp_fdi111",
+    "upper_right_lateral_incisor_pulp_fdi112",
+    "upper_right_canine_pulp_fdi113",
+    "upper_right_first_premolar_pulp_fdi114",
+    "upper_right_second_premolar_pulp_fdi115",
+    "upper_right_first_molar_pulp_fdi116",
+    "upper_right_second_molar_pulp_fdi117",
+    "upper_right_third_molar_pulp_fdi118",
+    "upper_left_central_incisor_pulp_fdi121",
+    "upper_left_lateral_incisor_pulp_fdi122",
+    "upper_left_canine_pulp_fdi123",
+    "upper_left_first_premolar_pulp_fdi124",
+    "upper_left_second_premolar_pulp_fdi125",
+    "upper_left_first_molar_pulp_fdi126",
+    "upper_left_second_molar_pulp_fdi127",
+    "upper_left_third_molar_pulp_fdi128",
+    "lower_left_central_incisor_pulp_fdi131",
+    "lower_left_lateral_incisor_pulp_fdi132",
+    "lower_left_canine_pulp_fdi133",
+    "lower_left_first_premolar_pulp_fdi134",
+    "lower_left_second_premolar_pulp_fdi135",
+    "lower_left_first_molar_pulp_fdi136",
+    "lower_left_second_molar_pulp_fdi137",
+    "lower_left_third_molar_pulp_fdi138",
+    "lower_right_central_incisor_pulp_fdi141",
+    "lower_right_lateral_incisor_pulp_fdi142",
+    "lower_right_canine_pulp_fdi143",
+    "lower_right_first_premolar_pulp_fdi144",
+    "lower_right_second_premolar_pulp_fdi145",
+    "lower_right_first_molar_pulp_fdi146",
+    "lower_right_second_molar_pulp_fdi147",
+    "lower_right_third_molar_pulp_fdi148"
+  ],
+  "spacing": [
+    0.5,
+    0.5,
+    0.5
+  ],
+  "patch": [
+    64,
+    160,
+    160
+  ],
+  "normalization": {
+    "scheme": "zscore"
+  },
+  "source": {
+    "configuration": "3d_lowres_high",
+    "trainer": "nnUNetTrainer_onlyMirror01",
+    "channel": "CBCT",
+    "cases": 532
+  },
+  "check": {
+    "max_abs_diff": 0.004340171813964844,
+    "argmax_agreement": 0.9999981689453125
+  },
+  "priority": 2
+}

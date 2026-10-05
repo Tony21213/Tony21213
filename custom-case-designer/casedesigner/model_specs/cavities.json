@@ -1,0 +1,85 @@
+{
+  "name": "cavities",
+  "title": "Полость носа, мягкое и твёрдое нёбо, отделы глотки (TotalSegmentator head_glands_cavities, КТ)",
+  "onnx": "model.onnx",
+  "orientation": "RAS",
+  "region": {
+    "around": "whole"
+  },
+  "overlap": 0.5,
+  "outputs": {
+    "nasal_cavity": [
+      "nasal_cavity_left",
+      "nasal_cavity_right"
+    ],
+    "soft_palate": [
+      "soft_palate"
+    ],
+    "hard_palate": [
+      "hard_palate"
+    ],
+    "nasopharynx": [
+      "nasopharynx"
+    ],
+    "oropharynx": [
+      "oropharynx"
+    ],
+    "hypopharynx": [
+      "hypopharynx"
+    ]
+  },
+  "license": "Apache-2.0",
+  "attribution": "Wasserthal J. et al., TotalSegmentator (2023); https://www.mdpi.com/2072-6694/16/2/415",
+  "labels": [
+    "background",
+    "eye_left",
+    "eye_right",
+    "eye_lens_left",
+    "eye_lens_right",
+    "optic_nerve_left",
+    "optic_nerve_right",
+    "parotid_gland_left",
+    "parotid_gland_right",
+    "submandibular_gland_right",
+    "submandibular_gland_left",
+    "nasopharynx",
+    "oropharynx",
+    "hypopharynx",
+    "nasal_cavity_right",
+    "nasal_cavity_left",
+    "auditory_canal_right",
+    "auditory_canal_left",
+    "soft_palate",
+    "hard_palate"
+  ],
+  "spacing": [
+    1.0,
+    0.75,
+    0.75
+  ],
+  "patch": [
+    80,
+    160,
+    160
+  ],
+  "normalization": {
+    "scheme": "ct",
+    "clip": [
+      -1023.9999389648438,
+      822.0
+    ],
+    "mean": -304.76422640124446,
+    "std": 441.19350785444936
+  },
+  "source": {
+    "configuration": "3d_fullres_high",
+    "trainer": "nnUNetTrainer_DASegOrd0_NoMirroring",
+    "channel": "CT",
+    "cases": 492
+  },
+  "check": {
+    "max_abs_diff": 0.0018453598022460938,
+    "argmax_agreement": 1.0
+  },
+  "priority": 3
+}

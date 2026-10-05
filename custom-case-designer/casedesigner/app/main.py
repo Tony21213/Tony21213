@@ -53,7 +53,10 @@ def main(argv=None):
         else:
             places = [os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), os.getcwd()]
         found = [os.path.join(p, "models") for p in places if os.path.isdir(os.path.join(p, "models"))]
-        models = found[0] if found else None
+        from .. import model_store
+
+        ready = [d for d in found + [model_store.default_dir()] if model_store.status(d)["ready"]]
+        models = (ready or found or [None])[0]  # скачанные кнопкой могут лежать в папке пользователя
     server = serve(Session(args.memory, models), args.port)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
 
