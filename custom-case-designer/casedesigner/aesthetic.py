@@ -308,8 +308,11 @@ def midsagittal_plane(points: np.ndarray, normal, origin, keep: float = SYMMETRY
 
     grid = [(a, b, t) for a in np.arange(-max_deg, max_deg + 0.1, 3.0) for b in np.arange(-max_deg, max_deg + 0.1, 3.0)
             for t in np.arange(-max_mm, max_mm + 0.1, 2.0)]
-    best = min(grid, key=lambda q: cost(q, coarse))
-    q = np.clip(minimize(cost, best, method="Nelder-Mead", options={"xatol": 0.02, "fatol": 1e-4}).x,
+    best = np.asarray(min(grid, key=lambda q: cost(q, coarse)), float)
+    # Начальный симплекс — явно: у точки сетки (0, 0, 0) scipy берёт шаг 0.00025 и сразу останавливается.
+    simplex = np.vstack([best, best + [1.5, 0, 0], best + [0, 1.5, 0], best + [0, 0, 1.0]])
+    q = np.clip(minimize(cost, best, method="Nelder-Mead",
+                         options={"xatol": 0.02, "fatol": 1e-5, "initial_simplex": simplex}).x,
                 [-max_deg, -max_deg, -max_mm], [max_deg, max_deg, max_mm])
     n, o = plane(q)
     d = np.sort(tree.query(P - 2 * ((P - o) @ n)[:, None] * n)[0])

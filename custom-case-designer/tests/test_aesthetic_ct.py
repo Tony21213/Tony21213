@@ -33,6 +33,15 @@ def test_midsagittal_plane_found_near_the_dental_one():
     assert np.degrees(np.arccos(abs(n @ expect))) < 0.5 and abs((o - true[:3, 3]) @ expect) < 0.3 and rms < 1.0
 
 
+def test_midsagittal_plane_refines_small_angles():
+    """Лицо почти по зубам (крен 1°, разворот −0.8°, сдвиг 0.6 мм): лучшая точка сетки — ноль, но уточнение
+    обязано сдвинуться (у scipy по умолчанию шаг у нуля — 0.00025, и поиск стоял на месте)."""
+    true = rigid(Rotation.from_euler("xyz", [0, 1.0, -0.8], degrees=True).as_matrix(), np.array([0.6, 0, 0]))
+    n, o, _rms = aesthetic.midsagittal_plane(apply(true, face_cloud()), [1.0, 0, 0], [0.0, 0, 0])
+    expect = true[:3, 0]
+    assert np.degrees(np.arccos(abs(n @ expect))) < 0.3 and abs((o - true[:3, 3]) @ expect) < 0.2
+
+
 def test_aesthetic_frame_ct():
     roll = rigid(Rotation.from_euler("y", 3, degrees=True).as_matrix(), np.zeros(3))
     base = np.eye(4)  # функциональная система совпадает с координатами кейса
