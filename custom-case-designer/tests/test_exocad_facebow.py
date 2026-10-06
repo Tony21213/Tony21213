@@ -62,9 +62,9 @@ def test_models_go_into_articulator_by_condyles_and_horizontal(case, register):
         assert np.abs(got - expected).max() < 1e-9, k
     # Мыщелки несимметричны к горизонтали: ось — через середину, отклонение каждого — в отчёте.
     assert fb.off_axis_mm["right"] == pytest.approx(np.hypot(1.5, 0.8), abs=0.01) and fb.notes
-    # Вилка — перед резцами, в зубы не заходит.
+    # Вилка — как настоящая: на окклюзионной плоскости верхних зубов, метка 1 — позади резцов.
     first = apply(frame @ fb.fork_pose, register.marks[:1])[0]
-    assert first[1] - 98.0 == pytest.approx(ef.FORK_AHEAD_MM)
+    assert np.abs(first - (np.array([0.5, 98.0, -38.0]) + ef.FORK_OFFSET_MM)).max() < 1e-9
 
 
 def test_jawmotion_file(case, register, tmp_path):

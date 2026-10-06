@@ -388,7 +388,7 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None) -> tuple:
     faces), угол Беннетта — по Ханау; чего нет — значения по умолчанию.
     """
     upper_vertices, lower_vertices = np.asarray(upper_vertices, float), np.asarray(lower_vertices, float)
-    up, anterior = mo.arch_axes(lower_vertices, upper_vertices.mean(0) - lower_vertices.mean(0))
+    up, anterior = mo.arch_axes(lower_vertices, mo.occlusal_up(upper_vertices, lower_vertices))
     right = np.cross(anterior, up)
     incisal = mo._incisal(lower_vertices, anterior, up, mo.INCISAL_TILT_DEG)
     notes, settings = [], kin.Settings()

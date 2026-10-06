@@ -1474,6 +1474,33 @@ def estimate_anatomy(case: MotionCase, lower: np.ndarray | None = None, incisal=
                    rms)
 
 
+OCCLUSAL_GAP_MM = (1.0, 2.0, 3.0)  # зона смыкания: точки нижнего скана не дальше этого от верхнего
+OCCLUSAL_SPREAD_MM = 8.0  # зона смыкания должна идти по всей дуге, а не по одной стороне (СКО поперёк, мм)
+
+
+def occlusal_up(upper: np.ndarray, lower: np.ndarray) -> np.ndarray:
+    """Вверх — нормаль окклюзионной плоскости по зоне смыкания сканов в прикусе (точки нижнего скана рядом
+    с верхним — по всей дуге). Разница центров сканов не годится: верхний скан захватывает нёбо, нижний —
+    нет, и направление уходит на десятки градусов. Сканы не сомкнуты — разница центров."""
+    from scipy.spatial import cKDTree
+
+    upper, lower = np.asarray(upper, float), np.asarray(lower, float)
+    rough = upper.mean(0) - lower.mean(0)
+    rough /= np.linalg.norm(rough)
+    rng = np.random.default_rng(0)
+    sample = lower[rng.choice(len(lower), min(len(lower), 30000), replace=False)]
+    dist = cKDTree(upper[rng.choice(len(upper), min(len(upper), 200000), replace=False)]).query(sample)[0]
+    for gap in OCCLUSAL_GAP_MM:
+        near = sample[dist < gap]
+        if len(near) < 200:
+            continue
+        c = near.mean(0)
+        _u, s, vt = np.linalg.svd(near - c, full_matrices=False)
+        if s[1] / np.sqrt(len(near)) >= OCCLUSAL_SPREAD_MM:
+            return vt[2] if vt[2] @ rough > 0 else -vt[2]
+    return rough
+
+
 def arch_axes(vertices: np.ndarray, up) -> tuple[np.ndarray, np.ndarray]:
     """Окклюзионная плоскость и направление вперёд по зубной дуге.
 
@@ -1516,7 +1543,7 @@ def anatomy_average(lower: np.ndarray, upper: np.ndarray | None = None, lower_no
                     balkwill_deg: float = BALKWILL_DEG) -> Anatomy:
     """Средний артикулятор по одним сканам: треугольник Бонвилля и угол Балквилла.
 
-    Когда нет ни КТ, ни записи движений. Вверх — от нижних зубов к верхним
+    Когда нет ни КТ, ни записи движений. Вверх — нормаль окклюзионной плоскости по зоне смыкания (occlusal_up)
     (или по нормалям скана нижней челюсти, если верхнего нет); окклюзионная
     плоскость и направление вперёд — по зубной дуге; резцовая точка — на
     нижних резцах. Мыщелки — в вершинах равностороннего треугольника Бонвилля
@@ -1525,7 +1552,7 @@ def anatomy_average(lower: np.ndarray, upper: np.ndarray | None = None, lower_no
     """
     lower = np.asarray(lower, float)
     if upper is not None:
-        up = np.asarray(upper, float).mean(0) - lower.mean(0)
+        up = occlusal_up(upper, lower)
     elif lower_normals is not None:
         from .scan_teeth import occlusal_direction
 
