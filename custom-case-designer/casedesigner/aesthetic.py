@@ -265,6 +265,80 @@ def aesthetic_frame(base_frame: np.ndarray, camera: Camera, horizon_deg: float =
                      None if tilt is None else round(tilt, 3), hints, notes)
 
 
+SYMMETRY_KEEP = 0.7  # доля лучших зеркальных пар: остальное — асимметрия и края поля зрения КТ
+
+
+SYMMETRY_MAX_DEG, SYMMETRY_MAX_MM = 15.0, 10.0  # поиск — рядом с начальной плоскостью (по зубной дуге)
+
+
+def midsagittal_plane(points: np.ndarray, normal, origin, keep: float = SYMMETRY_KEEP,
+                      max_deg: float = SYMMETRY_MAX_DEG, max_mm: float = SYMMETRY_MAX_MM,
+                      sample: int = 20000) -> tuple[np.ndarray, np.ndarray, float]:
+    """Срединная плоскость по зеркальной симметрии облака точек (кости лицевого скелета или лицо).
+
+    Мера симметрии — среднее расстояние отражённых точек до исходных по лучшим парам (keep): худшие — это
+    асимметрия и края поля зрения КТ. Плоскость ищется рядом с начальной (normal, origin — например, по
+    зубной дуге): крен и разворот — до ±max_deg, сдвиг — до ±max_mm; поиск без ограничений на обрезанном поле
+    зрения уходит к ложной симметрии. Сетка, затем уточнение. Возвращает нормаль, точку и СКО пар, мм.
+    """
+    from scipy.optimize import minimize
+    from scipy.spatial import cKDTree
+
+    P = np.asarray(points, float)
+    rng = np.random.default_rng(0)
+    if len(P) > sample:
+        P = P[rng.choice(len(P), sample, replace=False)]
+    tree = cKDTree(P)
+    coarse = P[rng.choice(len(P), min(len(P), 4000), replace=False)]
+    n0 = np.asarray(normal, float) / np.linalg.norm(normal)
+    o0 = np.asarray(origin, float)
+    e1 = np.cross(n0, [0, 0, 1.0] if abs(n0[2]) < 0.9 else [1.0, 0, 0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(n0, e1)
+
+    def plane(q):
+        n = Rotation.from_rotvec(np.radians(q[0]) * e1).apply(Rotation.from_rotvec(np.radians(q[1]) * e2).apply(n0))
+        return n, o0 + q[2] * n0
+
+    def cost(q, pts=P):
+        q = np.clip(q, [-max_deg, -max_deg, -max_mm], [max_deg, max_deg, max_mm])
+        n, o = plane(q)
+        d = np.sort(tree.query(pts - 2 * ((pts - o) @ n)[:, None] * n)[0])
+        return float(d[: int(len(d) * keep)].mean())
+
+    grid = [(a, b, t) for a in np.arange(-max_deg, max_deg + 0.1, 3.0) for b in np.arange(-max_deg, max_deg + 0.1, 3.0)
+            for t in np.arange(-max_mm, max_mm + 0.1, 2.0)]
+    best = min(grid, key=lambda q: cost(q, coarse))
+    q = np.clip(minimize(cost, best, method="Nelder-Mead", options={"xatol": 0.02, "fatol": 1e-4}).x,
+                [-max_deg, -max_deg, -max_mm], [max_deg, max_deg, max_mm])
+    n, o = plane(q)
+    d = np.sort(tree.query(P - 2 * ((P - o) @ n)[:, None] * n)[0])
+    rms = float(np.sqrt(np.mean(d[: int(len(d) * keep)] ** 2)))
+    return (n if n @ n0 > 0 else -n), o, rms
+
+
+def aesthetic_frame_ct(base_frame: np.ndarray, face_points: np.ndarray) -> Aesthetic:
+    """Эстетическая система по КТ, пока нет фото: средняя линия, крен и разворот — по зеркальной симметрии
+    лицевого скелета (face_points — кости черепа и верхней челюсти без нижней, или лицо); наклон вперёд-назад —
+    от функциональной системы (base_frame), как и при эстетической системе по фото. Начало — как у
+    base_frame, сдвинутое вбок на срединную плоскость лица."""
+    F = np.asarray(base_frame, float)
+    R_f = F[:3, :3]
+    x_f, y_f, _z_f = R_f
+    origin_f = -R_f.T @ F[:3, 3]
+    x_a, mid, rms = midsagittal_plane(face_points, x_f, origin_f)
+    y_a = y_f - (y_f @ x_a) * x_a
+    y_a /= np.linalg.norm(y_a)
+    z_a = np.cross(x_a, y_a)
+    roll = float(np.degrees(np.arctan2(x_f @ z_a, x_f @ x_a)))
+    yaw = float(np.degrees(np.arctan2(y_f @ x_a, y_f @ y_a)))
+    origin = origin_f + ((mid - origin_f) @ x_a) * x_a
+    R_a = np.array([x_a, y_a, z_a])
+    notes = [f"эстетическая плоскость по КТ: средняя линия — по симметрии лицевого скелета (СКО {rms:.1f} мм); "
+             f"к функциональной системе — крен {roll:+.1f}°, разворот {yaw:+.1f}°; наклон — от функциональной"]
+    return Aesthetic(rigid(R_a, -R_a @ origin), round(roll, 3), None, None, {"yaw_deg": round(yaw, 3)}, notes)
+
+
 def _wrap(a: float) -> float:
     return (a + 180.0) % 360.0 - 180.0
 

@@ -135,8 +135,30 @@ def _hinge_rotation(deg: float) -> np.ndarray:
     return np.array([[1, 0, 0], [0, np.cos(a), -np.sin(a)], [0, np.sin(a), np.cos(a)]])
 
 
-def jawmotion_xml(fb: Facebow, description: str = "") -> bytes:
-    """Файл лицевой дуги в формате Zebris (`dental_measurement`) — без данных пациента."""
+MOVEMENT_TYPES = {"Открывание": "opening", "Протрузия": "protrusion", "Жевание": "chewing"}  # типы Zebris
+
+
+def movement_type(name: str) -> str:
+    """Тип движения Zebris по названию записи (латеротрузия вправо — lateral_rt)."""
+    low = name.lower()
+    if "латеро" in low or "lateral" in low:
+        return "lateral_rt" if ("прав" in low or "right" in low) else "lateral_lt"
+    return next((v for k, v in MOVEMENT_TYPES.items() if k.lower() in low), "custom")
+
+
+def tracks(fb: Facebow, transforms: np.ndarray) -> np.ndarray:
+    """Траектории меток (кадры × 3 × xyz) в системе регистратора: метки движутся с нижней челюстью;
+    transforms — положения нижней челюсти относительно верхней по кадрам, координаты кейса."""
+    A = fb.case_to_register
+    marks_case = apply(np.linalg.inv(A), fb.marks)
+    return np.array([apply(A @ M, marks_case) for M in np.asarray(transforms, float)])
+
+
+def jawmotion_xml(fb: Facebow, description: str = "", movements=None) -> bytes:
+    """Файл лицевой дуги в формате Zebris (`dental_measurement`) — без данных пациента.
+
+    movements — [(название, положения нижней челюсти (N×4×4, координаты кейса), частота кадров)]; без них —
+    короткое шарнирное открывание (в файле должно быть движение)."""
     from . import __version__
 
     root = ET.Element("dental_measurement", {"xmlns": "http://www.zebris.de/JMA"})
@@ -171,20 +193,28 @@ def jawmotion_xml(fb: Facebow, description: str = "") -> bytes:
     _sub(point, "id", "orbital")
     for k, v in zip("xyz", ORBITAL):
         _sub(point, k, f"{v:.3f}")
-    movement = _sub(_sub(root, "movements"), "movement")
-    _sub(movement, "type", "opening")
-    _sub(movement, "id", "opening")
-    tracks = _sub(movement, "tracks")
-    angles = np.linspace(0.0, OPENING_DEG, OPENING_FRAMES)
-    for i, p in enumerate(fb.marks, 1):
-        track = _sub(tracks, "track")
-        _sub(track, "type")
-        _sub(track, "id", f"mark_{i}")
-        _sub(track, "size", str(len(angles)))
-        _sub(track, "frequency", str(FREQUENCY))
-        quants = _sub(track, "quants")
-        for a in angles:
-            _xyz(quants, "quant", _hinge_rotation(a) @ p)
+    if not movements:
+        hinge = np.array([[_hinge_rotation(a) @ p for p in fb.marks] for a in np.linspace(0.0, OPENING_DEG, OPENING_FRAMES)])
+        moves = [("opening", hinge, FREQUENCY)]
+    else:
+        moves = [(movement_type(name), tracks(fb, T), freq) for name, T, freq in movements]
+    parent = _sub(root, "movements")
+    used = {}
+    for kind, frames, freq in moves:
+        movement = _sub(parent, "movement")
+        used[kind] = used.get(kind, 0) + 1
+        _sub(movement, "type", kind)
+        _sub(movement, "id", kind if used[kind] == 1 else f"{kind}_{used[kind]}")
+        node = _sub(movement, "tracks")
+        for i in range(3):
+            track = _sub(node, "track")
+            _sub(track, "type")
+            _sub(track, "id", f"mark_{i + 1}")
+            _sub(track, "size", str(len(frames)))
+            _sub(track, "frequency", f"{freq:g}")
+            quants = _sub(track, "quants")
+            for p in frames[:, i]:
+                _xyz(quants, "quant", p)
     ET.indent(root, "\t")
     return b'<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="utf-8")
 
@@ -314,19 +344,24 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
 
 
 def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: Register,
-           upper: trimesh.Trimesh | None = None, icd: float | None = None, settings: dict | None = None) -> dict:
-    """Всё для exocad: файл лицевой дуги, скан маркера, мыщелки (сферы для проверки) и свой артикулятор."""
+           upper: trimesh.Trimesh | None = None, icd: float | None = None, settings: dict | None = None,
+           movements=None, jawmotion_name: str = "facebow.jawmotion", marker_name: str = "movementmarker.stl",
+           articulator_dir: str | None = None) -> dict:
+    """Всё для exocad: файл лицевой дуги (с движениями, если даны), скан маркера, мыщелки (сферы для проверки)
+    и свой артикулятор (в articulator_dir или рядом)."""
     fb = facebow(frame, condyle_right, condyle_left, incisal, register)
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "facebow.jawmotion"), "wb") as f:
-        f.write(jawmotion_xml(fb, "Custom Case Designer: шарнир на мыщелках пациента, гипсовка по горизонтали монтажа"))
-    marker_mesh(register, fb, upper).export(os.path.join(out_dir, "movementmarker.stl"))
+    with open(os.path.join(out_dir, jawmotion_name), "wb") as f:
+        f.write(jawmotion_xml(fb, "Custom Case Designer: шарнир на мыщелках пациента, гипсовка по горизонтали монтажа",
+                              movements))
+    marker_mesh(register, fb, upper).export(os.path.join(out_dir, marker_name))
     spheres = [trimesh.creation.icosphere(subdivisions=2, radius=2.5).apply_translation(p) for p in fb.condyles.values()]
     trimesh.util.concatenate(spheres).export(os.path.join(out_dir, "condyles.stl"))
     if icd is None:
         icd = float(np.linalg.norm(fb.condyles["right"] - fb.condyles["left"]))
-    files = write_articulator(os.path.join(out_dir, ARTICULATOR_NAME), round(icd, 1), settings)
-    return {"files": ["facebow.jawmotion", "movementmarker.stl", "condyles.stl",
-                      *[f"{ARTICULATOR_NAME}/{n}" for n in files]],
+    art = os.path.join(articulator_dir or out_dir, ARTICULATOR_NAME)
+    files = write_articulator(art, round(icd, 1), settings)
+    return {"files": [jawmotion_name, marker_name, "condyles.stl"],
+            "articulator": art, "articulator_files": files,
             "off_axis_mm": fb.off_axis_mm, "icd_mm": round(icd, 1), "notes": fb.notes,
             "case_to_register": fb.case_to_register.round(6).tolist()}

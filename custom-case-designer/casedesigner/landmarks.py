@@ -129,7 +129,7 @@ def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.
     up — вверх, left — к левой стороне пациента; по умолчанию оси DICOM (LPS).
     Для сцен, где оси повёрнуты как угодно (exocad), их задают по зубам.
     Если задано anterior (вперёд), венечный отросток отбрасывается: в верхних
-    CORONOID_BAND_MM ветви точки делятся по вырезке нижней челюсти на два
+    CORONOID_BAND_MM ветви (полоса сужается, пока не найдётся) точки делятся по вырезке нижней челюсти на два
     скопления, и мыщелок — заднее. Без этого при наклонённой вертикали
     (по окклюзионной плоскости) самой высокой бывает верхушка венечного отростка.
     """
@@ -145,13 +145,17 @@ def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.
             continue
         part, hp = v[side], h[side]
         if anterior is not None:
-            band = hp >= hp.max() - CORONOID_BAND_MM
-            a = part[band] @ np.asarray(anterior, float)
-            order = np.sort(a)
-            gaps = np.diff(order)
-            if len(gaps) and gaps.max() > NOTCH_GAP_MM:  # вырезка: заднее скопление — мыщелок
-                cut = order[np.argmax(gaps)]
-                part, hp = part[band][a <= cut], hp[band][a <= cut]
+            # Полоса сужается, пока вырезка не разделит отростки: у неглубокой вырезки широкая полоса
+            # захватывает её дно, и пустого промежутка между отростками в ней нет.
+            for depth in np.arange(CORONOID_BAND_MM, 2.9, -1.0):
+                band = hp >= hp.max() - depth
+                a = part[band] @ np.asarray(anterior, float)
+                order = np.sort(a)
+                gaps = np.diff(order)
+                if len(gaps) and gaps.max() > NOTCH_GAP_MM:  # вырезка: заднее скопление — мыщелок
+                    cut = order[np.argmax(gaps)]
+                    part, hp = part[band][a <= cut], hp[band][a <= cut]
+                    break
         out[key] = part[hp >= hp.max() - 1.5].mean(axis=0)  # верхушка головки, 1.5 мм
     return out
 
