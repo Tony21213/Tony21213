@@ -186,6 +186,8 @@ def make_handler(session: Session, jobs: Jobs):
             if p == ["models", "cancel"] and method == "POST":
                 s.cancel_download()
                 return self.json({"ok": True})
+            if p == ["bite_view"] and method == "POST":
+                return self.json(s.set_bite_view(bool(self.body().get("on"))))
             if p == ["settings", "segment_parts"] and method == "POST":
                 return self.json(s.set_segment_parts(self.body().get("parts", [])))
             if p == ["segment"] and method == "POST":

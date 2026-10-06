@@ -17,7 +17,7 @@ import numpy as np
 import trimesh
 
 from . import motion
-from .fusion import JAWS, CaseCT, Scan, export_case
+from .fusion import BITE, JAWS, CaseCT, Scan, export_case, is_bite_name, place_bites
 from .learning import AlignmentMemory
 from .segment import Segmenter
 from .volume import load_volume
@@ -125,8 +125,8 @@ def cmd_register(args):
     jaws = _parse_assignments(args.jaw, "--jaw")
     pairs = _parse_assignments(args.pairs, "--pairs")
     for jaw in jaws.values():
-        if jaw not in JAWS:
-            raise ValueError(f"--jaw: челюсть должна быть upper или lower, а не {jaw!r}")
+        if jaw not in JAWS + (BITE,):
+            raise ValueError(f"--jaw: челюсть должна быть upper, lower или bite (скан прикуса), а не {jaw!r}")
 
     print("Читаю КТ…")
     vol = load_volume(args.ct)
@@ -142,10 +142,13 @@ def cmd_register(args):
     else:
         print("Без --models зубы в КТ ищутся только по плотности: на снимке с большим полем скан может сесть "
               "со сдвигом вдоль дуги.")
-    registrations = []
+    registrations, bites = [], []
     for path in args.scan:
         scan = Scan.load(path)
         key = next((k for k in (path, scan.name) if k in jaws or k in pairs), None)
+        if jaws.get(key) == BITE or (key not in jaws and is_bite_name(scan.name)):
+            bites.append(scan)  # скан прикуса — на сканы челюстей, после них
+            continue
         reg = ct.register(scan, jaw=jaws.get(key), pairs=load_pairs(pairs[key]) if key in pairs else None)
         s = reg.stats
         print(f"{scan.name}: {reg.jaw} челюсть, на коронках {100 * s['matched_fraction']:.0f}% точек, "
@@ -156,6 +159,20 @@ def cmd_register(args):
         if memory and args.accept:
             memory.record(vol.device, reg, reg)
         registrations.append(reg)
+    if bites:
+        by_jaw = {r.jaw: r for r in reversed(registrations)}
+        placed = place_bites(bites, by_jaw.get("upper"), by_jaw.get("lower"), ct)
+        for k, scan in enumerate(bites):
+            reg = placed.regs[k]
+            if reg is None:
+                print(f"{scan.name}: скан прикуса не поставлен — {placed.failed[k]}")
+                continue
+            print(f"{scan.name}: скан прикуса, на сканах челюстей {100 * reg.stats.get('matched_fraction', 0):.0f}% точек")
+            for warning in reg.warnings:
+                print(f"  {warning}")
+            registrations.append(reg)
+        if placed.lower is not None:
+            by_jaw["lower"].bite = placed.lower
     if args.ct_surfaces:
         meshes.update(ct.surfaces())
     report = export_case(args.out, registrations, meshes, bite=args.bite, frame=args.frame, ct=ct)
@@ -284,7 +301,7 @@ def main(argv=None):
     reg = sub.add_parser("register", help="совместить сканы челюстей с КТ по зубам и экспортировать STL")
     reg.add_argument("ct", help="КТ: папка DICOM, .dcm, .zip, .nii.gz, .mha, .nrrd")
     reg.add_argument("--scan", action="append", required=True, help="скан челюсти (STL/PLY/OBJ), можно несколько")
-    reg.add_argument("--jaw", action="append", metavar="СКАН=upper|lower",
+    reg.add_argument("--jaw", action="append", metavar="СКАН=upper|lower|bite",
                      help="какая это челюсть (по умолчанию определяется сама)")
     reg.add_argument("--pairs", action="append", metavar="СКАН=ФАЙЛ",
                      help="пары точек для начального положения, если автоматика не справилась")

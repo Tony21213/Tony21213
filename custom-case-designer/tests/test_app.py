@@ -148,6 +148,49 @@ def test_segmentation_reregisters_scans(case_files, tmp_path, monkeypatch):
     assert scans[kept]["accepted"] and scans[kept]["transform"] == before
 
 
+def test_bite_scans_go_onto_jaw_scans(case_files, tmp_path):
+    """Сканы прикуса не совмещаются с КТ: стоят на сканах челюстей (узнаются по имени и по геометрии),
+    выгружаются вместе с ними и сохраняются в кейсе."""
+    from test_bite_scans import bite_patch
+
+    d, _truth = case_files
+    pose = phantom.scan_pose(2)
+    for jaw in ("upper", "lower"):
+        v, f = phantom.make_scan(jaw)
+        trimesh.Trimesh(apply(pose, v), f).export(tmp_path / f"{jaw}.stl")
+    for name, side in (("p-TotalJaw0", 1), ("scan3", -1)):  # второй — без «прикусного» имени
+        v, f = bite_patch(side)
+        trimesh.Trimesh(apply(pose, v), f).export(tmp_path / f"{name}.stl")
+
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s.load_ct(str(d / "ct.nii.gz"))
+    ids = {n: s.add_scan(str(tmp_path / f"{n}.stl"))["id"] for n in ("p-TotalJaw0", "upper", "lower", "scan3")}
+    assert s.scan_info(ids["p-TotalJaw0"])["role"] == "bite" and s.scan_info(ids["scan3"])["role"] == "jaw"
+    for n in ("upper", "lower", "p-TotalJaw0", "scan3"):
+        s.register(ids[n])
+    for n in ("p-TotalJaw0", "scan3"):  # scan3 лежит на обоих сканах — тоже скан прикуса
+        info = s.scan_info(ids[n])
+        assert info["role"] == "bite" and info["jaw"] == "bite" and info["registered"], n
+        assert np.allclose(info["transform"], s.scan_info(ids["upper"])["transform"])
+        assert any("вместе с ними" in w for w in info["warnings"])
+    with pytest.raises(ValueError):
+        s.accept(ids["p-TotalJaw0"])
+
+    res = s.export(str(tmp_path / "out"), "scan", "exocad")
+    case = json.loads((tmp_path / "out" / "case.json").read_text(encoding="utf-8"))
+    assert case["scans"]["p-TotalJaw0"]["placement"] == "jaws" and "p-TotalJaw0.stl" in res["files"]
+    got = trimesh.load_mesh(str(tmp_path / "out" / "p-TotalJaw0.stl"), process=False).vertices
+    src = trimesh.load_mesh(str(tmp_path / "p-TotalJaw0.stl"), process=False).vertices
+    from scipy.spatial import cKDTree
+    assert cKDTree(src).query(got)[0].max() < 1e-3  # в координатах сканера — как в файле
+
+    saved = s.save_case(str(tmp_path / "кейс"))
+    again = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    again.open_case(saved["path"])
+    roles = {i["name"]: (i["role"], i["registered"]) for i in again.state()["scans"]}
+    assert roles["p-TotalJaw0"] == ("bite", True) and roles["scan3"] == ("bite", True)
+
+
 def test_export_into_exocad_project(case_files, tmp_path):
     """Папка проекта exocad: всё — в его подпапку, в координатах сцены (скан × матрица сканера)."""
     import shutil

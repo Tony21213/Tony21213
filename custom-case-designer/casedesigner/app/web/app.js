@@ -152,7 +152,7 @@ const plural = (n, one, few, many) => (n % 10 === 1 && n % 100 !== 11 ? one
   : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? few : many);
 const cls = (v, good, fair) => (v <= good ? 'ok' : v <= fair ? 'warn' : 'bad');
 const scanById = (id) => state.scans.find((s) => s.id === id);
-const JAWS = { upper: 'верхняя', lower: 'нижняя' };
+const JAWS = { upper: 'верхняя', lower: 'нижняя', bite: 'прикус' };
 
 function updateScan(info) {
   const i = state.scans.findIndex((s) => s.id === info.id);
@@ -349,7 +349,48 @@ async function removeScan(id) {
   viewer.remove(id);
   state.scans = state.scans.filter((s) => s.id !== id);
   if (state.selected === id) state.selected = state.scans[0]?.id ?? null;
+  await refreshScans();
   render();
+}
+
+// Сканы прикуса стоят на сканах челюстей, и нижний скан может встать в прикус по ним: после изменения
+// положения челюсти — свежие положения всех сканов (кроме тех, что сейчас двигают).
+async function refreshScans(force = false) {
+  const wasOn = state.biteView?.on;
+  const fresh = await get('state');
+  state.biteView = fresh.bite_view; // есть ли прикус сканов — после каждого изменения челюстей
+  if (!force && !state.scans.some((s) => s.role === 'bite') && !wasOn) return;
+  for (const info of fresh.scans) {
+    if (state.moving.has(info.id)) continue;
+    updateScan(info);
+    await showScan(info);
+  }
+  if ((wasOn || state.biteView?.on) && !force) await reloadStructureMeshes(); // челюсть могла переехать — структуры за ней
+}
+
+// Сетки структур заново с сервера (как показаны: с прикусом или как на КТ), видимость и прозрачность — прежние.
+async function reloadStructureMeshes() {
+  await Promise.all(state.structures.map(async (s) => {
+    const old = viewer.objects.get(s.key);
+    const opacity = old ? old.material.opacity : (TRANSLUCENT[s.key] ?? 1);
+    const visible = old ? old.visible : state.visible.has(s.key);
+    const m = viewer.setMesh(s.key, await mesh(`structures/${encodeURIComponent(s.key).replace(/%2F/g, '/')}/mesh`),
+      { color: s.color, opacity, order: opacity < 1 ? 1 : 0 });
+    m.visible = visible;
+  }));
+}
+
+// «Прикус»: нижняя челюсть со всеми её структурами — в прикусе сканов (врача); выключено — как на КТ.
+async function toggleBite() {
+  const r = await post('bite_view', { on: !state.biteView?.on }).catch((e) => toast(e.message));
+  if (!r) return;
+  state.biteView = r;
+  await busy(r.on ? 'Прикус сканов' : 'Как на КТ', async () => {
+    await reloadStructureMeshes();
+    await refreshScans(true);
+    overlayVersion += 1;
+    app.setCursor(app.cursor);
+  });
 }
 
 async function register(ids, body = {}) {
@@ -360,12 +401,15 @@ async function register(ids, body = {}) {
       updateScan(info);
       await showScan(info);
     }
+    await refreshScans();
     app.setCursor(app.cursor);
     viewer.fit('front');
   });
 }
 
-const registerPending = () => register(state.scans.filter((s) => !s.registered).map((s) => s.id));
+// Сначала сканы челюстей, потом сканы прикуса: они ставятся на челюсти.
+const registerPending = () => register(state.scans.filter((s) => !s.registered)
+  .sort((a, b) => (a.role === 'bite') - (b.role === 'bite')).map((s) => s.id));
 
 // Ручная поправка с манипулятора на срезе: M — матрица 4×4 в мм пациента, применяется поверх положения скана.
 let evalTimer = null;
@@ -401,6 +445,7 @@ async function evaluateNow(id) {
     if (!later) {
       state.moving.delete(id);
       await showScan(info);
+      await refreshScans();
     } else {
       const rgb = state.heat && info.registered ? new Uint8Array(await get(`scans/${id}/colors`)) : null;
       viewer.setColors(id, rgb);
@@ -427,7 +472,8 @@ async function resetAuto(id) {
 }
 
 // Коррекция положения: манипулятор на срезах; «Сохранить» запоминает результат пользователя для обучения.
-function startCorrection(id) {
+async function startCorrection(id) {
+  if (state.biteView?.on && scanById(id)?.jaw === 'lower') await toggleBite(); // коррекция — по КТ
   state.correcting = { id, start: viewer.getTransform(id), undo: [], redo: [] };
   slices.forEach((v) => v.draw());
   render();
@@ -656,7 +702,9 @@ function renderScans() {
   }).join('');
   const correcting = !!sel && state.correcting?.id === sel.id;
   let tools = '';
-  if (sel?.registered && !correcting) {
+  if (sel?.role === 'bite') {
+    tools = '<p class="muted small">Скан прикуса стоит на сканах челюстей и двигается вместе с ними; с КТ не совмещается.</p>';
+  } else if (sel?.registered && !correcting) {
     tools = `<div class="label">Положение — ${sel.name}</div>
       <div class="row"><button class="btn grow" data-correct="${sel.id}">${icons.move}Скорректировать</button>
         <button class="btn ok grow" data-accept="${sel.id}" ${sel.accepted ? 'disabled' : ''}>${icons.check}${sel.accepted ? 'Принято' : 'Принять'}</button></div>
@@ -670,7 +718,7 @@ function renderScans() {
       <div class="row" style="margin-top:8px"><button class="btn ghost" data-endcorrect>Отмена</button>
         <button class="btn ok grow" data-accept="${sel.id}">${icons.check}Сохранить поправку</button></div></div>`;
   }
-  return `<h2>Сканы</h2><p class="lead">STL, PLY или OBJ как есть со сканера. Совмещение — по коронкам зубов, сразу после загрузки.</p>
+  return `<h2>Сканы</h2><p class="lead">STL, PLY или OBJ как есть со сканера. Совмещение — по коронкам зубов, сразу после загрузки; сканы прикуса (bite, TotalJaw) ставятся на сканы челюстей и задают прикус.</p>
     ${cards}<button class="btn ${state.scans.length ? '' : 'primary'} wide" data-a="scan">${icons.plus}Добавить сканы</button>${tools}`;
 }
 
@@ -715,12 +763,14 @@ function render() {
     '<span><i style="background:#d23228"></i>> 0.2 мм</span><span><i style="background:#aaa"></i>не коронки</span>';
   $('#tools3d').innerHTML = [['front', 'Спереди'], ['right', 'Справа'], ['left', 'Слева'], ['top', 'Сверху']]
     .map(([v, t]) => `<button class="btn" data-view="${v}" style="width:auto;padding:0 8px">${t}</button>`).join('') +
+    (state.biteView?.available ? `<button class="btn ${state.biteView.on ? 'on' : ''}" data-bite style="width:auto;padding:0 8px"
+      title="Прикус сканов: нижняя челюсть со всеми её структурами — в прикусе со сканов (врача), а не как на КТ (на КТ отличается на ${fmt(state.biteView.shift_mm, 1)} мм)">Прикус</button>` : '') +
     (state.scans.some((s) => s.registered) ? `<button class="btn ${state.heat ? 'on' : ''}" data-heat title="Карта отклонений скана от КТ">${icons.heat}</button>` : '');
 }
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-view],[data-heat]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-view],[data-heat],[data-bite]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return render(); }
@@ -755,6 +805,7 @@ document.addEventListener('click', async (e) => {
   if (d.group) { state.groupsOpen.has(d.group) ? state.groupsOpen.delete(d.group) : state.groupsOpen.add(d.group); return render(); }
   if (d.frame) { state.frame = d.frame; return render(); }
   if (d.view) return viewer.fit(d.view);
+  if ('bite' in d) return toggleBite();
   if ('heat' in d) { state.heat = !state.heat; for (const s of state.scans) await showScan(s); return render(); }
   if (d.select && !e.target.closest('button')) {
     if (state.selected !== d.select) state.correcting = null;
@@ -789,6 +840,7 @@ document.addEventListener('keydown', (e) => {
   state.modelsDir = s.models_dir;
   state.models = s.models;
   state.parts = s.segment_parts;
+  state.biteView = s.bite_view;
   state.caseInfo = s.case;
   state.recent = s.recent || [];
   $('#version').textContent = s.version ? `v${s.version}` : '';
