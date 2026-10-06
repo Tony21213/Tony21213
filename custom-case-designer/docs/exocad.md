@@ -75,3 +75,54 @@ CAD-Data установки, только чтение; код и файлы п�
 0.59) и 0.37 мм (нижний, макс. 0.53). По нашей мерке (отклонение коронок скана
 от границы эмали на КТ) наше положение ложится плотнее: среднее 0.135 и 0.121 мм
 против 0.179 и 0.136 мм у exoplan, ≤ 0.2 мм — 77 и 80% точек против 60 и 76%.
+
+## Артикуляторы
+
+Изучено по файлам `DentalCADApp\library\articulator` (exocad 3.3); exocad не
+запускался, в его папки ничего не писалось.
+
+Каждый артикулятор — папка с `articulatorparameters.xml` и сетками. Так же
+добавляют свои артикуляторы сторонние производители (например, папка Harman
+OSH Articulator: тот же XML и свои OFF-сетки). Папки сопоставлены с типами
+артикуляторов из файлов сканеров и регистраторов движений в
+`config\articulatormappings.xml` (`FolderName` ↔ `TypeInXML`).
+
+**`articulatorparameters.xml`** (корень `ArticulatorSettings`):
+
+- геометрия: `IntercondylarDistance` (межмыщелковое расстояние, мм),
+  `AnteriorPosteriorDistance`, `HeightUpperArticulatorPart`, `HeightFrontPlate`,
+  `HeightIncisalNeedle`, `ArticulatorPosition`;
+- монтажная плоскость — три точки: `ArticulationPlaneLegRight`,
+  `ArticulationPlaneLegLeft`, `ArticulationPlaneIncisalNeedle`; на неё
+  ставятся модели, у неё своя картинка (`ArticulationPlaneVisualization`);
+- настройки движения — `…Param` с `Value`, `MinValue`, `MaxValue`, отдельно
+  справа и слева: `TiltCondylarGuide` (наклон суставной дорожки),
+  `BennettAngle`, `ImmediateSideshift`, `Protrusion`, `Retrusion`,
+  `Laterotrusion`; резцовый столик — `TiltFrontplate`,
+  `RotationFrontplateY…`, `RotationFrontplateZ`, `HeightIncisalNeedleOffset`;
+  `FullDentureParamOverride` — свои значения для полных протезов;
+- `MovementregisterToArticulatorTransformation` (у Artex) — матрица 4×4 из
+  системы регистратора движений («цифровой лицевой дуги») в систему
+  артикулятора: по ней exocad сам ставит модели в артикулятор по файлу
+  движений. Без неё exocad предупреждает, что ставит модели «на глаз»;
+- сетки: `ArticulatorMainParts` (резцовый штифт, столик, вставки мыщелков
+  `CondylarInserts` и Беннетта `BennettInserts` — справа и слева, со своими
+  `Id`), `ArticulatorDecorations` (корпус артикулятора или череп у
+  `exoskull`).
+
+**Сетки:** `.sdfa` — закрытый формат exocad; `.off` и `.obj` — открытые.
+Двоичный OFF у exocad — `OFF BINARY\n`, затем числа вершин, граней и рёбер
+(int32) и координаты (float32) в порядке little-endian (в стандарте —
+big-endian). `condylar_head.off` — сфера головки мыщелка с центром в начале
+координат (радиус 2.5–5 мм), `condylar_guide_*.off` и вставки — вокруг неё:
+сетки суставов заданы в системе своего мыщелка.
+
+**Система координат** у каждого артикулятора своя: у Artex монтажная
+плоскость горизонтальна (z = 49), у SAM 2P и GAMMA её точки лежат в плоскости
+y = 0. Как exocad ставит мыщелки и модели по этим числам, по файлам не
+установить — это нужно один раз проверить в exocad на калибровочном
+артикуляторе.
+
+Движения exocad принимает и из файлов регистраторов («Load digital face bow
+data / articulator settings»; среди форматов — Zebris): по ним он ставит
+модели и подстраивает настройки артикулятора. Образца такого файла пока нет.
