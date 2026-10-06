@@ -20,7 +20,7 @@ from .. import exocad_project
 from .. import model_store
 from .. import landmarks as lmk
 from ..fusion import (BITE, SHARED_SHARE, CaseCT, Registration, Scan, deviation_colors, export_case, in_occlusion,
-                      is_bite_name, place_bites, shared_share, split_by_jaw)
+                      is_bite_name, jaw_by_name, place_bites, shared_share, split_by_jaw)
 from ..jawcase import JawCase
 from ..learning import AlignmentMemory
 from ..register import apply
@@ -165,6 +165,15 @@ def open_folder(folder: str):
     else:
         subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", folder])
 
+JAWS_APART = ("Без КТ: сканы челюстей не в прикусе (выгружены по отдельности), а сканов прикуса нет — нижний "
+              "стоит как в файле. Добавьте сканы прикуса или выгрузите сканы одной сессией сканера.")
+
+
+def scanner_registration(scan: Scan, jaw: str) -> Registration:
+    """Скан без КТ: «совмещён» как есть — координаты файла (сканера), без метрик (об этом — пояснение в шаге)."""
+    return Registration(scan, jaw, np.eye(4), np.full(len(scan.vertices), np.nan))
+
+
 class Session:
     def __init__(self, memory_path: str | None = None, models_dir: str | None = None):
         self.lock = threading.RLock()
@@ -260,6 +269,17 @@ class Session:
             for item in self.scans.values():
                 item.update(reg=None, auto=None, transform=None, guided=False, lower_bite=None)
         return self.ct_info()
+
+    def close_ct(self):
+        """Без КТ: только сканы (кейс, сохранённый без КТ)."""
+        with self.lock:
+            self.ct_path, self.vol, self.case, self.ct_series_id = None, None, None, None
+            self.case_path, self.guide_teeth = None, {}
+            self.structures, self._sections = {}, {}
+            self.bite_view, self.bite_motion, self._bite_meshes = False, None, {}
+            self.landmarks, self.suggested = {}, set()
+            for item in self.scans.values():
+                item.update(reg=None, auto=None, transform=None, guided=False, lower_bite=None)
 
     def ct_info(self) -> dict | None:
         if self.vol is None:
@@ -452,8 +472,7 @@ class Session:
     def remove_scan(self, sid: str):
         with self.lock:
             self.scans.pop(sid, None)
-        if self.case is not None:
-            self._place_bites()
+        self._place_bites()
 
     # --- сканы прикуса: стоят на сканах челюстей и задают прикус врача ---------------------
     def _jaw_items(self, skip: str | None = None):
@@ -483,7 +502,10 @@ class Session:
         """Как переезжает нижняя челюсть с КТ в прикус сканов: по сканам прикуса или прикус со сканера."""
         up, lo = self._jaw_items()
         motion = None
-        if up is not None and lo is not None:
+        # Без КТ: сканы челюстей не в прикусе и сканов прикуса нет — нижний стоит как в файле (подсказка у скана).
+        self.jaws_apart = bool(self.case is None and up is not None and lo is not None and lo.get("lower_bite") is None
+                               and not (in_occlusion(up["scan"], lo["scan"]) or in_occlusion(lo["scan"], up["scan"])))
+        if up is not None and lo is not None and self.case is not None:
             if lo.get("lower_bite") is not None:
                 motion = lo["lower_bite"] @ np.linalg.inv(lo["reg"].transform)
             elif in_occlusion(up["scan"], lo["scan"]) or in_occlusion(lo["scan"], up["scan"]):
@@ -500,6 +522,8 @@ class Session:
     def shown_transform(self, item):
         """Где скан показан: как на КТ или, с включённым прикусом, нижние — в прикусе сканов."""
         T = item["transform"]
+        if self.case is None and T is not None and item.get("lower_bite") is not None:
+            return item["lower_bite"]  # без КТ прикус один — по сканам прикуса
         return self.bite_motion @ T if T is not None and self._lower_moves(item) else T
 
     def _shown_structure(self, key: str):
@@ -551,7 +575,8 @@ class Session:
             for item in bites:
                 item.update(reg=None, auto=None, transform=None, note=None)
             return
-        result = place_bites([item["scan"] for item in bites], up and up["reg"], lo and lo["reg"], self.case)
+        result = place_bites([item["scan"] for item in bites], up and up["reg"], lo and lo["reg"], self.case,
+                             on_ct=self.case is not None)
         with self.lock:
             for k, item in enumerate(bites):
                 reg = result.regs[k]
@@ -571,10 +596,15 @@ class Session:
                 "auto_transform": None if item["auto"] is None else item["auto"].transform.tolist(),
                 "registered": reg is not None, "accepted": item["accepted"],
                 "stats": reg.stats if reg else None, "edge_shift_mm": round(reg.edge_shift, 3) if reg else None,
-                "warnings": ((([] if item["guided"] or item["role"] == BITE else [UNGUIDED]) + reg.warnings) if reg
+                "warnings": ((([] if item["guided"] or item["role"] == BITE else [UNGUIDED]) + reg.warnings
+                              + ([JAWS_APART] if self._apart(item) else [])) if reg
                              else [item["note"]] if item.get("note") else []),
                 "segments": [vars(s) for s in reg.segments] if reg else [],
                 "corrected_mm": self._corrected(sid)}
+
+    def _apart(self, item) -> bool:
+        return bool(getattr(self, "jaws_apart", False) and item["reg"] is not None and item["role"] != BITE
+                    and item["reg"].jaw == "lower")
 
     def _corrected(self, sid: str) -> float | None:
         item = self.scans[sid]
@@ -598,8 +628,13 @@ class Session:
             raise ValueError("сначала откройте КТ")
 
     def register(self, sid: str, jaw: str | None = None, pairs=None, start=None, progress=None) -> dict:
-        self._require_ct()
+        """Совместить скан с КТ; без КТ — поставить в координатах сканера (как в файле)."""
+        if self.case is None and (start is not None or pairs is not None):
+            raise ValueError("без КТ скан стоит как в файле: корректировать не по чему")
         item = self.scans[sid]
+        if jaw is not None:  # челюсть указал пользователь (значок у скана)
+            self.set_jaw(sid, jaw)
+            jaw = None if jaw == BITE else jaw
         if item["role"] != BITE and jaw is None and start is None and pairs is None and self._on_both_jaws(sid):
             item["role"] = BITE  # лежит и на верхнем, и на нижнем скане — это скан прикуса
         if self._lower_moves(item) and (start is not None or pairs is not None):
@@ -610,6 +645,8 @@ class Session:
                 raise ValueError("скан прикуса ставится на сканы челюстей: сначала добавьте и совместите их")
             return self.scan_info(sid)
         jaw = jaw or item["jaw"]
+        if self.case is None:
+            return self._place_without_ct(sid, jaw)
         reg = self.case.register(item["scan"], jaw=jaw, pairs=pairs,
                                  start=None if start is None else np.asarray(start, float))
         with self.lock:
@@ -617,6 +654,25 @@ class Session:
             item["guided"] = reg.jaw in self.case.guided
             if item["auto"] is None or (start is None and pairs is None):
                 item["auto"] = reg
+        self._place_bites()
+        return self.scan_info(sid)
+
+    def _place_without_ct(self, sid: str, jaw: str | None) -> dict:
+        """Без КТ: скан челюсти — в координатах своего файла (у выгрузки сканера они общие и в прикусе);
+        челюсть — по имени файла, иначе противоположная уже поставленной."""
+        item = self.scans[sid]
+        if jaw is None:
+            jaw = jaw_by_name(item["scan"].name)
+        if jaw is None:
+            taken = {it["reg"].jaw for s, it in self.scans.items()
+                     if s != sid and it["reg"] is not None and it["role"] != BITE}
+            jaw = {frozenset({"upper"}): "lower", frozenset({"lower"}): "upper"}.get(frozenset(taken))
+        if jaw is None:
+            raise ValueError(f"{item['scan'].name}: без КТ челюсть по имени файла не понять — укажите её "
+                             "(щёлкните по значку челюсти у скана)")
+        reg = scanner_registration(item["scan"], jaw)
+        with self.lock:
+            item.update(reg=reg, auto=reg, transform=reg.transform, accepted=False, guided=True, jaw=jaw)
         self._place_bites()
         return self.scan_info(sid)
 
@@ -647,6 +703,7 @@ class Session:
             raise ValueError("скан ещё не совмещён")
         if item["role"] == BITE:
             raise ValueError("скан прикуса стоит на сканах челюстей — принимать нужно их")
+        self._require_ct()
         from ..learning import MIN_CASES
 
         rec = self.memory.record(self.vol.device, item["auto"] or item["reg"], item["reg"])
@@ -839,8 +896,11 @@ class Session:
     # --- экспорт ------------------------------------------------------------
     def export(self, out_dir: str, bite: str = "scan", frame: str = "exocad", include: list[str] | None = None,
                reference: str | None = None) -> dict:
-        self._require_ct()
         errorlog.private(out_dir, "папка экспорта")
+        if self.case is None and not any(item["reg"] is not None for item in self.scans.values()):
+            raise ValueError("нечего экспортировать: откройте КТ или добавьте сканы")
+        if self.case is None:  # только сканы: координаты сканера, прикус сканов
+            frame, bite, reference = "exocad", "scan", None
         regs = []
         for item in self.scans.values():
             reg = item["reg"]
@@ -861,14 +921,14 @@ class Session:
             if not meshes:
                 raise ValueError("нечего экспортировать: сегментируйте КТ или совместите сканы")
             return self._export_ct_only(out_dir, meshes)
-        if not self.structures:  # без сегментации — хотя бы зубы из КТ по плотности (как в 3D)
+        if not self.structures and self.case is not None:  # без сегментации — зубы из КТ по плотности (как в 3D)
             meshes["ct_teeth"] = self.case.surfaces(step=1)["ct_teeth"]
         if project is not None:
             return self._export_to_exocad(project, regs, meshes, frame, bite)
         matrix, name = self.reference(reference) if frame == "reference" else (None, "")
         self.last_export = out_dir
         report = export_case(out_dir, regs, meshes, bite=bite, frame=frame, ct=self.case, reference=matrix,
-                             reference_name=name)
+                             reference_name=name, without_ct=self.case is None)
         return {"out_dir": out_dir, "files": sorted(report["files"]), "notes": report["notes"],
                 "bite": report["ct_bite_vs_scans"], "frame": report["frame"]}
 
@@ -900,10 +960,11 @@ class Session:
         scene = project.to_scene(matched) if matched else project.default
         out_dir = os.path.join(project.folder, EXOCAD_SUBFOLDER)
         self.last_export = out_dir
-        report = export_case(out_dir, regs, meshes, bite=bite, frame="exocad", ct=self.case, scene=scene)
+        report = export_case(out_dir, regs, meshes, bite=bite, frame="exocad", ct=self.case, scene=scene,
+                             without_ct=self.case is None)
         notes = [f"Проект exocad: файлы в подпапке {EXOCAD_SUBFOLDER}, в координатах сцены проекта (матрица — "
                  f"{project.source}). В exocad: «Load mesh as …»; копии сканов там же должны совпасть со сканами проекта."]
-        if frame == "dicom":
+        if frame == "dicom" and self.case is not None:
             notes.append("Для проекта exocad выгрузка всегда в координатах его сцены, а не КТ.")
         if matched is None:
             notes.append(f"Скан {ref.scan.name} не найден среди сканов проекта — положение в exocad не гарантировано "
@@ -934,7 +995,8 @@ class Session:
         положениями, автоматические положения (для обучения), структуры сегментации, окно КТ."""
         import json
 
-        self._require_ct()
+        if self.case is None and not self.scans:
+            raise ValueError("нечего сохранять: откройте КТ или добавьте сканы")
         path = path or self.case_path
         errorlog.private(path, "кейс")
         if not path:
@@ -992,9 +1054,12 @@ class Session:
             errorlog.private(sm.get("path"), "скан")
             errorlog.private(sm.get("name"), "скан")
         ct = ct_path or meta["ct_path"]
-        if not os.path.exists(ct):
+        if ct is None:  # кейс только со сканами
+            self.close_ct()
+        elif not os.path.exists(ct):
             raise FileNotFoundError(f"КТ этого кейса не найден: {ct} — его переместили или удалили")
-        self.load_ct(ct, progress, meta.get("ct_series"))
+        else:
+            self.load_ct(ct, progress, meta.get("ct_series"))
         with self.lock:
             self.window = tuple(meta.get("window", self.window))
             self.structures = {key: trimesh.Trimesh(arrays[f"st{k}_v"], arrays[f"st{k}_f"], process=False)
@@ -1004,7 +1069,7 @@ class Session:
         with self.lock:
             self.landmarks = {k: np.asarray(v, float) for k, v in meta.get("landmarks", {}).items() if k in lmk.BY_KEY}
             self.suggested = set(meta.get("suggested", [])) & set(self.landmarks)
-        if self.guide_teeth:
+        if self.guide_teeth and self.case is not None:
             self.case.use_teeth(self.guide_teeth)
         for i, sm in enumerate(meta["scans"]):
             if progress:
@@ -1015,7 +1080,10 @@ class Session:
             item = {"scan": scan, "path": sm["path"], "color": sm["color"], "jaw": sm["jaw"], "reg": None, "auto": None,
                     "role": role, "lower_bite": None,
                     "transform": None, "accepted": False, "guided": False}
-            if sm["transform"] is not None and role != BITE:  # сканы прикуса ставятся заново на челюсти
+            if sm["transform"] is not None and role != BITE and self.case is None:  # без КТ — как в файле
+                reg = scanner_registration(scan, sm["reg_jaw"])
+                item.update(reg=reg, auto=reg, transform=reg.transform, guided=True)
+            elif sm["transform"] is not None and role != BITE:  # сканы прикуса ставятся заново на челюсти
                 reg = self.case.evaluate(scan, np.asarray(sm["transform"], float), jaw=sm["reg_jaw"])
                 item.update(reg=reg, transform=reg.transform, guided=reg.jaw in self.case.guided)
                 auto = np.asarray(sm["auto"], float) if sm["auto"] is not None else reg.transform

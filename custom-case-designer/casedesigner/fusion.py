@@ -262,6 +262,18 @@ def is_bite_name(name: str) -> bool:
     return bool(BITE_NAME.search(name or ""))
 
 
+# Челюсть по имени файла (exocad, 3Shape, Medit и др.): нужна без КТ, когда совмещать не с чем.
+_LETTER = r"[^\W\d_]"
+UPPER_NAME = re.compile(rf"upper|maxill|oberkiefer|верх|(?<!{_LETTER})(?:ok|вч)(?!{_LETTER})", re.IGNORECASE)
+LOWER_NAME = re.compile(rf"lower|mandib|unterkiefer|нижн|низ|(?<!{_LETTER})(?:uk|нч)(?!{_LETTER})", re.IGNORECASE)
+
+
+def jaw_by_name(name: str) -> str | None:
+    """upper или lower по имени файла скана; None — по имени не понять."""
+    up, lo = bool(UPPER_NAME.search(name or "")), bool(LOWER_NAME.search(name or ""))
+    return "upper" if up and not lo else "lower" if lo and not up else None
+
+
 def shared_share(scan: Scan, other: Scan, T: np.ndarray | None = None) -> float:
     """Доля вершин scan (T — куда их перенести; без T — как в файле), лежащих на other ближе SHARED_MM."""
     from scipy.spatial import cKDTree
@@ -289,7 +301,7 @@ class BitePlacement:
 
 
 def place_bites(bites: list[Scan], upper: Registration | None, lower: Registration | None,
-                ct: "CaseCT | None" = None) -> BitePlacement:
+                ct: "CaseCT | None" = None, on_ct: bool = True) -> BitePlacement:
     """Сканы прикуса — на сканы челюстей (не на КТ), и прикус врача по ним.
 
     transform скана прикуса — скан прикуса → КТ в системе верхнего скана.
@@ -303,6 +315,8 @@ def place_bites(bites: list[Scan], upper: Registration | None, lower: Registrati
     * Сканы челюстей не в прикусе — нижний скан подгоняется сразу ко всем нижним
       зубам сканов прикуса (обычно справа и слева): прикус врача, а не прикус на КТ.
       Слишком далёкий от прикуса на КТ или плохо легший прикус не принимается.
+
+    on_ct=False — без КТ: положения челюстей — координаты их файлов, прикуса КТ нет.
     """
     from scipy.spatial import cKDTree
 
@@ -340,6 +354,7 @@ def place_bites(bites: list[Scan], upper: Registration | None, lower: Registrati
             lower_bite, best = T, fit  # у нижнего скана и этого скана прикуса общие координаты
 
     notes = []
+    fallback = "прикус взят с КТ" if on_ct else "нижний скан стоит как в файле"
     if upper is not None and lower is not None and not scanner_bite and placed:
         crowns = lower.scan.vertices[lower.scan.crowns]
         if lower_bite is None:
@@ -356,10 +371,12 @@ def place_bites(bites: list[Scan], upper: Registration | None, lower: Registrati
                 lies = float(np.isfinite(target.tree.query(apply(X, sample), distance_upper_bound=SHARED_MM)[0]).mean())
                 lower_bite = np.linalg.inv(X) @ lower.transform if lies >= 0.3 else None
                 if lower_bite is None:
-                    notes.append("Нижний скан не лёг на нижние зубы сканов прикуса — прикус взят с КТ.")
+                    notes.append(f"Нижний скан не лёг на нижние зубы сканов прикуса — {fallback}.")
             else:
-                notes.append("На сканах прикуса не нашлось нижних зубов — прикус взят с КТ.")
-        if lower_bite is not None:
+                notes.append(f"На сканах прикуса не нашлось нижних зубов — {fallback}.")
+        if lower_bite is not None and not on_ct:
+            notes.append("Нижний скан поставлен в прикус по сканам прикуса.")
+        elif lower_bite is not None:
             moved = float(np.linalg.norm(apply(lower_bite, crowns) - apply(lower.transform, crowns), axis=1).mean())
             if moved > MAX_BITE_SHIFT_MM:
                 notes.append(f"Прикус по сканам прикуса на {moved:.0f} мм дальше прикуса на КТ — не похоже на правду, "
@@ -427,7 +444,7 @@ def _rotation_deg(T: np.ndarray) -> float:
 def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict[str, Mesh] | None = None,
                 bite: str = "scan", frame: str = "exocad", ct: "CaseCT | None" = None,
                 reference: np.ndarray | None = None, reference_name: str = "",
-                scene: np.ndarray | None = None) -> dict:
+                scene: np.ndarray | None = None, without_ct: bool = False) -> dict:
     """Пишет все сетки в одной системе координат и файл с матрицами.
 
     ct_meshes — сетки из КТ (структуры сегментации или поверхности по порогам),
@@ -451,6 +468,8 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
     этом любой: верхняя челюсть ставится по КТ, нижняя — по выбранному прикусу.
     scene — с frame="exocad": матрица «координаты файла опорного скана → сцена
     проекта exocad» (exocad_project): всё выгружается в координатах его сцены.
+    without_ct — кейс без КТ: transform сканов — координаты их файлов (в системе
+    опорного скана); только координаты сканера и прикус сканов.
     """
     if bite not in ("scan", "ct"):
         raise ValueError("bite должен быть scan или ct")
@@ -465,6 +484,8 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
         result = export_case(out_dir, registrations, ct_meshes, bite=bite, frame=base, ct=ct,
                              reference=reference, reference_name=reference_name)
         return result
+    if without_ct and (frame != "exocad" or bite != "scan"):
+        raise ValueError("без КТ — только координаты сканера и прикус сканов")
     if not registrations:
         raise ValueError("нет совмещённых сканов")
 
@@ -503,6 +524,9 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
         elif bite == "scan":
             if in_occlusion(ref.scan, reg.scan) or in_occlusion(reg.scan, ref.scan):
                 placement[id(reg)], placed_by[id(reg)] = np.eye(4), "scanner"
+            elif without_ct:
+                notes.append(f"{reg.scan.name}: скан не в прикусе с {ref.scan.name} (выгружен отдельно), "
+                             "сканов прикуса нет — стоит как в файле.")
             else:
                 notes.append(f"{reg.scan.name}: скан не в прикусе с {ref.scan.name} (выгружен отдельно) — "
                              "поставлен по КТ, прикус взят с КТ.")
@@ -513,7 +537,7 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
         jaw_transform.setdefault(jaw, to_out)
 
     bite_report = None
-    if "upper" in by_jaw and "lower" in by_jaw and scanner:
+    if "upper" in by_jaw and "lower" in by_jaw and scanner and not without_ct:
         lower = by_jaw["lower"]
         # Насколько нижняя челюсть на КТ стоит иначе, чем на сканах (относительно верхней).
         diff = np.linalg.inv(placement[id(lower)]) @ (to_out @ lower.transform)
@@ -547,8 +571,9 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
     for reg in registrations:
         M = placement[id(reg)]
         write(reg.scan.name, [(reg.scan.vertices, reg.scan.faces, M)])
-        write(reg.scan.name + "_deviation", [(reg.scan.vertices, reg.scan.faces, M)],
-              deviation_colors(reg.deviation), suffix=".ply")
+        if not without_ct or reg.jaw == BITE:  # карта отклонений от КТ (у скана прикуса — от сканов челюстей)
+            write(reg.scan.name + "_deviation", [(reg.scan.vertices, reg.scan.faces, M)],
+                  deviation_colors(reg.deviation), suffix=".ply")
         scans[reg.scan.name] = {
             "jaw": reg.jaw, "scan_to_ct": reg.transform.round(9).tolist(),
             "placement": placed_by[id(reg)],
@@ -574,7 +599,8 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
                   else f"DICOM patient coordinates, mm (LPS); {ref.scan.name} as on the CT" if scanner
                   else "DICOM patient coordinates, mm (LPS)"),
         **({"scanner_to_output": post.round(9).tolist()} if scene is not None and frame == "exocad" else {}),
-        "ct_to_output": {jaw: M.round(9).tolist() for jaw, M in jaw_transform.items()},
+        **({"without_ct": True} if without_ct else
+           {"ct_to_output": {jaw: M.round(9).tolist() for jaw, M in jaw_transform.items()}}),
         "ct_bite_vs_scans": bite_report,
         "notes": notes,
         "files": {name: {"source_to_output": Ms} for name, Ms in written.items()},

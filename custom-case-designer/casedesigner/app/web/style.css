@@ -220,6 +220,8 @@ select:focus, input[type=text]:focus { border-color: var(--accent); }
 .badge.ok { background: var(--ok-soft); color: var(--ok); }
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
 .badge.accent { background: var(--accent-soft); color: var(--accent-2); }
+button.badge { border: 0; font: inherit; font-size: 11px; cursor: pointer; }
+button.badge:hover { color: var(--text); }
 .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .metric { background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; padding: 7px 9px; }
 .metric span { display: block; color: var(--faint); font-size: 10.5px; }

@@ -43,7 +43,7 @@ const app = {
   landmarkPoints: () => [],
   placeLandmark: () => {},
   overlayVersion: () => overlayVersion,
-  overlayHeat: () => state.heat && state.scans.some((x) => x.registered), // контур скана — по цвету отклонения
+  overlayHeat: () => heatOn() && state.scans.some((x) => x.registered), // контур скана — по цвету отклонения
   // Окно КТ (яркость и контраст): наборы по уровням плотности этого снимка и ручная настройка правой кнопкой.
   windowPresets: () => [...windowPresets(), ...(state.windowName ? [] : [{ id: '', title: 'Вручную' }])],
   windowName: () => state.windowName,
@@ -160,6 +160,8 @@ const plural = (n, one, few, many) => (n % 10 === 1 && n % 100 !== 11 ? one
 const cls = (v, good, fair) => (v <= good ? 'ok' : v <= fair ? 'warn' : 'bad');
 const scanById = (id) => state.scans.find((s) => s.id === id);
 const JAWS = { upper: 'верхняя', lower: 'нижняя', bite: 'прикус' };
+const NEXT_JAW = { upper: 'lower', lower: 'bite', bite: 'upper' }; // значок челюсти у скана — по кругу
+const heatOn = (info) => state.heat && !!state.ct && (!info || info.registered); // отклонение от КТ — только с КТ
 const shownRecent = () => state.recent.filter((r) => r.exists);
 
 // ---------- инкогнито: показ программы без данных пациента ----------
@@ -223,7 +225,7 @@ function updateScan(info) {
 async function showScan(info) {
   if (!viewer.objects.has(info.id)) viewer.setScan(info.id, await mesh(`scans/${info.id}/mesh`), info.color, null);
   if (info.transform) viewer.setTransform(info.id, info.transform);
-  const rgb = state.heat && info.registered ? new Uint8Array(await get(`scans/${info.id}/colors`)) : null;
+  const rgb = heatOn(info) ? new Uint8Array(await get(`scans/${info.id}/colors`)) : null;
   viewer.setColors(info.id, rgb);
 }
 
@@ -289,6 +291,7 @@ async function openCt(kind) {
     viewer.setMesh('ct_teeth', await mesh('ct/surface'), { color: '#e9e2d2' });
     viewer.fit('front');
   });
+  if (state.ct && state.scans.length) registerPending(); // сканы, добавленные без КТ, — на КТ
 }
 
 async function segment() {
@@ -402,7 +405,7 @@ async function addScans() {
       state.selected ??= info.id;
     }
   });
-  if (state.ct) registerPending();
+  registerPending(); // без КТ — в координатах сканера
 }
 
 async function removeScan(id) {
@@ -455,16 +458,21 @@ async function toggleBite() {
 }
 
 async function register(ids, body = {}) {
-  if (!state.ct) return toast('Сначала откройте КТ');
-  await busy('Совмещаю по коронкам зубов', async (progress) => {
+  await busy(state.ct ? 'Совмещаю по коронкам зубов' : 'Расставляю сканы', async (progress) => {
+    const failed = [];
     for (const id of ids) {
-      const info = await run(`scans/${id}/register`, body, (s) => progress({ ...s, message: scanLabel(scanById(id)) }));
-      updateScan(info);
-      await showScan(info);
+      try {
+        const info = await run(`scans/${id}/register`, body, (s) => progress({ ...s, message: scanLabel(scanById(id)) }));
+        updateScan(info);
+        await showScan(info);
+      } catch (e) {
+        failed.push(e.message);
+      }
     }
-    await refreshScans();
+    await refreshScans(!state.ct); // без КТ подсказки у сканов зависят друг от друга — обновить все
     app.setCursor(app.cursor);
     viewer.fit('front');
+    if (failed.length) throw new Error(failed.join(' · '));
   });
 }
 
@@ -508,7 +516,7 @@ async function evaluateNow(id) {
       await showScan(info);
       await refreshScans();
     } else {
-      const rgb = state.heat && info.registered ? new Uint8Array(await get(`scans/${id}/colors`)) : null;
+      const rgb = heatOn(info) ? new Uint8Array(await get(`scans/${id}/colors`)) : null;
       viewer.setColors(id, rgb);
     }
     overlayVersion += 1;
@@ -631,8 +639,8 @@ async function doExport() {
   const paths = await choose('out', 'Папка для результата');
   if (!paths) return;
   const hasScans = state.scans.some((s) => s.registered);
-  const frame = hasScans ? state.frame : 'dicom';
-  const bite = exportBite();
+  const frame = !state.ct ? 'exocad' : hasScans ? state.frame : 'dicom';
+  const bite = state.ct ? exportBite() : 'scan';
   await busy('Экспорт', async (progress) => {
     state.exported = await run('export', { out_dir: paths[0], bite, frame, include: [...state.visible] }, progress);
     state.exported.biteChosen = biteChoice() ? bite : null;
@@ -641,7 +649,7 @@ async function doExport() {
 
 // ---------- кейс: сохранить и открыть ----------
 async function saveCase(as = false) {
-  if (!state.ct) return toast('Нечего сохранять: откройте КТ');
+  if (!state.ct && !state.scans.length) return toast('Нечего сохранять: откройте КТ или добавьте сканы');
   let path = as ? null : state.caseInfo?.path;
   if (!path) {
     const paths = await choose('save', 'Куда сохранить кейс (.ccdcase)');
@@ -727,7 +735,8 @@ function renderCt() {
       `<div class="item" data-recent="${i}" ${state.incognito ? '' : `title="${r.path}"`}>${icons.folder}<span>${state.incognito ? `Кейс ${i + 1}` : r.name}</span></div>`).join('')}</div>` : '';
     return `${recentHtml}<h2>КТ</h2><p class="lead">КЛКТ: папка DICOM, архив (zip, 7z, rar, tar) или файл NIfTI, MHA, NRRD.</p>
       <button class="btn primary wide" data-a="ctdir">${icons.folder}Открыть папку DICOM</button>
-      <button class="btn ghost wide" style="margin-top:6px" data-a="ct">или архив, файл…</button>${modelsCard()}`;
+      <button class="btn ghost wide" style="margin-top:6px" data-a="ct">или архив, файл…</button>
+      <button class="btn ghost wide" style="margin-top:6px" data-a="scansonly">Без КТ — только сканы</button>${modelsCard()}`;
   }
   const info = `<div class="card"><div class="card-head"><h3>${state.incognito ? 'КТ пациента' : ct.name}</h3><button class="btn ghost sm" data-a="ctdir" title="Открыть другое КТ">Другое…</button></div>
     <div class="kv"><span>Размер</span><b>${ct.shape.join(' × ')}</b><span>Воксель</span><b>${ct.spacing.map((v) => fmt(v, 2)).join(' × ')} мм</b>
@@ -756,11 +765,13 @@ function renderCt() {
 }
 
 function renderScans() {
-  if (!state.ct) return '<h2>Сканы</h2><p class="lead">Сначала откройте КТ.</p>';
+  const ct = !!state.ct;
   const sel = scanById(state.selected);
   const cards = state.scans.map((s) => {
-    const status = s.accepted ? '<span class="badge ok">принят</span>' : s.registered ? '' : '<span class="badge">не совмещён</span>';
-    const jaw = s.jaw ? `<span class="badge">${JAWS[s.jaw]}</span>` : '';
+    const status = s.accepted ? '<span class="badge ok">принят</span>' : s.registered ? ''
+      : `<span class="badge">${ct ? 'не совмещён' : 'не поставлен'}</span>`;
+    const jaw = s.jaw || !ct ? `<button class="badge ${s.jaw ? '' : 'warn'}" data-jaw="${s.id}"
+      title="Челюсть скана — щёлкните, чтобы сменить: верхняя → нижняя → прикус">${s.jaw ? JAWS[s.jaw] : 'челюсть?'}</button>` : '';
     const list = s.warnings || [];
     const open = state.warnOpen.has(s.id);
     const warnBtn = list.length ? `<button class="warn-btn ${open ? 'on' : ''}" data-warns="${s.id}" title="Предупреждения">${icons.warn}<b>${list.length}</b></button>` : '';
@@ -770,12 +781,14 @@ function renderScans() {
         ${warnBtn}${s.registered ? opacityButton([s.id], `data-opacity="${s.id}"`) : ''}
         <button class="btn icon ghost" data-remove="${s.id}" title="Убрать">${icons.trash}</button></div>
       ${metricsHtml(s)}${warnings}
-      ${s.registered ? '' : `<button class="btn wide" data-register="${s.id}">${icons.play}Совместить</button>`}</div>`;
+      ${s.registered ? '' : `<button class="btn wide" data-register="${s.id}">${icons.play}${ct ? 'Совместить' : 'Поставить'}</button>`}</div>`;
   }).join('');
   const correcting = !!sel && state.correcting?.id === sel.id;
   let tools = '';
   if (sel?.role === 'bite') {
     tools = '<p class="muted small">Скан прикуса стоит на сканах челюстей и двигается вместе с ними; с КТ не совмещается.</p>';
+  } else if (!ct) {
+    tools = ''; // без КТ корректировать и принимать не по чему
   } else if (sel?.registered && !correcting) {
     tools = `<div class="label">Положение — ${scanLabel(sel)}</div>
       <div class="row"><button class="btn grow" data-correct="${sel.id}">${icons.move}Скорректировать</button>
@@ -790,7 +803,9 @@ function renderScans() {
       <div class="row" style="margin-top:8px"><button class="btn ghost" data-endcorrect>Отмена</button>
         <button class="btn ok grow" data-accept="${sel.id}">${icons.check}Сохранить поправку</button></div></div>`;
   }
-  return `<h2>Сканы</h2><p class="lead">STL, PLY или OBJ как есть со сканера. Совмещение — по коронкам зубов, сразу после загрузки; сканы прикуса (bite, TotalJaw) ставятся на сканы челюстей и задают прикус.</p>
+  const lead = ct ? 'STL, PLY или OBJ как есть со сканера. Совмещение — по коронкам зубов, сразу после загрузки; сканы прикуса (bite, TotalJaw) ставятся на сканы челюстей и задают прикус.'
+    : 'Без КТ: STL, PLY или OBJ как есть со сканера — сканы стоят в его координатах, сканы прикуса (bite, TotalJaw) ставят нижний скан в прикус. Откройте КТ — сканы совместятся с ним.';
+  return `<h2>Сканы</h2><p class="lead">${lead}</p>
     ${cards}<button class="btn ${state.scans.length ? '' : 'primary'} wide" data-a="scan">${icons.plus}Добавить сканы</button>${tools}`;
 }
 
@@ -799,7 +814,8 @@ function renderExport() {
   const ready = hasScans || state.structures.length;
   const res = state.exported;
   const bite = exportBite();
-  const frames = hasScans ? `<div class="seg"><button data-frame="exocad" class="${state.frame === 'exocad' ? 'on' : ''}">Сканера (exocad)</button>
+  const frames = !state.ct ? '<p class="muted small">Без КТ — сканы в координатах сканера, как их открывает exocad; нижний — в прикусе по сканам прикуса.</p>'
+    : hasScans ? `<div class="seg"><button data-frame="exocad" class="${state.frame === 'exocad' ? 'on' : ''}">Сканера (exocad)</button>
       <button data-frame="dicom" class="${state.frame === 'dicom' ? 'on' : ''}">КТ (DICOM)</button></div>
       ${biteChoice() ? `<div class="label">Прикус</div><div class="seg"><button data-exbite="scan" class="${bite === 'scan' ? 'on' : ''}">Сканов (врача)</button>
       <button data-exbite="ct" class="${bite === 'ct' ? 'on' : ''}">Как на КТ</button></div>` : ''}
@@ -813,7 +829,7 @@ function renderExport() {
   return `<h2>Экспорт</h2><p class="lead">STL всех видимых объектов в единой системе координат и case.json с матрицами.</p>
     <div class="label">Система координат</div>${frames}
     <button class="btn primary wide" data-a="export" ${ready ? '' : 'disabled'}>${icons.export}Экспортировать в папку…</button>
-    ${ready ? '' : '<p class="muted small">Сегментируйте КТ или совместите сканы.</p>'}${result}`;
+    ${ready ? '' : `<p class="muted small">${state.ct ? 'Сегментируйте КТ или совместите сканы.' : 'Добавьте сканы.'}</p>`}${result}`;
 }
 
 const RENDER = { ct: renderCt, scans: renderScans, export: renderExport };
@@ -828,34 +844,35 @@ function render() {
     ${icons[s.icon]}<span>${s.title}</span><i class="dot"></i></button>`).join('');
   panel.innerHTML = RENDER[state.step]();
   const ct = state.ct;
-  const caseName = state.incognito ? 'Кейс' : state.caseInfo?.name || ct?.name;
-  $('#caseChip').textContent = ct ? `${caseName}${state.scans.length ? ` · сканов: ${state.scans.length}` : ''}` : '';
+  const caseName = state.incognito ? 'Кейс' : state.caseInfo?.name || ct?.name || 'Без КТ';
+  $('#caseChip').textContent = ct || state.scans.length ? `${caseName}${state.scans.length ? ` · сканов: ${state.scans.length}` : ''}` : '';
   $('#caseActions').innerHTML = `<button class="btn ghost sm" data-case="open" title="Открыть кейс (Ctrl+O)">${icons.folder}Открыть</button>
-    <button class="btn ghost sm" data-case="save" title="Сохранить кейс (Ctrl+S)" ${ct ? '' : 'disabled'}>${icons.check}Сохранить</button>
+    <button class="btn ghost sm" data-case="save" title="Сохранить кейс (Ctrl+S)" ${ct || state.scans.length ? '' : 'disabled'}>${icons.check}Сохранить</button>
     <button class="btn ghost sm incognito-btn ${state.incognito ? 'on' : ''}" data-a="incognito" title="${state.incognito
       ? 'Инкогнито: имена пациентов и пути скрыты. Нажмите, чтобы показать'
       : 'Инкогнито: скрыть имена пациентов и пути — для показа программы. Системные окна выбора файлов и проводник показывают их как есть'}">${icons.incognito}${state.incognito ? 'Инкогнито' : ''}</button>
     <button class="btn ghost sm help-btn" data-a="help" title="Мышь и клавиши (?)">?</button>`;
-  $('#empty3d').innerHTML = ct || state.scans.length ? '' : '<span>Откройте КТ</span>';
+  $('#empty3d').innerHTML = ct || state.scans.length ? '' : '<span>Откройте КТ или добавьте сканы</span>';
   const legend = $('#legend');
-  legend.hidden = !(state.heat && state.scans.some((s) => s.registered));
+  legend.hidden = !(heatOn() && state.scans.some((s) => s.registered));
   legend.innerHTML = '<span><i style="background:#28aa46"></i>≤ 0.1 мм</span><span><i style="background:#e6be1e"></i>≤ 0.2 мм</span>' +
     '<span><i style="background:#d23228"></i>> 0.2 мм</span><span><i style="background:#aaa"></i>не коронки</span>';
   $('#tools3d').innerHTML = [['front', 'Спереди'], ['right', 'Справа'], ['left', 'Слева'], ['top', 'Сверху']]
     .map(([v, t]) => `<button class="btn" data-view="${v}" style="width:auto;padding:0 8px">${t}</button>`).join('') +
     (state.biteView?.available ? `<button class="btn ${state.biteView.on ? 'on' : ''}" data-bite style="width:auto;padding:0 8px"
       title="Прикус сканов: нижняя челюсть со всеми её структурами — в прикусе со сканов (врача), а не как на КТ (на КТ отличается на ${fmt(state.biteView.shift_mm, 1)} мм)">Прикус</button>` : '') +
-    (state.scans.some((s) => s.registered) ? `<button class="btn ${state.heat ? 'on' : ''}" data-heat title="Карта отклонений скана от КТ">${icons.heat}</button>` : '');
+    (ct && state.scans.some((s) => s.registered) ? `<button class="btn ${state.heat ? 'on' : ''}" data-heat title="Карта отклонений скана от КТ">${icons.heat}</button>` : '');
 }
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-bite]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-bite],[data-jaw]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return render(); }
   if (d.remove) { e.stopPropagation(); return removeScan(d.remove); }
   if (d.register) return register([d.register]);
+  if (d.jaw) { e.stopPropagation(); return register([d.jaw], { jaw: NEXT_JAW[scanById(d.jaw)?.jaw] || 'upper' }); }
   if (d.opacity) { e.stopPropagation(); return toggleOpacity([d.opacity]); }
   if (d.gopacity) {
     e.stopPropagation();
@@ -896,7 +913,8 @@ document.addEventListener('click', async (e) => {
   }
   const action = { ct: () => openCt('ct'), ctdir: () => openCt('ctdir'), scan: addScans, segment, export: doExport,
     getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog,
-    openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog, incognito: toggleIncognito }[d.a];
+    openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog, incognito: toggleIncognito,
+    scansonly: () => { state.step = 'scans'; render(); } }[d.a];
   action?.();
 });
 
