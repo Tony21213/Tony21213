@@ -34,6 +34,7 @@ class ExocadProject:
     default: np.ndarray  # файл скана → сцена exocad, если у файла нет своей матрицы
     source: str  # откуда матрица: ".scanInfo", ".matrix4" или "нет (единичная)"
     per_file: dict[str, np.ndarray] = field(default_factory=dict)  # имя файла скана → его матрица в сцену
+    stem: str = ""  # имя проекта (файл .dentalProject без расширения)
 
     def to_scene(self, path: str) -> np.ndarray:
         return self.per_file.get(os.path.basename(path).lower(), self.default)
@@ -81,7 +82,63 @@ def find(folder: str) -> ExocadProject | None:
             name, matrix = item.findtext("FileName"), item.find("TransformationMatrix")
             if name and matrix is not None:
                 per_file[os.path.basename(name.replace("\\", "/")).lower()] = np.linalg.inv(read_matrix(matrix))
-        return ExocadProject(folder, scans, default, ".scanInfo", per_file)
+        return ExocadProject(folder, scans, default, ".scanInfo", per_file, os.path.basename(stem))
     if matrix4:
-        return ExocadProject(folder, scans, read_matrix(ET.parse(matrix4).getroot()), ".matrix4")
-    return ExocadProject(folder, scans, np.eye(4), "нет (единичная)")
+        return ExocadProject(folder, scans, read_matrix(ET.parse(matrix4).getroot()), ".matrix4",
+                             stem=os.path.basename(stem))
+    return ExocadProject(folder, scans, np.eye(4), "нет (единичная)", stem=os.path.basename(stem))
+
+
+FRAMEWORK_STL = "{stem}-{jaw}jaw-partialframework_cad.stl"
+FRAMEWORK_INFO = "{stem}-{jaw}jaw.partialInfo"
+BONE_MATERIAL = "Кость из КТ (Custom Case Designer)"
+
+
+def _partial_info(file_name: str) -> bytes:
+    """Список каркасов в формате exocad (.partialInfo): сетка и её положение (единичное — сетка уже на месте)."""
+    from datetime import datetime
+
+    root = ET.Element("PartialInfo")
+    item = ET.SubElement(ET.SubElement(root, "PartialFileList"), "PartialFile")
+    ET.SubElement(item, "FileName").text = file_name
+    m = ET.SubElement(item, "TransformationMatrix")
+    for r in range(4):
+        for c in range(4):
+            ET.SubElement(m, f"_{r}{c}").text = f"{1.0 if r == c else 0.0:.16f}"
+    ET.SubElement(item, "MaterialName").text = BONE_MATERIAL
+    ET.SubElement(item, "Material").text = "NP_L"
+    ET.SubElement(item, "Optimization").text = "Mill"
+    axis = ET.SubElement(item, "Axis")
+    for k, v in zip("xyz", (0.0, 0.0, 1.0)):
+        ET.SubElement(axis, k).text = f"{v:.16f}"
+    ET.SubElement(item, "MillingDiameter").text = "0.1000000000000000"
+    ET.SubElement(root, "UsedReconstructionFileList")
+    ET.SubElement(root, "ProductName").text = "Custom Case Designer"
+    ET.SubElement(root, "SaveTime").text = datetime.now().strftime("%Y-%m-%d-%H-%M")
+    ET.indent(root, "    ")
+    return ET.tostring(root, encoding="utf-8")
+
+
+def write_bone_frameworks(project: ExocadProject, bones: dict) -> tuple[list[str], list[str]]:
+    """Кости из КТ — бюгельными каркасами проекта: exocad подгружает каркасы сам и двигает каждый со своей
+    челюстью в артикуляторе (череп и верхняя челюсть — с ВЧ, нижняя челюсть — с НЧ).
+
+    bones — {"upper" | "lower": trimesh} в координатах файла скана своей челюсти: так exocad хранит результаты
+    моделировки (пример exocad с ModJaw: модели зубов лежат на скане в координатах файла, а не сцены). Пишутся
+    сетка …-upperjaw-partialframework_cad.stl и список каркасов …-upperjaw.partialInfo; состояние моделировки
+    (.partialCAD, закрытый формат) не пишется. Настоящий каркас в проекте не перезаписывается.
+    Возвращает (записанные файлы, заметки)."""
+    files, notes = [], []
+    for jaw, mesh in bones.items():
+        stl = FRAMEWORK_STL.format(stem=project.stem, jaw=jaw)
+        info = FRAMEWORK_INFO.format(stem=project.stem, jaw=jaw)
+        stl_path, info_path = os.path.join(project.folder, stl), os.path.join(project.folder, info)
+        if os.path.exists(info_path) and b"Custom Case Designer" not in open(info_path, "rb").read():
+            notes.append(f"В проекте уже есть бюгельный каркас {'верхней' if jaw == 'upper' else 'нижней'} "
+                         "челюсти — кость не записана, каркас не тронут.")
+            continue
+        mesh.export(stl_path)
+        with open(info_path, "wb") as f:
+            f.write(_partial_info(stl))
+        files += [stl, info]
+    return files, notes

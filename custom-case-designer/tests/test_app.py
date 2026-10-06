@@ -231,6 +231,39 @@ def test_export_into_exocad_project(case_files, tmp_path):
     assert any("не найден" in n for n in s.export(str(project), "scan", "exocad")["notes"])
 
 
+def test_bones_as_exocad_frameworks(case_files, tmp_path):
+    """Кости КТ — бюгельными каркасами проекта exocad в координатах файла скана своей челюсти (exocad двигает
+    каркас с челюстью в артикуляторе); настоящий каркас проекта не перезаписывается."""
+    import shutil
+    import xml.etree.ElementTree as ET
+
+    d, _truth = case_files
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copyfile(d / "lower.stl", project / "p-lowerjaw.stl")
+    (project / "p.dentalProject").write_text("<Treatment/>", encoding="utf-8")
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s.load_ct(str(d / "ct.nii.gz"))
+    sid = s.add_scan(str(project / "p-lowerjaw.stl"))["id"]
+    s.register(sid)
+    bone = phantom.teeth_mesh("lower")  # «кость» нижней челюсти в координатах КТ
+    s.structures = {"mandible": trimesh.Trimesh(bone.vertices, bone.faces, process=False)}
+    res = s.export(str(project), "scan", "exocad")
+    assert res["frameworks"] == ["p-lowerjaw-partialframework_cad.stl", "p-lowerjaw.partialInfo"]
+    got = trimesh.load_mesh(str(project / "p-lowerjaw-partialframework_cad.stl"), process=False).vertices
+    T = np.array(s.scan_info(sid)["transform"])  # скан → КТ
+    want = apply(np.linalg.inv(T), bone.vertices)[bone.faces].reshape(-1, 3)
+    assert np.abs(got - want).max() < 1e-3
+    info = ET.parse(project / "p-lowerjaw.partialInfo").getroot()
+    assert info.findtext("PartialFileList/PartialFile/FileName") == "p-lowerjaw-partialframework_cad.stl"
+    assert any("бюгельными каркасами" in n for n in res["notes"])
+    s.export(str(project), "scan", "exocad")  # повторная выгрузка — свой каркас обновляется
+    (project / "p-lowerjaw.partialInfo").write_text("<PartialInfo><ProductName>partialCAD</ProductName></PartialInfo>",
+                                                    encoding="utf-8")
+    again = s.export(str(project), "scan", "exocad")  # настоящий каркас — не трогаем
+    assert again["frameworks"] == [] and any("уже есть бюгельный каркас" in n for n in again["notes"])
+
+
 def test_segment_parts_setting(case_files, tmp_path, monkeypatch):
     """«Что сегментировать»: выбор сохраняется; невыбранное не показывается и не считается,
     а зубы для совмещения нужны всегда."""

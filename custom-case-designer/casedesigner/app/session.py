@@ -41,6 +41,7 @@ RECENT = 8  # недавних кейсов на стартовом экране
 CASE_EXT = ".ccdcase"
 DEV_COLORS = ("#28aa46", "#e6be1e", "#d23228", "#8a8f99")  # ≤ 0.1, ≤ 0.2, > 0.2 мм, не коронки (как карта в 3D)
 MAX_SLICE_PIXELS = 2048  # сторона картинки видимой части среза
+UPPER_BONES, LOWER_BONES = ("skull", "maxilla"), ("mandible",)  # в exocad — бюгельными каркасами своей челюсти
 EXOCAD_SUBFOLDER = "CustomCaseDesigner"  # куда в папке проекта exocad кладётся экспорт
 SCAN_COLORS = ["#7fb2ff", "#ffb86b", "#b48cff", "#6be0c1"]
 # Скан совмещён до сегментации — только по плотности (см. CaseCT.use_teeth).
@@ -964,13 +965,37 @@ class Session:
                              without_ct=self.case is None)
         notes = [f"Проект exocad: файлы в подпапке {EXOCAD_SUBFOLDER}, в координатах сцены проекта (матрица — "
                  f"{project.source}). В exocad: «Load mesh as …»; копии сканов там же должны совпасть со сканами проекта."]
+        bone_files, bone_notes = self._bones_as_frameworks(project, jaws)
+        if bone_files:
+            notes.append("Кости — бюгельными каркасами проекта: верхний — череп и верхняя челюсть (с ВЧ), нижний — "
+                         "нижняя челюсть (с НЧ); exocad подгрузит их сам и будет двигать с челюстями в артикуляторе.")
+        notes += bone_notes
         if frame == "dicom" and self.case is not None:
             notes.append("Для проекта exocad выгрузка всегда в координатах его сцены, а не КТ.")
         if matched is None:
             notes.append(f"Скан {ref.scan.name} не найден среди сканов проекта — положение в exocad не гарантировано "
                          "(взята общая матрица проекта). Загрузите в программу сканы из папки этого проекта.")
         return {"out_dir": out_dir, "files": sorted(report["files"]), "notes": notes + report["notes"],
-                "bite": report["ct_bite_vs_scans"], "frame": report["frame"]}
+                "bite": report["ct_bite_vs_scans"], "frame": report["frame"], "frameworks": bone_files}
+
+    def _bones_as_frameworks(self, project, jaws) -> tuple[list, list]:
+        """Кости КТ — в координаты файла скана своей челюсти и бюгельными каркасами в папку проекта."""
+        bones, notes = {}, []
+        for jaw, keys in (("upper", UPPER_BONES), ("lower", LOWER_BONES)):
+            reg = next((r for r in jaws if r.jaw == jaw), None)
+            parts = [self.structures[k] for k in keys if k in self.structures]
+            if reg is None or not parts:
+                continue
+            if project.match(reg.scan.vertices) is None:
+                notes.append(f"{'Верхний' if jaw == 'upper' else 'Нижний'} скан не из этого проекта — кость "
+                             "каркасом не записана.")
+                continue
+            mesh = trimesh.util.concatenate([trimesh.Trimesh(np.asarray(m.vertices), np.asarray(m.faces), process=False)
+                                             for m in parts])
+            mesh.apply_transform(np.linalg.inv(reg.transform))  # КТ → координаты файла скана этой челюсти
+            bones[jaw] = mesh
+        files, more = exocad_project.write_bone_frameworks(project, bones)
+        return files, notes + more
 
     def _export_ct_only(self, out_dir: str, meshes: dict) -> dict:
         import json
