@@ -444,7 +444,8 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
       переносятся на свои челюсти в КТ.
     frame — система координат: "exocad" — сканера (в них сканы открывает
     exocad; опорный скан — верхний, если есть), "dicom" — пациента из DICOM
-    (только для bite="ct"), "reference" — система референтной плоскости или
+    (с bite="scan" верхняя челюсть — как на КТ, нижняя со своими структурами —
+    в прикусе сканов относительно неё), "reference" — система референтной плоскости или
     артикулятора: reference — матрица 4×4 «мм пациента (КТ) → эта система»
     (landmarks.reference_frame, articulators.articulator_frame). Прикус при
     этом любой: верхняя челюсть ставится по КТ, нижняя — по выбранному прикусу.
@@ -464,8 +465,6 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
         result = export_case(out_dir, registrations, ct_meshes, bite=bite, frame=base, ct=ct,
                              reference=reference, reference_name=reference_name)
         return result
-    if bite == "scan" and frame == "dicom":
-        raise ValueError("прикус сканов задаётся в координатах сканера: для DICOM выберите bite=ct")
     if not registrations:
         raise ValueError("нет совмещённых сканов")
 
@@ -476,13 +475,18 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
     if not by_jaw:
         raise ValueError("нет совмещённых сканов челюстей: скан прикуса ставится на них")
     ref = by_jaw.get("upper") or next(iter(by_jaw.values()))
-    # Перевод из базовой системы в систему плоскости/артикулятора (если задана).
+    # Прикус сканов и координаты exocad считаются в координатах сканера опорного скана. В DICOM прикус сканов
+    # переводится на КТ по опорному скану: верхняя челюсть — как на КТ, нижняя — в прикусе сканов.
+    scanner = frame == "exocad" or bite == "scan"
+    # Перевод из базовой системы в систему плоскости/артикулятора, сцену exocad или DICOM.
     post = np.eye(4)
     if reference is not None:
-        post = np.asarray(reference, float) @ (ref.transform if frame == "exocad" else np.eye(4))
+        post = np.asarray(reference, float) @ (ref.transform if scanner else np.eye(4))
     elif scene is not None and frame == "exocad":
         post = np.asarray(scene, float)
-    to_out = np.linalg.inv(ref.transform) if frame == "exocad" else np.eye(4)
+    elif frame == "dicom" and scanner:
+        post = ref.transform
+    to_out = np.linalg.inv(ref.transform) if scanner else np.eye(4)
     notes = []
 
     # Где стоит каждый скан: в прикусе сканов — где пришёл со сканера или по скану прикуса (врача),
@@ -492,11 +496,11 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
         placement[id(reg)], placed_by[id(reg)] = to_out @ reg.transform, "ct"
         if reg.jaw == BITE:
             placed_by[id(reg)] = "jaws"
-        elif frame == "exocad" and reg is ref:
+        elif scanner and reg is ref:
             placement[id(reg)], placed_by[id(reg)] = np.eye(4), "scanner"
         elif bite == "scan" and reg.bite is not None:
             placement[id(reg)], placed_by[id(reg)] = to_out @ reg.bite, "bite scan"
-        elif bite == "scan" and frame == "exocad":
+        elif bite == "scan":
             if in_occlusion(ref.scan, reg.scan) or in_occlusion(reg.scan, ref.scan):
                 placement[id(reg)], placed_by[id(reg)] = np.eye(4), "scanner"
             else:
@@ -509,7 +513,7 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
         jaw_transform.setdefault(jaw, to_out)
 
     bite_report = None
-    if "upper" in by_jaw and "lower" in by_jaw and frame == "exocad":
+    if "upper" in by_jaw and "lower" in by_jaw and scanner:
         lower = by_jaw["lower"]
         # Насколько нижняя челюсть на КТ стоит иначе, чем на сканах (относительно верхней).
         diff = np.linalg.inv(placement[id(lower)]) @ (to_out @ lower.transform)
@@ -567,6 +571,7 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
                   f"exocad project scene: scanner coordinates of {ref.scan.name} × project matrix, mm"
                   if frame == "exocad" and scene is not None else
                   f"scanner coordinates of {ref.scan.name} (as opened in exocad), mm" if frame == "exocad"
+                  else f"DICOM patient coordinates, mm (LPS); {ref.scan.name} as on the CT" if scanner
                   else "DICOM patient coordinates, mm (LPS)"),
         **({"scanner_to_output": post.round(9).tolist()} if scene is not None and frame == "exocad" else {}),
         "ct_to_output": {jaw: M.round(9).tolist() for jaw, M in jaw_transform.items()},

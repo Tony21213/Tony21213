@@ -336,3 +336,4 @@ select:focus, input[type=text]:focus { border-color: var(--accent); }
 .keys kbd { font: inherit; font-size: 12px; padding: 2px 7px; border: 1px solid var(--line-2); border-radius: 6px; color: var(--text); justify-self: start; }
 .keys span { color: var(--muted); }
 .help-btn { width: 28px; padding: 0; justify-content: center; }
+.incognito-btn.on { background: var(--accent-soft); color: var(--accent-2); }

@@ -26,4 +26,5 @@ export const icons = {
   warn: s('<path d="M12 4 2.5 20h19L12 4Z"/><path d="M12 10v4.5M12 17.5v.01"/>'),
   target: s('<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="1.6"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4"/>'),
   chevron: s('<path d="m9 6 6 6-6 6"/>'),
+  incognito: s('<path d="M2.5 11h19"/><path d="M5.5 11 7.5 4.5h9l2 6.5"/><circle cx="7" cy="16.5" r="3"/><circle cx="17" cy="16.5" r="3"/><path d="M10 16.5c1.3-1 2.7-1 4 0"/>'),
 };

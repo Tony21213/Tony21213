@@ -16,7 +16,7 @@ const TRANSLUCENT = { mandible: 0.42, maxilla: 0.42, skull: 0.3, maxillary_sinus
 
 const state = {
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
-  modelsDir: null, frame: 'exocad', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
+  modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
   models: null, download: null, downloadError: null,
   opacity: {}, // объект → прозрачность, заданная кнопкой (иначе — по умолчанию)
   warnOpen: new Set(), // карточки сканов с раскрытым списком предупреждений
@@ -24,6 +24,7 @@ const state = {
   correcting: null, // { id, start, undo, redo } — режим коррекции: манипулятор на срезах, start — положение до него
   windowName: 'auto', // набор окна КТ ('' — подобрано вручную)
   caseInfo: null, recent: [], // сохранённый кейс и недавние кейсы
+  incognito: false, // не показывать имён пациентов и путей (для показа программы)
 };
 // Ошибки интерфейса — в журнал программы (пути и имена сервер вычищает).
 const reportError = (message, stack) => post('log', { message: String(message || ''), stack: String(stack || '') }).catch(() => {});
@@ -96,7 +97,7 @@ $('#view3d').addEventListener('dblclick', () => app.toggleMax($('#view3d'))); //
 function toast(text, kind = 'error') {
   const t = document.createElement('div');
   t.className = `toast ${kind === 'info' || kind === 'learn' ? 'info' : ''}`;
-  t.textContent = text;
+  t.textContent = hide(text);
   document.body.appendChild(t);
   setTimeout(() => t.remove(), kind === 'info' ? 3500 : kind === 'learn' ? 8000 : 6000);
 }
@@ -111,7 +112,7 @@ async function busy(title, fn) {
   $('.bar i', job).style.width = '0%';
   const progress = (s) => {
     $('.bar i', job).style.width = `${Math.round((s.progress || 0) * 100)}%`;
-    $('.msg', job).textContent = s.message || '';
+    $('.msg', job).textContent = hide(s.message || '');
   };
   try {
     return await fn(progress);
@@ -127,6 +128,12 @@ async function busy(title, fn) {
 
 // Путь к файлу или папке: системный диалог в окне приложения, поле ввода — в браузере.
 async function choose(kind, title) {
+  const paths = await choosePaths(kind, title);
+  if (paths) chosen.push(...paths); // в инкогнито скрываются и они (архив, который не открылся, и т. п.)
+  return paths;
+}
+
+async function choosePaths(kind, title) {
   if (window.pywebview?.api) {
     const paths = await window.pywebview.api.choose(kind);
     return paths?.length ? paths : null;
@@ -153,6 +160,60 @@ const plural = (n, one, few, many) => (n % 10 === 1 && n % 100 !== 11 ? one
 const cls = (v, good, fair) => (v <= good ? 'ok' : v <= fair ? 'warn' : 'bad');
 const scanById = (id) => state.scans.find((s) => s.id === id);
 const JAWS = { upper: 'верхняя', lower: 'нижняя', bite: 'прикус' };
+const shownRecent = () => state.recent.filter((r) => r.exists);
+
+// ---------- инкогнито: показ программы без данных пациента ----------
+// Имена пациентов бывают в путях и именах файлов (папка КТ, сканы из exocad, файл кейса, проект exocad), а из
+// них — в названиях сканов и в сообщениях. В инкогнито на экране вместо них метки «КТ», «Скан 1», «Кейс»,
+// вместо остальных путей — «…». Сами данные не меняются. Так же, как в журнале ошибок (errorlog.py).
+const WIN_PATH = /(?:[A-Za-z]:[\\/]|\\\\)[^:;"'<>|\r\n\t*?«»]*/g; // в именах файлов Windows нет «:» — путь до неё
+const OWN_FOLDERS = /^CustomCaseDesigner$/i; // папки программы — не личные
+const chosen = []; // пути, выбранные в этом сеансе
+const scanLabel = (s) => (state.incognito ? `Скан ${state.scans.findIndex((x) => x.id === s.id) + 1}` : s.name);
+
+function secrets() {
+  const out = [];
+  const add = (value, label) => {
+    if (!value || String(value).length < 3) return; // короче — не имя, а заменялось бы в любом тексте
+    out.push([String(value), label]);
+    for (const part of String(value).split(/[\\/]/)) { // папки и имя файла по отдельности: «Иванов И.И», «Иванов-upperjaw.stl»
+      const stem = part.replace(/\.[^.]*$/, '');
+      if (stem.length >= 3 && !/^[A-Za-z]:$/.test(part) && !OWN_FOLDERS.test(stem)) out.push([part, label], [stem, label]);
+    }
+  };
+  for (const s of state.scans) { add(s.path, scanLabel(s)); add(s.name, scanLabel(s)); }
+  add(state.ct?.path, 'КТ');
+  add(state.caseInfo?.path, 'Кейс');
+  shownRecent().forEach((r, i) => add(r.path, `Кейс ${i + 1}`));
+  add(state.exported?.out_dir, 'папка экспорта');
+  for (const p of chosen) add(p, 'файл');
+  return out.sort((a, b) => b[0].length - a[0].length); // длинные — первыми: путь целиком, потом его части
+}
+
+// Текст для экрана: в инкогнито — без имён и путей.
+function hide(text) {
+  if (!state.incognito || text === null || text === undefined) return text;
+  let t = String(text);
+  const list = secrets();
+  if (list.length) { // за один проход: метки («папка экспорта») не заменяются ещё раз
+    const labels = new Map();
+    for (const [value, label] of list) if (!labels.has(value)) labels.set(value, label);
+    const any = new RegExp([...labels.keys()].map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
+    t = t.replace(any, (m) => labels.get(m));
+  }
+  return t.replace(WIN_PATH, (p) => { // незнакомый путь; после имени файла с расширением — обычный текст
+    const tail = p.slice(Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/')) + 1);
+    const f = /^[^\s\\/]*\.\w{1,8}(?=\s|$)/.exec(tail);
+    return f ? `…${tail.slice(f[0].length)}` : '…'; // без расширения не понять, где кончается путь
+  });
+}
+
+async function toggleIncognito() {
+  const r = await post('settings/incognito', { on: !state.incognito }).catch((e) => toast(e.message));
+  if (!r) return;
+  state.incognito = r.incognito;
+  render();
+}
 
 function updateScan(info) {
   const i = state.scans.findIndex((s) => s.id === info.id);
@@ -188,7 +249,7 @@ function seriesDialog(list) {
     const back = document.createElement('div');
     back.className = 'modal-back';
     const rows = () => list.map((x) => `<div class="item ${x.id === pick ? '' : 'off'}" data-series="${x.id}">
-      <span class="check radio ${x.id === pick ? 'on' : ''}"></span><span class="grow">${x.description || 'без описания'}</span>
+      <span class="check radio ${x.id === pick ? 'on' : ''}"></span><span class="grow">${hide(x.description) || 'без описания'}</span>
       <span class="muted small">${x.modality || ''} ${x.size ? x.size.join(' × ') : `${x.files} ${plural(x.files, 'файл', 'файла', 'файлов')}`}</span></div>`).join('');
     back.innerHTML = `<div class="modal"><h3>Несколько серий</h3><p>Выберите, какую открыть. Первая — самая длинная.</p>
       <div class="card tree series" data-list>${rows()}</div>
@@ -317,7 +378,7 @@ function modelsCard() {
     const partial = m.left_bytes < m.total_bytes;
     body = `<p class="muted small" style="margin-top:0">Нужны для сегментации КТ. Скачиваются один раз — ${mb(m.left_bytes)} МБ.</p>
       ${state.downloadError?.startsWith('загрузка остановлена') ? `<p class="muted small" style="margin-top:0">Остановлено: скачано ${mb(m.total_bytes - m.left_bytes)} из ${mb(m.total_bytes)} МБ.</p>`
-        : state.downloadError ? `<div class="warning">${icons.warn}<span>${state.downloadError}</span></div>` : ''}
+        : state.downloadError ? `<div class="warning">${icons.warn}<span>${hide(state.downloadError)}</span></div>` : ''}
       <button class="btn wide" data-a="getmodels">${icons.export.replace('<svg', '<svg style="transform:rotate(180deg)"')}${partial ? 'Продолжить загрузку' : 'Скачать модели'}</button>`;
   }
   return `<div class="card" id="modelsCard"><div class="card-head"><h3>Модели сегментации</h3></div>${body}
@@ -397,7 +458,7 @@ async function register(ids, body = {}) {
   if (!state.ct) return toast('Сначала откройте КТ');
   await busy('Совмещаю по коронкам зубов', async (progress) => {
     for (const id of ids) {
-      const info = await run(`scans/${id}/register`, body, (s) => progress({ ...s, message: scanById(id).name }));
+      const info = await run(`scans/${id}/register`, body, (s) => progress({ ...s, message: scanLabel(scanById(id)) }));
       updateScan(info);
       await showScan(info);
     }
@@ -556,14 +617,25 @@ function toggleStructures(keys, on) {
   render();
 }
 
+// Прикус выгрузки: выбирается, когда прикус сканов отличается от прикуса на КТ (как кнопка «Прикус» в 3D).
+const biteChoice = () => state.scans.some((s) => s.registered) && !!state.biteView?.available;
+const exportBite = () => (biteChoice() ? state.bite : state.frame === 'dicom' ? 'ct' : 'scan');
+const EXPORT_HINTS = {
+  'exocad scan': 'Сканы — как их открывает exocad; структуры КТ — к скану своей челюсти: прикус со сканов (врача).',
+  'exocad ct': 'Верхний скан — как его открывает exocad; нижний скан и все структуры — как на КТ относительно него.',
+  'dicom scan': 'Верхняя челюсть — как на КТ; нижняя со своими структурами — в прикусе сканов (как в 3D с кнопкой «Прикус»).',
+  'dicom ct': 'Всё стоит как на КТ; сканы — на своих челюстях.',
+};
+
 async function doExport() {
   const paths = await choose('out', 'Папка для результата');
   if (!paths) return;
   const hasScans = state.scans.some((s) => s.registered);
   const frame = hasScans ? state.frame : 'dicom';
+  const bite = exportBite();
   await busy('Экспорт', async (progress) => {
-    state.exported = await run('export', { out_dir: paths[0], bite: frame === 'dicom' ? 'ct' : 'scan', frame,
-      include: [...state.visible] }, progress);
+    state.exported = await run('export', { out_dir: paths[0], bite, frame, include: [...state.visible] }, progress);
+    state.exported.biteChosen = biteChoice() ? bite : null;
   });
 }
 
@@ -650,14 +722,14 @@ function opacityButton(keys, attr) {
 function renderCt() {
   const ct = state.ct;
   if (!ct) {
-    const recent = state.recent.filter((r) => r.exists);
-    const recentHtml = recent.length ? `<div class="label">Недавние кейсы</div><div class="card recent">${recent.map((r) =>
-      `<div class="item" data-recent="${r.path}" title="${r.path}">${icons.folder}<span>${r.name}</span></div>`).join('')}</div>` : '';
+    const recent = shownRecent();
+    const recentHtml = recent.length ? `<div class="label">Недавние кейсы</div><div class="card recent">${recent.map((r, i) =>
+      `<div class="item" data-recent="${i}" ${state.incognito ? '' : `title="${r.path}"`}>${icons.folder}<span>${state.incognito ? `Кейс ${i + 1}` : r.name}</span></div>`).join('')}</div>` : '';
     return `${recentHtml}<h2>КТ</h2><p class="lead">КЛКТ: папка DICOM, архив (zip, 7z, rar, tar) или файл NIfTI, MHA, NRRD.</p>
       <button class="btn primary wide" data-a="ctdir">${icons.folder}Открыть папку DICOM</button>
       <button class="btn ghost wide" style="margin-top:6px" data-a="ct">или архив, файл…</button>${modelsCard()}`;
   }
-  const info = `<div class="card"><div class="card-head"><h3>${ct.name}</h3><button class="btn ghost sm" data-a="ctdir" title="Открыть другое КТ">Другое…</button></div>
+  const info = `<div class="card"><div class="card-head"><h3>${state.incognito ? 'КТ пациента' : ct.name}</h3><button class="btn ghost sm" data-a="ctdir" title="Открыть другое КТ">Другое…</button></div>
     <div class="kv"><span>Размер</span><b>${ct.shape.join(' × ')}</b><span>Воксель</span><b>${ct.spacing.map((v) => fmt(v, 2)).join(' × ')} мм</b>
     ${ct.device ? `<span>Аппарат</span><b>${ct.device}</b>` : ''}</div></div>`;
   const partsButton = '<button class="btn ghost wide sm" style="margin-top:6px" data-a="parts">Что сегментировать…</button>';
@@ -692,9 +764,9 @@ function renderScans() {
     const list = s.warnings || [];
     const open = state.warnOpen.has(s.id);
     const warnBtn = list.length ? `<button class="warn-btn ${open ? 'on' : ''}" data-warns="${s.id}" title="Предупреждения">${icons.warn}<b>${list.length}</b></button>` : '';
-    const warnings = open ? list.map((w) => `<div class="warning">${icons.warn}<span>${w}</span></div>`).join('') : '';
+    const warnings = open ? list.map((w) => `<div class="warning">${icons.warn}<span>${hide(w)}</span></div>`).join('') : '';
     return `<div class="card ${s.id === state.selected ? 'sel' : ''}" data-select="${s.id}">
-      <div class="card-head"><i class="dot" style="background:${s.color}"></i><h3 title="${s.path}">${s.name}</h3>${jaw}${status}
+      <div class="card-head"><i class="dot" style="background:${s.color}"></i><h3 ${state.incognito ? '' : `title="${s.path}"`}>${scanLabel(s)}</h3>${jaw}${status}
         ${warnBtn}${s.registered ? opacityButton([s.id], `data-opacity="${s.id}"`) : ''}
         <button class="btn icon ghost" data-remove="${s.id}" title="Убрать">${icons.trash}</button></div>
       ${metricsHtml(s)}${warnings}
@@ -705,12 +777,12 @@ function renderScans() {
   if (sel?.role === 'bite') {
     tools = '<p class="muted small">Скан прикуса стоит на сканах челюстей и двигается вместе с ними; с КТ не совмещается.</p>';
   } else if (sel?.registered && !correcting) {
-    tools = `<div class="label">Положение — ${sel.name}</div>
+    tools = `<div class="label">Положение — ${scanLabel(sel)}</div>
       <div class="row"><button class="btn grow" data-correct="${sel.id}">${icons.move}Скорректировать</button>
         <button class="btn ok grow" data-accept="${sel.id}" ${sel.accepted ? 'disabled' : ''}>${icons.check}${sel.accepted ? 'Принято' : 'Принять'}</button></div>
       <p class="muted small">Не устраивает, как сел скан, — скорректируйте: программа запомнит ваше положение и учтёт его в следующих совмещениях.</p>`;
   } else if (correcting) {
-    tools = `<div class="card correcting"><div class="card-head">${icons.move}<h3>Коррекция — ${sel.name}</h3></div>
+    tools = `<div class="card correcting"><div class="card-head">${icons.move}<h3>Коррекция — ${scanLabel(sel)}</h3></div>
       <p class="muted small" style="margin-top:0">На срезе: внутри кольца — сдвиг, за кольцо — поворот. Стрелки — точно, Ctrl+←/→ — поворот, Shift — крупнее.</p>
       <div class="row" style="margin-top:8px"><button class="btn grow" data-refine="${sel.id}" title="Подогнать по коронкам от текущего положения">${icons.refine}Уточнить</button>
         <button class="btn icon" data-hist="back" title="Шаг назад (Ctrl+Z)" ${state.correcting.undo.length ? '' : 'disabled'}>${icons.undo}</button>
@@ -726,14 +798,18 @@ function renderExport() {
   const hasScans = state.scans.some((s) => s.registered);
   const ready = hasScans || state.structures.length;
   const res = state.exported;
+  const bite = exportBite();
   const frames = hasScans ? `<div class="seg"><button data-frame="exocad" class="${state.frame === 'exocad' ? 'on' : ''}">Сканера (exocad)</button>
       <button data-frame="dicom" class="${state.frame === 'dicom' ? 'on' : ''}">КТ (DICOM)</button></div>
-      <p class="muted small">${state.frame === 'exocad' ? 'В координатах сканера exocad открывает сканы: структуры КТ встанут к ним, прикус — со сканов.' : 'Всё стоит как на КТ; сканы — на своих челюстях.'}</p>`
+      ${biteChoice() ? `<div class="label">Прикус</div><div class="seg"><button data-exbite="scan" class="${bite === 'scan' ? 'on' : ''}">Сканов (врача)</button>
+      <button data-exbite="ct" class="${bite === 'ct' ? 'on' : ''}">Как на КТ</button></div>` : ''}
+      <p class="muted small">${EXPORT_HINTS[`${state.frame} ${bite}`]}</p>`
     : '<p class="muted small">Сканов нет — структуры КТ в координатах КТ (DICOM).</p>';
-  const result = res ? `<div class="card"><div class="card-head">${icons.check}<h3>Готово — ${res.files.length} ${plural(res.files.length, 'файл', 'файла', 'файлов')}</h3></div>
-      <div class="path" title="${res.out_dir}">${res.out_dir}</div>
+  const resultBite = res?.biteChosen ? ` · прикус ${res.biteChosen === 'scan' ? 'сканов' : 'КТ'}` : '';
+  const result = res ? `<div class="card"><div class="card-head">${icons.check}<h3>Готово — ${res.files.length} ${plural(res.files.length, 'файл', 'файла', 'файлов')}${resultBite}</h3></div>
+      <div class="path" ${state.incognito ? '' : `title="${res.out_dir}"`}>${hide(res.out_dir)}</div>
       <button class="btn ghost wide sm" style="margin-top:8px" data-a="openout">${icons.folder}Открыть папку</button>
-      ${(res.notes || []).map((n) => `<div class="warning">${icons.warn}<span>${n}</span></div>`).join('')}</div>` : '';
+      ${(res.notes || []).map((n) => `<div class="warning">${icons.warn}<span>${hide(n)}</span></div>`).join('')}</div>` : '';
   return `<h2>Экспорт</h2><p class="lead">STL всех видимых объектов в единой системе координат и case.json с матрицами.</p>
     <div class="label">Система координат</div>${frames}
     <button class="btn primary wide" data-a="export" ${ready ? '' : 'disabled'}>${icons.export}Экспортировать в папку…</button>
@@ -752,9 +828,13 @@ function render() {
     ${icons[s.icon]}<span>${s.title}</span><i class="dot"></i></button>`).join('');
   panel.innerHTML = RENDER[state.step]();
   const ct = state.ct;
-  $('#caseChip').textContent = ct ? `${state.caseInfo?.name || ct.name}${state.scans.length ? ` · сканов: ${state.scans.length}` : ''}` : '';
+  const caseName = state.incognito ? 'Кейс' : state.caseInfo?.name || ct?.name;
+  $('#caseChip').textContent = ct ? `${caseName}${state.scans.length ? ` · сканов: ${state.scans.length}` : ''}` : '';
   $('#caseActions').innerHTML = `<button class="btn ghost sm" data-case="open" title="Открыть кейс (Ctrl+O)">${icons.folder}Открыть</button>
     <button class="btn ghost sm" data-case="save" title="Сохранить кейс (Ctrl+S)" ${ct ? '' : 'disabled'}>${icons.check}Сохранить</button>
+    <button class="btn ghost sm incognito-btn ${state.incognito ? 'on' : ''}" data-a="incognito" title="${state.incognito
+      ? 'Инкогнито: имена пациентов и пути скрыты. Нажмите, чтобы показать'
+      : 'Инкогнито: скрыть имена пациентов и пути — для показа программы. Системные окна выбора файлов и проводник показывают их как есть'}">${icons.incognito}${state.incognito ? 'Инкогнито' : ''}</button>
     <button class="btn ghost sm help-btn" data-a="help" title="Мышь и клавиши (?)">?</button>`;
   $('#empty3d').innerHTML = ct || state.scans.length ? '' : '<span>Откройте КТ</span>';
   const legend = $('#legend');
@@ -770,7 +850,7 @@ function render() {
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-view],[data-heat],[data-bite]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-bite]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return render(); }
@@ -792,7 +872,7 @@ document.addEventListener('click', async (e) => {
   if (d.correct) return startCorrection(d.correct);
   if ('revert' in d) return revertCorrection();
   if (d.hist) return stepHistory(d.hist === 'back');
-  if (d.recent) return openCase(d.recent);
+  if (d.recent) return openCase(shownRecent()[Number(d.recent)]?.path);
   if (d.case === 'open') return openCase();
   if (d.case === 'save') return saveCase();
   if ('endcorrect' in d) { revertCorrection(); return endCorrection(); }
@@ -804,6 +884,7 @@ document.addEventListener('click', async (e) => {
   }
   if (d.group) { state.groupsOpen.has(d.group) ? state.groupsOpen.delete(d.group) : state.groupsOpen.add(d.group); return render(); }
   if (d.frame) { state.frame = d.frame; return render(); }
+  if (d.exbite) { state.bite = d.exbite; return render(); }
   if (d.view) return viewer.fit(d.view);
   if ('bite' in d) return toggleBite();
   if ('heat' in d) { state.heat = !state.heat; for (const s of state.scans) await showScan(s); return render(); }
@@ -815,7 +896,7 @@ document.addEventListener('click', async (e) => {
   }
   const action = { ct: () => openCt('ct'), ctdir: () => openCt('ctdir'), scan: addScans, segment, export: doExport,
     getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog,
-    openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog }[d.a];
+    openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog, incognito: toggleIncognito }[d.a];
   action?.();
 });
 
@@ -843,6 +924,7 @@ document.addEventListener('keydown', (e) => {
   state.biteView = s.bite_view;
   state.caseInfo = s.case;
   state.recent = s.recent || [];
+  state.incognito = !!s.incognito;
   $('#version').textContent = s.version ? `v${s.version}` : '';
   render();
   if (s.ct) {

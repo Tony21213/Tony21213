@@ -196,12 +196,13 @@ class Session:
         import json
 
         known = [p for p, _t, _k in SEGMENT_PARTS]
-        settings = {"segment_parts": known, "recent": []}
+        settings = {"segment_parts": known, "recent": [], "incognito": False}
         try:
             with open(self.settings_path, encoding="utf-8") as f:
                 saved = json.load(f)
             settings["segment_parts"] = [p for p in known if p in saved.get("segment_parts", [])]
             settings["recent"] = [r for r in saved.get("recent", []) if isinstance(r, str)][:RECENT]
+            settings["incognito"] = saved.get("incognito") is True
         except (OSError, ValueError, AttributeError):  # нет файла или он испорчен — всё по умолчанию
             pass
         return settings
@@ -221,6 +222,13 @@ class Session:
         os.makedirs(os.path.dirname(self.settings_path), exist_ok=True)
         with open(self.settings_path, "w", encoding="utf-8") as f:
             json.dump(self.settings, f, ensure_ascii=False, indent=1)
+
+    def set_incognito(self, on: bool) -> dict:
+        """Инкогнито: интерфейс не показывает имён пациентов и путей (для показа программы). Помнится между
+        запусками — программа, открытая на демонстрации, сразу скрывает недавние кейсы."""
+        self.settings["incognito"] = bool(on)
+        self._save_settings()
+        return {"incognito": self.settings["incognito"]}
 
     def segment_parts_info(self) -> dict:
         return {"parts": [{"id": p, "title": t} for p, t, _k in SEGMENT_PARTS],
@@ -856,7 +864,7 @@ class Session:
         if not self.structures:  # без сегментации — хотя бы зубы из КТ по плотности (как в 3D)
             meshes["ct_teeth"] = self.case.surfaces(step=1)["ct_teeth"]
         if project is not None:
-            return self._export_to_exocad(project, regs, meshes, frame)
+            return self._export_to_exocad(project, regs, meshes, frame, bite)
         matrix, name = self.reference(reference) if frame == "reference" else (None, "")
         self.last_export = out_dir
         report = export_case(out_dir, regs, meshes, bite=bite, frame=frame, ct=self.case, reference=matrix,
@@ -879,8 +887,8 @@ class Session:
             raise ValueError("журнал ошибок не ведётся")
         open_folder(folder)
 
-    def _export_to_exocad(self, project, regs, meshes: dict, frame: str) -> dict:
-        """Папка проекта exocad: всё — в подпапку проекта, в координатах его сцены (прикус — со сканов).
+    def _export_to_exocad(self, project, regs, meshes: dict, frame: str, bite: str = "scan") -> dict:
+        """Папка проекта exocad: всё — в подпапку проекта, в координатах его сцены (прикус — bite).
 
         Файлы exocad не меняются. Копии сканов там же — по ним видно в exocad, что всё встало на место.
         """
@@ -892,7 +900,7 @@ class Session:
         scene = project.to_scene(matched) if matched else project.default
         out_dir = os.path.join(project.folder, EXOCAD_SUBFOLDER)
         self.last_export = out_dir
-        report = export_case(out_dir, regs, meshes, bite="scan", frame="exocad", ct=self.case, scene=scene)
+        report = export_case(out_dir, regs, meshes, bite=bite, frame="exocad", ct=self.case, scene=scene)
         notes = [f"Проект exocad: файлы в подпапке {EXOCAD_SUBFOLDER}, в координатах сцены проекта (матрица — "
                  f"{project.source}). В exocad: «Load mesh as …»; копии сканов там же должны совпасть со сканами проекта."]
         if frame == "dicom":
@@ -1038,5 +1046,6 @@ class Session:
                 "recent": self.recent_cases(),
                 "models_dir": self.models_dir, "models": self.models_status(), **self.structures_info(),
                 "segment_parts": self.segment_parts_info(), "bite_view": self.bite_info(),
+                "incognito": self.settings["incognito"],
                 **self.landmarks_info(),
                 "articulation": self.jaw.state()}

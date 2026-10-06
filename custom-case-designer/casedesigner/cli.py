@@ -310,7 +310,8 @@ def main(argv=None):
                           "(по умолчанию); ct — статическое наложение на КТ")
     reg.add_argument("--frame", choices=("exocad", "dicom"), default="exocad",
                      help="система координат: exocad — сканера, в них сканы открывает exocad (по умолчанию); "
-                          "dicom — пациента из DICOM (только с --bite ct)")
+                          "dicom — пациента из DICOM (с --bite scan верхняя челюсть — как на КТ, нижняя — "
+                          "в прикусе сканов)")
     reg.add_argument("--ct-surfaces", action="store_true", help="также выгрузить зубы и кость из КТ (по порогам)")
     reg.add_argument("-o", "--out", required=True, help="папка результата")
     reg.add_argument("--memory", help="файл памяти совмещений: выученные поправки для аппаратов КТ")

@@ -271,6 +271,16 @@ def test_segment_parts_setting(case_files, tmp_path, monkeypatch):
         s.segment(models_dir="модели")
 
 
+def test_incognito_setting(server, tmp_path):
+    """Инкогнито (скрыть имена пациентов и пути на экране) помнится между запусками программы."""
+    assert call(server, "state")["incognito"] is False
+    assert call(server, "settings/incognito", {"on": True}) == {"incognito": True}
+    assert call(server, "state")["incognito"] is True
+    assert call(server, "settings/incognito", {"on": "да"}) == {"incognito": False}  # включает только true
+    Session(memory_path=str(tmp_path / "memory.jsonl")).set_incognito(True)
+    assert Session(memory_path=str(tmp_path / "memory.jsonl")).state()["incognito"] is True
+
+
 def test_errors_are_readable(server):
     with pytest.raises(urllib.error.HTTPError) as e:
         call(server, "scans", {"path": "/нет/такого/скана.stl"})

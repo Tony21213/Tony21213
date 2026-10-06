@@ -147,6 +147,13 @@ def test_bite_view_moves_lower_jaw_structures(tmp_path):
     with pytest.raises(ValueError, match="Прикус"):
         s.evaluate(ids["lower"], shown)  # коррекция нижнего — только как на КТ
 
+    # Выгрузка в координатах КТ в прикусе сканов — как показано в 3D с «Прикусом».
+    s.export(str(tmp_path / "out"), "scan", "dicom")
+    got = trimesh.load_mesh(str(tmp_path / "out" / "lower_teeth.stl"), process=False).vertices
+    assert np.abs(got - lo.vertices[lo.faces].reshape(-1, 3)).max() < 0.15
+    got = trimesh.load_mesh(str(tmp_path / "out" / "upper_teeth.stl"), process=False).vertices
+    assert np.abs(got - up.vertices[up.faces].reshape(-1, 3)).max() < 1e-3
+
     s.set_bite_view(False)
     assert np.abs(verts("lower_teeth") - apply(opened, lo.vertices)).max() < 1e-4
 

@@ -43,8 +43,6 @@ def test_export_in_dicom_frame(tmp_path, jaw_ct, two_scans):
     saved = json.loads((tmp_path / "case.json").read_text(encoding="utf-8"))
     assert saved == json.loads(json.dumps(report))
     assert saved["scans"]["upper"]["jaw"] == "upper"
-    with pytest.raises(ValueError):  # прикус сканов существует только в координатах сканера
-        export_case(str(tmp_path), regs, bite="scan", frame="dicom")
 
 
 OPEN_DEG = 4.0  # на КТ рот приоткрыт, на сканах — прикус
@@ -94,6 +92,33 @@ def test_static_ct_bite(tmp_path, open_case):
     opened = pose @ phantom.jaw_opening(OPEN_DEG) @ np.linalg.inv(pose)
     expected = per_triangle(apply(opened, lower.scan.vertices), lower.scan.faces)
     assert np.abs(load(tmp_path / "lower.stl") - expected).max() < 0.05
+
+
+def test_bite_of_scans_in_dicom(tmp_path, open_case):
+    """Прикус сканов в координатах КТ: верхняя челюсть — как на КТ, нижняя со структурами — сомкнута по сканам."""
+    ct, regs, meshes, pose = open_case
+    report = export_case(str(tmp_path), regs, meshes, bite="scan", frame="dicom", ct=ct)
+    upper, lower = regs
+    up, lo = meshes["upper_teeth"], meshes["lower_teeth"]
+    closed = np.linalg.inv(phantom.jaw_opening(OPEN_DEG))  # нижняя челюсть КТ → в прикус сканов, в координатах КТ
+    assert np.abs(load(tmp_path / "upper_teeth.stl") - per_triangle(up.vertices, up.faces)).max() < 0.05
+    assert np.abs(load(tmp_path / "lower_teeth.stl") - per_triangle(apply(closed, lo.vertices), lo.faces)).max() < 0.05
+    to_ct = np.linalg.inv(pose)  # сканы — где они на КТ в прикусе сканера
+    for reg in regs:
+        assert np.abs(load(tmp_path / f"{reg.jaw}.stl")
+                      - per_triangle(apply(to_ct, reg.scan.vertices), reg.scan.faces)).max() < 0.05
+    assert report["bite"] == "scans" and report["frame"].startswith("DICOM")
+    assert report["ct_bite_vs_scans"]["rotation_deg"] == pytest.approx(OPEN_DEG, abs=0.1)
+
+
+def test_ct_bite_in_scanner_frame(tmp_path, open_case):
+    """Прикус КТ в координатах сканера: верхний скан — как со сканера, нижний и все структуры — как на КТ."""
+    ct, regs, meshes, pose = open_case
+    export_case(str(tmp_path), regs, meshes, bite="ct", frame="exocad", ct=ct)
+    upper, lower = regs
+    assert np.abs(load(tmp_path / "upper.stl") - per_triangle(upper.scan.vertices, upper.scan.faces)).max() < 1e-4
+    lo = meshes["lower_teeth"]
+    assert np.abs(load(tmp_path / "lower_teeth.stl") - per_triangle(apply(pose, lo.vertices), lo.faces)).max() < 0.05
 
 
 def test_separately_exported_scans(tmp_path, jaw_ct, two_scans):
