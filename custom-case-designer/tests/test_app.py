@@ -148,6 +148,46 @@ def test_segmentation_reregisters_scans(case_files, tmp_path, monkeypatch):
     assert scans[kept]["accepted"] and scans[kept]["transform"] == before
 
 
+def test_export_into_exocad_project(case_files, tmp_path):
+    """Папка проекта exocad: всё — в его подпапку, в координатах сцены (скан × матрица сканера)."""
+    import shutil
+
+    from test_exocad_project import SCANNER, matrix_xml
+
+    d, _truth = case_files
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copyfile(d / "lower.stl", project / "p-lowerjaw.stl")
+    (project / "p.dentalProject").write_text("<Treatment/>", encoding="utf-8")
+    (project / "p.matrix4").write_text(matrix_xml("Matrix4", SCANNER), encoding="utf-8")
+
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s.load_ct(str(d / "ct.nii.gz"))
+    sid = s.add_scan(str(project / "p-lowerjaw.stl"))["id"]
+    s.register(sid)
+    plain = s.export(str(tmp_path / "plain"), "scan", "exocad")  # обычная выгрузка: координаты сканера
+    res = s.export(str(project), "scan", "exocad")
+    out = project / "CustomCaseDesigner"
+    assert res["out_dir"] == str(out) and res["frame"].startswith("exocad project scene")
+    assert "Проект exocad" in res["notes"][0] and not any("не найден" in n for n in res["notes"])
+    for name in ("p-lowerjaw.stl", "ct_teeth.stl"):  # сцена = координаты сканера × матрица сканера
+        a = trimesh.load_mesh(str(tmp_path / "plain" / name), process=False).vertices
+        b = trimesh.load_mesh(str(out / name), process=False).vertices
+        assert np.abs(apply(SCANNER, a) - b).max() < 1e-3, name
+    assert sorted(p.name for p in project.iterdir()) == ["CustomCaseDesigner", "p-lowerjaw.stl", "p.dentalProject",
+                                                         "p.matrix4"]  # файлы exocad не тронуты
+    assert plain["frame"].startswith("scanner coordinates")
+
+    # Скан не из этого проекта (тот же, но в других координатах файла) — предупреждение.
+    moved = trimesh.load_mesh(str(d / "lower.stl"))
+    moved.apply_transform(phantom.scan_pose(9))
+    moved.export(tmp_path / "elsewhere.stl")
+    other = s.add_scan(str(tmp_path / "elsewhere.stl"))["id"]
+    s.remove_scan(sid)
+    s.register(other)
+    assert any("не найден" in n for n in s.export(str(project), "scan", "exocad")["notes"])
+
+
 def test_segment_parts_setting(case_files, tmp_path, monkeypatch):
     """«Что сегментировать»: выбор сохраняется; невыбранное не показывается и не считается,
     а зубы для совмещения нужны всегда."""

@@ -275,7 +275,8 @@ def _rotation_deg(T: np.ndarray) -> float:
 
 def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict[str, Mesh] | None = None,
                 bite: str = "scan", frame: str = "exocad", ct: "CaseCT | None" = None,
-                reference: np.ndarray | None = None, reference_name: str = "") -> dict:
+                reference: np.ndarray | None = None, reference_name: str = "",
+                scene: np.ndarray | None = None) -> dict:
     """Пишет все сетки в одной системе координат и файл с матрицами.
 
     ct_meshes — сетки из КТ (структуры сегментации или поверхности по порогам),
@@ -296,6 +297,8 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
     артикулятора: reference — матрица 4×4 «мм пациента (КТ) → эта система»
     (landmarks.reference_frame, articulators.articulator_frame). Прикус при
     этом любой: верхняя челюсть ставится по КТ, нижняя — по выбранному прикусу.
+    scene — с frame="exocad": матрица «координаты файла опорного скана → сцена
+    проекта exocad» (exocad_project): всё выгружается в координатах его сцены.
     """
     if bite not in ("scan", "ct"):
         raise ValueError("bite должен быть scan или ct")
@@ -323,6 +326,8 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
     post = np.eye(4)
     if reference is not None:
         post = np.asarray(reference, float) @ (ref.transform if frame == "exocad" else np.eye(4))
+    elif scene is not None and frame == "exocad":
+        post = np.asarray(scene, float)
     to_out = np.linalg.inv(ref.transform) if frame == "exocad" else np.eye(4)
     notes = []
 
@@ -402,8 +407,11 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
         "bite": "scans" if bite == "scan" else "ct",
         "frame": (f"{reference_name or 'reference frame'}: origin at the hinge axis centre, X right, Y forward, Z up, mm"
                   if reference is not None else
+                  f"exocad project scene: scanner coordinates of {ref.scan.name} × project matrix, mm"
+                  if frame == "exocad" and scene is not None else
                   f"scanner coordinates of {ref.scan.name} (as opened in exocad), mm" if frame == "exocad"
                   else "DICOM patient coordinates, mm (LPS)"),
+        **({"scanner_to_output": post.round(9).tolist()} if scene is not None and frame == "exocad" else {}),
         "ct_to_output": {jaw: M.round(9).tolist() for jaw, M in jaw_transform.items()},
         "ct_bite_vs_scans": bite_report,
         "notes": notes,

@@ -15,6 +15,7 @@ import trimesh
 
 from .. import articulators as arts
 from . import errorlog
+from .. import exocad_project
 from .. import model_store
 from .. import landmarks as lmk
 from ..fusion import CaseCT, Registration, Scan, deviation_colors, export_case
@@ -38,6 +39,7 @@ RECENT = 8  # недавних кейсов на стартовом экране
 CASE_EXT = ".ccdcase"
 DEV_COLORS = ("#28aa46", "#e6be1e", "#d23228", "#8a8f99")  # ≤ 0.1, ≤ 0.2, > 0.2 мм, не коронки (как карта в 3D)
 MAX_SLICE_PIXELS = 2048  # сторона картинки видимой части среза
+EXOCAD_SUBFOLDER = "CustomCaseDesigner"  # куда в папке проекта exocad кладётся экспорт
 SCAN_COLORS = ["#7fb2ff", "#ffb86b", "#b48cff", "#6be0c1"]
 # Скан совмещён до сегментации — только по плотности (см. CaseCT.use_teeth).
 UNGUIDED = ("КТ не сегментировано: зубы найдены только по плотности, и на снимке с большим полем скан может сесть "
@@ -700,12 +702,17 @@ class Session:
         for key, mesh in self.structures.items():
             if include is None or key in include:
                 meshes[key] = Mesh(np.asarray(mesh.vertices), np.asarray(mesh.faces))
+        project = exocad_project.find(out_dir)
         if not regs:  # без сканов — только КТ: структуры в координатах КТ (DICOM)
+            if project is not None:
+                raise ValueError("для проекта exocad нужны совмещённые сканы: структуры КТ ставятся к ним")
             if not meshes:
                 raise ValueError("нечего экспортировать: сегментируйте КТ или совместите сканы")
             return self._export_ct_only(out_dir, meshes)
         if not self.structures:  # без сегментации — хотя бы зубы из КТ по плотности (как в 3D)
             meshes["ct_teeth"] = self.case.surfaces(step=1)["ct_teeth"]
+        if project is not None:
+            return self._export_to_exocad(project, regs, meshes, frame)
         matrix, name = self.reference(reference) if frame == "reference" else (None, "")
         self.last_export = out_dir
         report = export_case(out_dir, regs, meshes, bite=bite, frame=frame, ct=self.case, reference=matrix,
@@ -727,6 +734,27 @@ class Session:
         if not folder or not os.path.isdir(folder):
             raise ValueError("журнал ошибок не ведётся")
         open_folder(folder)
+
+    def _export_to_exocad(self, project, regs, meshes: dict, frame: str) -> dict:
+        """Папка проекта exocad: всё — в подпапку проекта, в координатах его сцены (прикус — со сканов).
+
+        Файлы exocad не меняются. Копии сканов там же — по ним видно в exocad, что всё встало на место.
+        """
+        ref = next((r for r in regs if r.jaw == "upper"), regs[0])  # опорный скан — как в export_case
+        matched = project.match(ref.scan.vertices)
+        scene = project.to_scene(matched) if matched else project.default
+        out_dir = os.path.join(project.folder, EXOCAD_SUBFOLDER)
+        self.last_export = out_dir
+        report = export_case(out_dir, regs, meshes, bite="scan", frame="exocad", ct=self.case, scene=scene)
+        notes = [f"Проект exocad: файлы в подпапке {EXOCAD_SUBFOLDER}, в координатах сцены проекта (матрица — "
+                 f"{project.source}). В exocad: «Load mesh as …»; копии сканов там же должны совпасть со сканами проекта."]
+        if frame == "dicom":
+            notes.append("Для проекта exocad выгрузка всегда в координатах его сцены, а не КТ.")
+        if matched is None:
+            notes.append(f"Скан {ref.scan.name} не найден среди сканов проекта — положение в exocad не гарантировано "
+                         "(взята общая матрица проекта). Загрузите в программу сканы из папки этого проекта.")
+        return {"out_dir": out_dir, "files": sorted(report["files"]), "notes": notes + report["notes"],
+                "bite": report["ct_bite_vs_scans"], "frame": report["frame"]}
 
     def _export_ct_only(self, out_dir: str, meshes: dict) -> dict:
         import json
