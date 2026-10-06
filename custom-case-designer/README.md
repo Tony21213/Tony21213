@@ -308,6 +308,8 @@ python -m casedesigner register КТ --scan upper.stl --scan lower.stl -o рез
 
 Сегментация без сканов: `python -m casedesigner segment КТ --models ПАПКА -o результат`.
 Записи движений: `python -m casedesigner motion ВЫГРУЗКА -o отчёт` (см. «Движения челюсти и артикулятор»).
+Лицевая дуга для exocad: `python -m casedesigner facebow --upper верх.stl --lower низ.stl [--mandible кость.stl --skull череп.stl] -o папка`
+— модели встают в артикулятор шарниром на мыщелках пациента ([docs/exocad.md](docs/exocad.md), «Лицевая дуга»).
 
 **Прикус и система координат.** Всё готовится для exocad: результат по
 умолчанию в координатах сканера — в них exocad открывает сканы, поэтому КТ и

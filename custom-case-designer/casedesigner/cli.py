@@ -294,6 +294,41 @@ def _segment_options(parser, required):
     parser.add_argument("--smooth", type=int, default=10, help="итераций сглаживания поверхностей (10)")
 
 
+def cmd_facebow(args):
+    """Лицевая дуга для exocad: шарнир артикулятора — на мыщелках, гипсовка — по горизонтали монтажа."""
+    import trimesh
+
+    from . import exocad_facebow as ef
+    from . import exocad_webview as ew
+
+    def load(path):
+        return None if not path else trimesh.load_mesh(path, process=False)
+
+    upper, lower = load(args.upper), load(args.lower)
+    anatomy, settings, eminence, notes = ew.mount(upper.vertices, lower.vertices, load(args.mandible), load(args.skull))
+    folder = args.exocad or ef.find_exocad()
+    if not folder:
+        raise ValueError("укажите --exocad: папка DentalCADApp (нужна вилка Zebris SD из её библиотеки)")
+    values = {}
+    for side, name in (("right", "Right"), ("left", "Left")):
+        values[f"TiltCondylarGuide{name}"] = round(settings.get("sagittal", side), 1)
+        values[f"BennettAngle{name}"] = round(settings.get("bennett", side), 1)
+        values[f"ImmediateSideshift{name}"] = round(settings.get("side_shift", side), 2)
+    p = anatomy.points
+    res = ef.export(args.out, anatomy.frame, p["condyle_right"], p["condyle_left"], p["incisal"],
+                    ef.load_register(folder), upper=upper, settings=values)
+    print(f"Монтаж: {anatomy.source}")
+    print(f"Межмыщелковое расстояние {res['icd_mm']} мм; мыщелки от оси артикулятора: "
+          f"справа {res['off_axis_mm']['right']} мм, слева {res['off_axis_mm']['left']} мм")
+    print("Суставы (в артикуляторе — по умолчанию): " + ", ".join(f"{k} {v}" for k, v in values.items())
+          + (f"; источник: {', '.join(sorted(set(settings.sources.values())))}" if settings.sources else
+             "; источник: средние значения"))
+    for note in notes + res["notes"]:
+        print(f"  ! {note}")
+    print(f"Файлы в {args.out}: " + ", ".join(f for f in res["files"] if "/" not in f)
+          + f", папка артикулятора «{ef.ARTICULATOR_NAME}»")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="casedesigner", description="Custom Case Designer")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -359,6 +394,15 @@ def main(argv=None):
                                     "например --axes=-y,x,z (по умолчанию угадываются по путям)")
     mot.add_argument("-o", "--out", help="папка отчёта: motion.json, paths.csv, motion.png")
     mot.set_defaults(func=cmd_motion)
+
+    fb = sub.add_parser("facebow", help="лицевая дуга для exocad: модели в артикулятор — шарнир на мыщелках пациента")
+    fb.add_argument("--upper", required=True, help="скан верхней челюсти (координаты, как в проекте exocad)")
+    fb.add_argument("--lower", required=True, help="скан нижней челюсти в прикусе, в тех же координатах")
+    fb.add_argument("--mandible", help="кость нижней челюсти из КТ в тех же координатах: мыщелки по ней")
+    fb.add_argument("--skull", help="череп из КТ в тех же координатах: наклон суставных дорожек по бугоркам")
+    fb.add_argument("--exocad", help="папка DentalCADApp exocad (по умолчанию ищется на дисках)")
+    fb.add_argument("-o", "--out", required=True, help="папка результата")
+    fb.set_defaults(func=cmd_facebow)
 
     args = parser.parse_args(argv)
     try:

@@ -126,3 +126,40 @@ y = 0. Как exocad ставит мыщелки и модели по этим �
 Движения exocad принимает и из файлов регистраторов («Load digital face bow
 data / articulator settings»; среди форматов — Zebris): по ним он ставит
 модели и подстраивает настройки артикулятора. Образца такого файла пока нет.
+
+## Лицевая дуга: модели в артикулятор по мыщелкам пациента
+
+Файлы движений, которые принимает exocad (образцы — в `CAD-Data` exocad:
+Zebris — проекты 011 и 012, ModJaw — 049), — XML `dental_measurement`:
+`coordinate_system` (`axis_orbital`, `bite_fork`, `upper_arch`),
+`upper_position` (тип и три метки), `positions` (метки в положении скана и в
+окклюзии), `points` (орбитальная точка), `movements` (траектории трёх меток по
+кадрам), `articulator_settings` (настройки Artex, KaVo PROTAR, SAM — exocad
+подставляет их сам). У ModJaw (`upper_arch`) всё в координатах сканов: метка 1
+— резцовая точка на нижнем скане, метки 2 и 3 — мыщелки.
+
+Лицевая дуга Zebris: система регистратора «ось — плоскость» — начало на
+шарнирной оси, x — влево, y — вверх, z — вперёд. Верхняя челюсть привязана
+вилкой: exocad находит вилку на скане маркера (геометрия вилки — открытый STL в
+`library\movementregister\zebris_type_sd`, метки (0,0,0) и (±25, 0, 30.5) — в
+метаданных) и по её меткам в файле ставит модели в артикулятор через
+`MovementregisterToArticulatorTransformation`.
+
+`casedesigner/exocad_facebow.py` (команда `facebow`) делает такую дугу по
+пациенту: система регистратора — система монтажа (начало — середина между
+мыщелками, горизонталь — плоскость монтажа), скан маркера — верхний скан и
+вилка перед резцами, свой артикулятор «Custom Case Designer» — без наклона
+между регистратором и горизонталью (как SAM 2P). Траекторий нет (только
+короткое шарнирное открывание): движения exocad считает сам — по зубам или по
+резцовому столику.
+
+Проверка в exocad (один раз):
+1. Скопировать папку `Custom Case Designer` в `library\articulator` exocad.
+2. Проект со сканами верхней и нижней челюсти и сканом маркера
+   (`movementmarker.stl`); при необходимости — `condyles.stl` (мыщелки, «Load
+   mesh as …»).
+3. «Jaw Movement Alignment» — «zebris type SD»; «Virtual Articulator» —
+   артикулятор «Custom Case Designer», «Load digital facebow data / articulator
+   settings» — `facebow.jawmotion`.
+4. Головки мыщелков артикулятора должны совпасть со сферами `condyles.stl`, а
+   горизонталь артикулятора — с плоскостью монтажа.
