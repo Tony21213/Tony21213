@@ -316,7 +316,7 @@ def cmd_facebow(args):
         values[f"ImmediateSideshift{name}"] = round(settings.get("side_shift", side), 2)
     p = anatomy.points
     res = ef.export(args.out, anatomy.frame, p["condyle_right"], p["condyle_left"], p["incisal"],
-                    ef.load_register(folder), upper=upper, settings=values)
+                    ef.load_register(folder), settings=values)
     print(f"Монтаж: {anatomy.source}")
     print(f"Межмыщелковое расстояние {res['icd_mm']} мм; мыщелки от оси артикулятора: "
           f"справа {res['off_axis_mm']['right']} мм, слева {res['off_axis_mm']['left']} мм")

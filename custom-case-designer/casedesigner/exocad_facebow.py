@@ -7,10 +7,11 @@
 * файл движений Zebris (`dental_measurement`, .jawmotion) в системе «ось — плоскость» (axis_orbital).
   У нас это система монтажа: начало — середина между мыщелками, x — влево, y — вверх (нормаль
   горизонтали), z — вперёд. Верхняя челюсть привязана вилкой (bite_fork): в файле — метки вилки;
-* скан маркера — верхний скан и вилка Zebris SD (STL из библиотеки exocad,
-  library\\movementregister\\zebris_type_sd) там, где её ставят на самом деле: на окклюзионной плоскости
-  верхних зубов (как на скане маркера в примере exocad). exocad находит вилку на скане маркера, по меткам
-  переводит модели в систему регистратора и ставит их в артикулятор;
+* скан маркера — вилка Zebris SD (STL из библиотеки exocad, library\\movementregister\\zebris_type_sd)
+  перед резцами, в координатах сканов. Ни с одной челюстью она не пересекается и не совпадает: копия
+  верхнего скана в маркере ложится на сам скан поверхность в поверхность, вилка между челюстями проходит
+  сквозь нижние зубы — и в exocad щелчок попадает в маркер, ничего не выбрать. exocad находит вилку на
+  скане маркера по геометрии, по меткам переводит модели в систему регистратора и ставит их в артикулятор;
 * свой артикулятор (папка для library\\articulator): перевод из системы регистратора без наклона, как у
   SAM 2P, — горизонталь артикулятора и есть горизонталь монтажа, середина шарнирной оси — середина между
   мыщелками пациента.
@@ -38,10 +39,11 @@ TO_REGISTER = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]]
 # Регистратор → артикулятор exocad (запись «точка-строка»): у всех артикуляторов exocad середина шарнирной
 # оси в (30, −80, 60); без наклона (как у SAM 2P) горизонталь артикулятора — горизонталь регистратора.
 REGISTER_TO_ARTICULATOR = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [30, -80, 60, 1]], float)
-# Метка 1 вилки от резцовой точки (вправо, вперёд, вверх), мм: на настоящем скане маркера (пример exocad 012)
-# вилка лежит на окклюзионной плоскости верхних зубов, метка 1 — на высоте режущего края в 34 мм позади, метки 2 и 3 —
-# у резцов, вилка выходит вперёд на 15 мм.
-FORK_OFFSET_MM = np.array([0.0, -32.0, 2.0])
+# Метка 1 вилки от резцовой точки (вправо, вперёд, вверх), мм: вилка — перед резцами на их высоте (её задний
+# край в 4.5 мм перед режущим краем), не пересекает челюсти. Настоящая вилка лежит на окклюзионной плоскости
+# (пример exocad 012: метка 1 — в 34 мм позади режущего края), но в прикусе сканов она проходила бы сквозь
+# нижние зубы; exocad находит вилку на скане маркера по геометрии, где бы она ни стояла.
+FORK_OFFSET_MM = np.array([0.0, 15.0, 0.0])
 ORBITAL = (-30.0, 0.0, 70.0)  # точка горизонтали справа (в файле Zebris — орбитальная)
 OPENING_DEG, OPENING_FRAMES, FREQUENCY = 6.0, 61, 60  # короткое шарнирное открывание: в файле должно быть движение
 ARTICULATOR_NAME = "Custom Case Designer"
@@ -244,11 +246,11 @@ def read_jawmotion(path: str) -> dict:
             "articulators": [a.tag for a in root.findall("articulator_settings/*")]}
 
 
-def marker_mesh(register: Register, fb: Facebow, upper: trimesh.Trimesh | None = None) -> trimesh.Trimesh:
-    """Скан маркера: вилка на своём месте и, если дан, верхний скан — как скан вилки на модели."""
+def marker_mesh(register: Register, fb: Facebow) -> trimesh.Trimesh:
+    """Скан маркера: только вилка на своём месте, без копии верхнего скана (она легла бы на сам скан)."""
     fork = register.fork.copy()
     fork.apply_transform(fb.fork_pose)
-    return trimesh.util.concatenate([upper.copy(), fork]) if upper is not None else fork
+    return fork
 
 
 # --- свой артикулятор ---------------------------------------------------------------------------------
@@ -344,7 +346,7 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
 
 
 def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: Register,
-           upper: trimesh.Trimesh | None = None, icd: float | None = None, settings: dict | None = None,
+           icd: float | None = None, settings: dict | None = None,
            movements=None, jawmotion_name: str = "facebow.jawmotion", marker_name: str = "movementmarker.stl",
            articulator_dir: str | None = None) -> dict:
     """Всё для exocad: файл лицевой дуги (с движениями, если даны), скан маркера, мыщелки (сферы для проверки)
@@ -354,7 +356,7 @@ def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: 
     with open(os.path.join(out_dir, jawmotion_name), "wb") as f:
         f.write(jawmotion_xml(fb, "Custom Case Designer: шарнир на мыщелках пациента, гипсовка по горизонтали монтажа",
                               movements))
-    marker_mesh(register, fb, upper).export(os.path.join(out_dir, marker_name))
+    marker_mesh(register, fb).export(os.path.join(out_dir, marker_name))
     spheres = [trimesh.creation.icosphere(subdivisions=2, radius=2.5).apply_translation(p) for p in fb.condyles.values()]
     trimesh.util.concatenate(spheres).export(os.path.join(out_dir, "condyles.stl"))
     if icd is None:

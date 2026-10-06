@@ -62,7 +62,7 @@ def test_models_go_into_articulator_by_condyles_and_horizontal(case, register):
         assert np.abs(got - expected).max() < 1e-9, k
     # Мыщелки несимметричны к горизонтали: ось — через середину, отклонение каждого — в отчёте.
     assert fb.off_axis_mm["right"] == pytest.approx(np.hypot(1.5, 0.8), abs=0.01) and fb.notes
-    # Вилка — как настоящая: на окклюзионной плоскости верхних зубов, метка 1 — позади резцов.
+    # Вилка — перед резцами, челюсти не пересекает.
     first = apply(frame @ fb.fork_pose, register.marks[:1])[0]
     assert np.abs(first - (np.array([0.5, 98.0, -38.0]) + ef.FORK_OFFSET_MM)).max() < 1e-9
 
@@ -109,12 +109,11 @@ def test_own_articulator_folder(tmp_path):
 
 def test_export(case, register, tmp_path):
     frame, p = case
-    upper = trimesh.creation.box((50, 50, 10))
-    res = ef.export(str(tmp_path), frame, p["right"], p["left"], p["incisal"], register, upper=upper)
+    res = ef.export(str(tmp_path), frame, p["right"], p["left"], p["incisal"], register)
     for name in res["files"]:
         assert (tmp_path / name).is_file(), name
     marker = trimesh.load_mesh(str(tmp_path / "movementmarker.stl"))
-    assert len(marker.faces) == len(upper.faces) + len(register.fork.faces)
+    assert len(marker.faces) == len(register.fork.faces)  # только вилка: копия скана мешала бы в exocad
     assert res["icd_mm"] == pytest.approx(np.linalg.norm(p["right"] - p["left"]), abs=0.05)
 
 
