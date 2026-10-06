@@ -106,3 +106,37 @@ def test_private_case(path):
             if abs(now[sector][0] - lo) > FRACTION_TOL or abs(now[sector][1] - hi) > FRACTION_TOL:
                 problems.append(f"{move}, {sector}: путь {lo}–{hi} → {now[sector][0]}–{now[sector][1]}")
     assert not problems, f"{key[:10]}: " + "; ".join(problems)
+
+
+@pytest.mark.parametrize("path", FILES, ids=lambda p: digest(p)[:8])
+def test_bite_correction_returns_after_scanner_like_error(path):
+    """Исправление прикуса: сбитый поворотом вокруг шарнирной оси и перекосом прикус возвращается (≤ 0,3 мм)."""
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    from casedesigner import bite
+    from casedesigner import motion as mo
+    from casedesigner.register import apply
+
+    p = ew.load(path).parts()
+    if p["upper_scan"] is None or p["lower_scan"] is None:
+        pytest.skip("в сцене нет обеих челюстей")
+    uv, uf, lv = p["upper_scan"].vertices, p["upper_scan"].faces, p["lower_scan"].vertices
+    try:
+        base = bite.correct_bite(uv, uf, lv).transform
+    except ValueError:
+        pytest.skip("сканы не в прикусе")
+    anat = mo.anatomy_average(lv, uv)
+    R, inc = anat.frame[:3, :3], anat.points["incisal"]
+    hinge = (anat.points["condyle_right"] + anat.points["condyle_left"]) / 2
+    probes = np.array([inc, inc + R.T @ [22, -25, 0], inc + R.T @ [-22, -25, 0]])
+    M = np.eye(4)
+    r = Rotation.from_rotvec(0.4 / np.linalg.norm(inc - hinge) * R[0]).as_matrix()  # раскрыт на 0,4 мм по резцам
+    M[:3, :3], M[:3, 3] = r, hinge - r @ hinge
+    T2 = np.eye(4)
+    r2 = Rotation.from_rotvec(np.radians(0.2) * R[1]).as_matrix()  # перекос на сторону
+    T2[:3, :3], T2[:3, 3] = r2, inc - r2 @ inc
+    P = T2 @ M
+    res = bite.correct_bite(uv, uf, apply(P, lv))
+    err = np.linalg.norm(apply(res.transform @ P, probes) - apply(base, probes), axis=1)
+    assert err.max() < 0.3, err

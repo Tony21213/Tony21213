@@ -4,6 +4,7 @@
     python -m casedesigner segment КТ --models модели -o результат
     python -m casedesigner motion выгрузка_P-ART.zip -o отчёт
     python -m casedesigner landmarks КТ --models модели/landmarks -o точки.json
+    python -m casedesigner bite верх.stl низ.stl -o низ_в_прикусе.stl
 """
 
 import argparse
@@ -87,6 +88,36 @@ def cmd_landmarks(args):
             json.dump({"landmarks": out, "coordinates": "мм пациента DICOM (LPS)", "planes": planes}, fh,
                       ensure_ascii=False, indent=1)
     print(f"Готово за {time.perf_counter() - started:.0f} с; плоскости: {', '.join(planes.values()) or 'нет'}")
+
+
+def cmd_bite(args):
+    from . import bite
+
+    upper, lower = trimesh.load(args.upper, force="mesh"), trimesh.load(args.lower, force="mesh")
+    condyles = None
+    if args.condyles:
+        c = np.array(args.condyles, float).reshape(2, 3)
+        condyles = (c[0], c[1])
+    res = bite.correct_bite(upper.vertices, upper.faces, lower.vertices, condyles=condyles)
+    r = res.report
+    s = r["incisal_shift_mm"]
+    print(f"Резцы: {r['incisal_mm']:.2f} мм (вправо {s['right']:+.2f}, вперёд {s['forward']:+.2f}, "
+          f"вверх {s['up']:+.2f}); моляры {r['molar_right_mm']:.2f} / {r['molar_left_mm']:.2f} мм; "
+          f"поворот {r['turn_deg']:.2f}°")
+    for when, name in (("before", "до"), ("after", "после")):
+        c = r[when]
+        print(f"Контакты {name}: {c['points']} точек (справа {c['sectors']['right']}, спереди {c['sectors']['front']}, "
+              f"слева {c['sectors']['left']}), проникновение {c['penetration_mm']:.2f} мм")
+    for note in r["notes"]:
+        print(f"  {note}")
+    if args.out:
+        fixed = lower.copy()
+        fixed.apply_transform(res.transform)
+        fixed.export(args.out)
+        print(f"Нижний скан в исправленном прикусе: {args.out}")
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump({"transform": res.transform.tolist(), "report": r}, f, ensure_ascii=False, indent=1)
 
 
 def cmd_register(args):
@@ -285,6 +316,15 @@ def main(argv=None):
     lm.add_argument("--workers", type=int, default=2, help="точек одновременно (2)")
     lm.add_argument("-o", "--out", help="файл JSON с точками")
     lm.set_defaults(func=cmd_landmarks)
+
+    bt = sub.add_parser("bite", help="исправить прикус сканов, как в Bite-Finder: нижний скан — в контакт с верхним")
+    bt.add_argument("upper", help="верхний скан (STL, PLY, OBJ)")
+    bt.add_argument("lower", help="нижний скан в прикусе сканера")
+    bt.add_argument("--condyles", nargs=6, type=float, metavar=("XR", "YR", "ZR", "XL", "YL", "ZL"),
+                    help="мыщелки правый и левый в координатах сканов (по КТ); без них — треугольник Бонвилля")
+    bt.add_argument("-o", "--out", help="нижний скан в исправленном прикусе")
+    bt.add_argument("--json", help="матрица и отчёт")
+    bt.set_defaults(func=cmd_bite)
 
     mot = sub.add_parser("motion", help="записи движений нижней челюсти (P-ART и др.): разобрать и проанализировать")
     mot.add_argument("case", help="выгрузка: папка, архив .zip или файл движения (.xml, .jawMotion, .csv, .txt, .h5)")
