@@ -121,11 +121,67 @@ def test_own_articulator_folder(tmp_path):
     assert np.abs(np.linalg.norm(head.vertices, axis=1) - 4.0).max() < 0.01  # головка — сфера в начале координат
 
 
+def _roof(mesh, y):
+    """Нижняя грань вставки (крыша, по которой скользит головка) над точкой y дорожки, по средней линии."""
+    v = np.asarray(mesh.vertices)
+    near = v[np.abs(v[:, 1] - y) < 1e-6]
+    return near[:, 2].min()
+
+
+def test_condylar_insert_straight_and_curved():
+    """Вставка ССП в системе дорожки, как у exocad: прямой путь под углом дорожки — плоская вставка (нижняя
+    грань на высоте радиуса головки, как «Planar» у Harman OSH); изогнутый путь — изгиб, повторяющий отклонение
+    пути от прямой; головка, катящаяся по пути, касается крыши и не входит в неё."""
+    tilt = 35.0
+    t = np.linspace(0, 12, 49)
+    straight = np.c_[t * np.cos(np.radians(tilt)), -t * np.sin(np.radians(tilt))]
+    flat = ef.condylar_insert(straight, tilt)
+    assert flat.is_watertight
+    for y in (-4.0, 0.0, 6.0, 15.0):
+        assert _roof(flat, y) == pytest.approx(ef.CONDYLAR_HEAD_MM, abs=1e-6)
+    # путь круче вначале и положе дальше (выпуклый, как у бугорка): вставка — ниже прямой, потом выше
+    ang = np.radians(np.linspace(50, 20, 49))
+    step = np.c_[np.cos(ang), -np.sin(ang)] * 0.25
+    curved = np.vstack([[0, 0], np.cumsum(step, axis=0)])
+    ins = ef.condylar_insert(curved, tilt)
+    a = np.radians(tilt)
+    for y_fwd, z_up in curved[::8]:
+        yl, zl = y_fwd * np.cos(a) - z_up * np.sin(a), y_fwd * np.sin(a) + z_up * np.cos(a)
+        y = np.round(yl / 0.25) * 0.25
+        if y <= 16:
+            assert _roof(ins, y) == pytest.approx(ef.CONDYLAR_HEAD_MM + zl, abs=0.15)
+
+
+def test_articulator_with_patient_inserts_and_mounting_plane(tmp_path):
+    t = np.linspace(0, 12, 49)
+    path = np.c_[t * np.cos(np.radians(40)), -t * np.sin(np.radians(40))]
+    files = ef.write_articulator(str(tmp_path / "art"), icd=96.0, settings={"TiltCondylarGuideRight": 40,
+                                 "TiltCondylarGuideLeft": 40}, inserts={"right": path, "left": path}, plane_height=26.5)
+    root = ET.parse(tmp_path / "art" / "articulatorparameters.xml").getroot()
+    assert root.findtext("CurrentCondylarInsertColorRight") == ef.INSERT_ID
+    meshes = root.findall("ArticulatorMainParts/CondylarInserts/ArticulatorMesh")
+    assert {(m.findtext("Side"), m.findtext("Filename")) for m in meshes} == {
+        ("Right", "condylar_insert_right.off"), ("Left", "condylar_insert_left.off")}
+    for m in meshes:
+        assert m.findtext("Id") == ef.INSERT_ID and m.findtext("Filename") in files
+        mesh = trimesh.load_mesh(str(tmp_path / "art" / m.findtext("Filename")))
+        assert _roof(mesh, 0.0) == pytest.approx(ef.CONDYLAR_HEAD_MM, abs=1e-3)
+    # плоскость гипсовки: горизонталь на высоте 26.5 (точки — от ArticulatorPosition)
+    pos = float(root.findtext("ArticulatorPosition/z"))
+    heights = [float(root.findtext(f"{tag}/z")) + pos for tag in
+               ("ArticulationPlaneLegRight", "ArticulationPlaneLegLeft", "ArticulationPlaneIncisalNeedle")]
+    assert np.allclose(heights, 26.5)
+
+
 def test_export(case, register, tmp_path):
     frame, p = case
     upper = trimesh.creation.icosphere(subdivisions=3, radius=20).apply_translation(p["incisal"] + [0, 0, 5])
     res = ef.export(str(tmp_path), frame, p["right"], p["left"], p["incisal"], register, upper=upper,
                     meshes={"upperjaw.stl": upper})
+    root = ET.parse(os.path.join(res["articulator"], "articulatorparameters.xml")).getroot()
+    plane = float(root.findtext("ArticulationPlaneIncisalNeedle/z")) + float(root.findtext("ArticulatorPosition/z"))
+    incisal_art = apply(np.array(res["case_to_articulator"]), p["incisal"][None])[0]
+    assert plane == pytest.approx(incisal_art[2], abs=0.01)  # плоскость гипсовки — на высоте резцов
     for name in res["files"]:
         assert (tmp_path / name).is_file(), name
     assert res["icd_mm"] == pytest.approx(np.linalg.norm(p["right"] - p["left"]), abs=0.05)

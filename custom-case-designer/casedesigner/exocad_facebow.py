@@ -313,9 +313,61 @@ def _guide(side: int) -> trimesh.Trimesh:
     return trimesh.util.concatenate([roof, wall])
 
 
-def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = None) -> list[str]:
+CONDYLAR_HEAD_MM = 4.0  # радиус головки мыщелка артикулятора (condylar_head.off)
+INSERT_ID = "CondylarInsertPatient"
+ARTICULATOR_POSITION = (30, -80, -31)
+
+
+def condylar_insert(path, tilt_deg: float, head_radius: float = CONDYLAR_HEAD_MM, width: float = 10.0,
+                    thickness: float = 2.0, reach=(-6.0, 16.0), step: float = 0.25) -> trimesh.Trimesh:
+    """Индивидуальная вставка ССП: сетка в системе дорожки мыщелка (x — вбок, y — вперёд по дорожке, z — вверх,
+    начало — центр головки в покое), как вставки exocad (у Harman OSH «плоская» — нижняя грань на высоте радиуса
+    головки, «анатомическая» — изогнута). Нижняя грань — крыша, по которой скользит головка.
+
+    path — путь центра головки мыщелка пациента (N×2: вперёд, вверх; мм, система монтажа — guidance.condylar_path),
+    tilt_deg — ССП дорожки в артикуляторе (TiltCondylarGuide). Путь поворачивается в систему дорожки; его
+    отклонение от прямой под этим углом и есть изгиб вставки. За пределами пути: назад — прямая, вперёд —
+    продолжение последнего наклона."""
+    p = np.asarray(path, float)
+    p = p - p[0]
+    a = np.radians(tilt_deg)
+    yl = p[:, 0] * np.cos(a) - p[:, 1] * np.sin(a)
+    zl = p[:, 0] * np.sin(a) + p[:, 1] * np.cos(a)
+    order = np.argsort(yl)
+    yl, zl = yl[order], zl[order]
+    ys = np.arange(reach[0], reach[1] + 1e-9, step)
+    dev = np.interp(ys, yl, zl)
+    dev[ys < yl[0]] = zl[0]
+    tail = yl >= yl[-1] - 2.0
+    slope = np.polyfit(yl[tail], zl[tail], 1)[0] if tail.sum() >= 2 else 0.0
+    ahead = ys > yl[-1]
+    dev[ahead] = zl[-1] + slope * (ys[ahead] - yl[-1])
+    low = head_radius + dev
+    n, h = len(ys), width / 2
+    v = np.concatenate([np.c_[np.full(n, x), ys, z] for x, z in ((-h, low), (h, low), (-h, low + thickness),
+                                                                 (h, low + thickness))])
+    L0, L1, U0, U1 = (np.arange(n) + k * n for k in range(4))
+    quads = []
+    for i in range(n - 1):
+        j = i + 1
+        quads += [(L0[i], L1[i], L1[j], L0[j]), (U0[i], U0[j], U1[j], U1[i]),
+                  (L0[i], L0[j], U0[j], U0[i]), (L1[i], U1[i], U1[j], L1[j])]
+    quads += [(L0[0], U0[0], U1[0], L1[0]), (L0[-1], L1[-1], U1[-1], U0[-1])]
+    faces = [(a_, b_, c_) for a_, b_, c_, d_ in quads] + [(a_, c_, d_) for a_, b_, c_, d_ in quads]
+    mesh = trimesh.Trimesh(v, faces, process=True)
+    trimesh.repair.fix_normals(mesh)
+    return mesh
+
+
+def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = None, inserts: dict | None = None,
+                      plane_height: float | None = None) -> list[str]:
     """Папка своего артикулятора для library\\articulator exocad: перевод из регистратора без наклона,
-    геометрия — как у SAM 2P (та же система). settings — значения по умолчанию (TiltCondylarGuideLeft=…)."""
+    геометрия — как у SAM 2P (та же система). settings — значения по умолчанию (TiltCondylarGuideLeft=…).
+
+    inserts — пути центра мыщелка пациента по сторонам ({"right": N×2, "left": N×2}, guidance.condylar_path):
+    индивидуальные вставки ССП (condylar_insert), выбраны по умолчанию. plane_height — высота плоскости гипсовки
+    (горизонталь монтажа) в координатах артикулятора: её exocad рисует по «Плоскости артикулятора»; без неё —
+    средняя окклюзионная плоскость SAM 2P (40.7 мм ниже оси у мыщелков, 65.5 мм у штифта)."""
     os.makedirs(folder, exist_ok=True)
     values = {"TiltCondylarGuideLeft": 35, "TiltCondylarGuideRight": 35, "BennettAngleLeft": 10,
               "BennettAngleRight": 10, "ImmediateSideshiftLeft": 0, "ImmediateSideshiftRight": 0,
@@ -326,8 +378,10 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
                        ("HeightUpperArticulatorPart", "91"), ("HeightFrontPlate", "0.001"),
                        ("HeightIncisalNeedle", "0")):
         _sub(root, tag, value)
-    for tag, p in (("ArticulatorPosition", (30, -80, -31)), ("ArticulationPlaneLegRight", (-60, 0, 50.26)),
-                   ("ArticulationPlaneLegLeft", (60, 0, 50.26)), ("ArticulationPlaneIncisalNeedle", (0, 0, 24.34))):
+    # Точки плоскости — от ArticulatorPosition (у SAM 2P и GAMMA одна и та же средняя плоскость при разных позициях).
+    legs, needle = (50.26, 24.34) if plane_height is None else (plane_height - ARTICULATOR_POSITION[2],) * 2
+    for tag, p in (("ArticulatorPosition", ARTICULATOR_POSITION), ("ArticulationPlaneLegRight", (-60, 0, legs)),
+                   ("ArticulationPlaneLegLeft", (60, 0, legs)), ("ArticulationPlaneIncisalNeedle", (0, 0, needle))):
         e = _sub(root, tag)
         for k, v in zip("xyz", p):
             _sub(e, k, f"{v:g}")
@@ -342,12 +396,27 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
                        ("CollapseTiltCondylarGuide", "false"), ("CollapseImmediateSideshift", "false"),
                        ("CollapseHeightIncisalNeedleOffset", "false"), ("CollapseRotationAxis", "true"),
                        ("CollapseRotationFrontplateY", "false"), ("CollapseRotationFrontplateZ", "true"),
-                       ("CollapseTiltFrontplate", "false"), ("FrontplateAdjustable", "true")):
+                       ("CollapseTiltFrontplate", "false"), ("FrontplateAdjustable", "true"),
+                       ("CollapseCondylarInsert", "false")):
         _sub(root, tag, value)
+    if inserts:
+        for side in ("Left", "Right"):
+            _sub(root, f"CurrentCondylarInsertColor{side}", INSERT_ID)
     parts = _sub(root, "ArticulatorMainParts")
     for tag, name in (("Incisalneedle", "incisal_needle.off"), ("FrontplateLeft", "incisal_plate_left.off"),
                       ("FrontplateRight", "incisal_plate_right.off")):
         _sub(_sub(parts, tag), "Filename", name)
+    insert_meshes = {}
+    if inserts:
+        node = _sub(parts, "CondylarInserts")
+        for side in ("right", "left"):
+            name = f"condylar_insert_{side}.off"
+            tilt = values[f"TiltCondylarGuide{side.capitalize()}"]
+            insert_meshes[name] = condylar_insert(inserts[side], tilt)
+            mesh = _sub(node, "ArticulatorMesh")
+            for tag, value in (("Id", INSERT_ID), ("Filename", name), ("ColorDiffuse", "#E8C547"),
+                               ("Side", side.capitalize())):
+                _sub(mesh, tag, value)
     for kind, value, low, high in (("Protrusion", 5, 0, 12), ("Retrusion", 0, 0, 2), ("LaterotrusionRight", 5, 0, 12),
                                    ("LaterotrusionLeft", 5, 0, 12), ("BennettAngleLeft", None, -5, 45),
                                    ("BennettAngleRight", None, -5, 45), ("TiltCondylarGuideLeft", None, -20, 75),
@@ -365,6 +434,7 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
                                                         transform=trimesh.transformations.translation_matrix((0, 0, 20))),
         "incisal_plate_left.off": trimesh.creation.box((12, 16, 2), trimesh.transformations.translation_matrix((6, 0, -1))),
         "incisal_plate_right.off": trimesh.creation.box((12, 16, 2), trimesh.transformations.translation_matrix((-6, 0, -1))),
+        **insert_meshes,
     }
     for name, data in files.items():
         with open(os.path.join(folder, name), "wb") as f:
@@ -378,7 +448,7 @@ def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: 
            icd: float | None = None, settings: dict | None = None,
            movements=None, jawmotion_name: str = "facebow.jawmotion", marker_name: str = "movementmarker.stl",
            articulator_dir: str | None = None, upper: trimesh.Trimesh | None = None,
-           meshes: dict | None = None) -> dict:
+           meshes: dict | None = None, condylar_paths: dict | None = None) -> dict:
     """Всё для exocad: файл лицевой дуги (с движениями, если даны), скан маркера (верхний скан upper на вилке),
     мыщелки (сферы для проверки), сетки meshes (имя файла → сетка в координатах кейса: сканы, кости) и свой
     артикулятор (в articulator_dir или рядом).
@@ -386,7 +456,10 @@ def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: 
     Сетки, маркер и мыщелки пишутся в координатах артикулятора: в проекте «модели в артикуляторе» exocad
     берёт координаты файлов сканов как координаты артикулятора (в образце exocad 012 с лицевой дугой Zebris
     сканы так и лежат — матрица сцены единичная, верхняя дуга горизонтально между шарниром и штифтом).
-    Файл движений — в системе регистратора; по вилке маркера exocad получает тот же перевод."""
+    Файл движений — в системе регистратора; по вилке маркера exocad получает тот же перевод.
+
+    condylar_paths — пути мыщелков по КТ ({"right", "left"}: guidance.condylar_path(...)["path"]): в артикуляторе —
+    индивидуальные вставки ССП. Плоскость артикулятора — горизонталь монтажа на высоте резцовой точки."""
     fb = facebow(frame, condyle_right, condyle_left, incisal, register)
     to_art = fb.case_to_articulator
     os.makedirs(out_dir, exist_ok=True)
@@ -403,7 +476,8 @@ def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: 
     if icd is None:
         icd = float(np.linalg.norm(fb.condyles["right"] - fb.condyles["left"]))
     art = os.path.join(articulator_dir or out_dir, ARTICULATOR_NAME)
-    files = write_articulator(art, round(icd, 1), settings)
+    plane = float(apply(to_art, np.asarray(incisal, float)[None])[0, 2])
+    files = write_articulator(art, round(icd, 1), settings, inserts=condylar_paths, plane_height=round(plane, 2))
     return {"files": written,
             "articulator": art, "articulator_files": files,
             "off_axis_mm": fb.off_axis_mm, "icd_mm": round(icd, 1), "notes": fb.notes,
