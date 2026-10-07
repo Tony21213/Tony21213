@@ -44,6 +44,9 @@ REGISTER_TO_ARTICULATOR = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [
 # (пример exocad 012: метка 1 — в 34 мм позади режущего края), но в прикусе сканов она проходила бы сквозь
 # нижние зубы; exocad находит вилку на скане маркера по геометрии, где бы она ни стояла.
 FORK_OFFSET_MM = np.array([0.0, 15.0, 0.0])
+FORK_CLEARANCE_MM, FORK_STEP_MM = 3.0, 3.0  # вилка не ближе 3 мм к сканам челюстей: иначе отодвигается вперёд
+# .matrix4 вилки Zebris SD: вилка (x влево, y вверх, z вперёд) → оси скана (x вправо, y вперёд, z вверх).
+STANDARD_SD = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], float)
 ORBITAL = (-30.0, 0.0, 70.0)  # точка горизонтали справа (в файле Zebris — орбитальная)
 OPENING_DEG, OPENING_FRAMES, FREQUENCY = 6.0, 61, 60  # короткое шарнирное открывание: в файле должно быть движение
 ARTICULATOR_NAME = "Custom Case Designer"
@@ -55,6 +58,9 @@ class Register:
 
     fork: trimesh.Trimesh
     marks: np.ndarray  # 3×3
+    # «Стандартная» поза вилки в координатах сканов (.matrix4 вилки, в записи «столбец»): так лежит настоящая вилка
+    # на скане маркера (образец exocad 012 — в 2° от неё); от неё exocad, видимо, и ищет вилку.
+    standard: np.ndarray = field(default_factory=lambda: STANDARD_SD.copy())
 
 
 @dataclass
@@ -93,21 +99,40 @@ def load_register(path: str) -> Register:
     marks = np.array([[float(p.findtext(k)) for k in "xyz"] for p in meta.iter("Point")])
     if marks.shape != (3, 3):
         raise ValueError(f"у вилки должно быть три метки: {folder}")
-    return Register(trimesh.load_mesh(stl, process=False), marks)
+    from .exocad_project import read_matrix
+
+    m4 = os.path.join(folder, ZEBRIS_SD_STL.replace(".stl", ".matrix4"))
+    standard = read_matrix(ET.parse(m4).getroot()) if os.path.isfile(m4) else STANDARD_SD.copy()
+    return Register(trimesh.load_mesh(stl, process=False), marks, standard)
 
 
-def facebow(frame: np.ndarray, condyle_right, condyle_left, incisal, register: Register) -> Facebow:
-    """Лицевая дуга по системе монтажа (frame: координаты кейса → x вправо, y вперёд, z вверх) и мыщелкам."""
+def facebow(frame: np.ndarray, condyle_right, condyle_left, incisal, register: Register, avoid=None) -> Facebow:
+    """Лицевая дуга по системе монтажа (frame: координаты кейса → x вправо, y вперёд, z вверх) и мыщелкам.
+
+    Вилка на скане маркера — в «стандартной» позе относительно осей сканов (register.standard), как настоящая:
+    exocad ищет её на скане маркера, видимо, от этой позы, и вилку, повёрнутую иначе (у сканера с вертикалью
+    по y — на 178°), находил неверно — модели вставали криво. Метки в файле — для этой позы, поэтому
+    положение моделей в артикуляторе от позы вилки не зависит. avoid — точки сканов челюстей: вилка
+    отодвигается вперёд, пока не будет от них дальше FORK_CLEARANCE_MM."""
     F = np.asarray(frame, float)
     cases = {"right": np.asarray(condyle_right, float), "left": np.asarray(condyle_left, float)}
     mounted = {side: apply(F, p) for side, p in cases.items()}
     mid = (mounted["right"] + mounted["left"]) / 2
     to_register = TO_REGISTER @ rigid(np.eye(3), -mid) @ F
     off_axis = {side: round(float(np.linalg.norm((p - mid)[1:])), 2) for side, p in mounted.items()}
-    # Вилка: оси — как у регистратора, на окклюзионной плоскости верхних зубов (как настоящая).
-    R = TO_REGISTER[:3, :3].T
-    start = apply(F, incisal) + FORK_OFFSET_MM
-    fork_pose = np.linalg.inv(F) @ rigid(R, start - R @ register.marks[0])
+    back = np.linalg.inv(F)
+    R = np.asarray(register.standard, float)[:3, :3]
+    start = apply(back, (apply(F, incisal) + FORK_OFFSET_MM)[None])[0]
+    fork_pose = rigid(R, start - R @ register.marks[0])
+    if avoid is not None and len(avoid):
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(np.asarray(avoid, float))
+        fork_pts = np.asarray(register.fork.vertices)
+        for _ in range(30):
+            if tree.query(apply(fork_pose, fork_pts))[0].min() >= FORK_CLEARANCE_MM:
+                break
+            fork_pose = rigid(np.eye(3), back[:3, 1] * FORK_STEP_MM) @ fork_pose  # вперёд по системе монтажа
     marks = apply(to_register @ fork_pose, register.marks)
     notes = []
     worst = max(off_axis.values())
@@ -346,12 +371,12 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
 
 
 def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: Register,
-           icd: float | None = None, settings: dict | None = None,
+           icd: float | None = None, settings: dict | None = None, avoid=None,
            movements=None, jawmotion_name: str = "facebow.jawmotion", marker_name: str = "movementmarker.stl",
            articulator_dir: str | None = None) -> dict:
     """Всё для exocad: файл лицевой дуги (с движениями, если даны), скан маркера, мыщелки (сферы для проверки)
     и свой артикулятор (в articulator_dir или рядом)."""
-    fb = facebow(frame, condyle_right, condyle_left, incisal, register)
+    fb = facebow(frame, condyle_right, condyle_left, incisal, register, avoid)
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, jawmotion_name), "wb") as f:
         f.write(jawmotion_xml(fb, "Custom Case Designer: шарнир на мыщелках пациента, гипсовка по горизонтали монтажа",

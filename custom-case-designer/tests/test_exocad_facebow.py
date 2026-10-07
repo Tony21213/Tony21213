@@ -62,9 +62,20 @@ def test_models_go_into_articulator_by_condyles_and_horizontal(case, register):
         assert np.abs(got - expected).max() < 1e-9, k
     # Мыщелки несимметричны к горизонтали: ось — через середину, отклонение каждого — в отчёте.
     assert fb.off_axis_mm["right"] == pytest.approx(np.hypot(1.5, 0.8), abs=0.01) and fb.notes
-    # Вилка — перед резцами, челюсти не пересекает.
+    # Вилка — перед резцами, в стандартной позе относительно осей сканов (как настоящая на скане маркера).
     first = apply(frame @ fb.fork_pose, register.marks[:1])[0]
     assert np.abs(first - (np.array([0.5, 98.0, -38.0]) + ef.FORK_OFFSET_MM)).max() < 1e-9
+    assert np.abs(fb.fork_pose[:3, :3] - register.standard[:3, :3]).max() < 1e-12
+
+
+def test_fork_moves_forward_until_clear_of_the_jaws(case, register):
+    frame, p = case
+    near = apply(np.linalg.inv(frame), np.array([[0.5, 98.0 + ef.FORK_OFFSET_MM[1] + 5, -38.0]]))  # «зуб» на месте вилки
+    fb = ef.facebow(frame, p["right"], p["left"], p["incisal"], register, avoid=near)
+    from scipy.spatial import cKDTree
+    assert cKDTree(near).query(apply(fb.fork_pose, register.fork.vertices))[0].min() >= ef.FORK_CLEARANCE_MM
+    fitted = kabsch(apply(fb.fork_pose, register.marks), fb.marks)  # модели — там же, где без сдвига вилки
+    assert np.abs(fitted - fb.case_to_register).max() < 1e-9
 
 
 def test_jawmotion_file(case, register, tmp_path):
@@ -115,6 +126,23 @@ def test_export(case, register, tmp_path):
     marker = trimesh.load_mesh(str(tmp_path / "movementmarker.stl"))
     assert len(marker.faces) == len(register.fork.faces)  # только вилка: копия скана мешала бы в exocad
     assert res["icd_mm"] == pytest.approx(np.linalg.norm(p["right"] - p["left"]), abs=0.05)
+
+
+@pytest.mark.skipif(EXOCAD is None, reason="exocad не установлен")
+def test_sample_012_models_in_articulator_like_exocad():
+    """Образец exocad с настоящей лицевой дугой Zebris (012): вилка библиотеки на его скане маркера и его
+    .jawmotion дают «сканы → регистратор»; наша цепочка для тех же сканов ставит модели в артикулятор туда же
+    (≤ 0.5 мм, ≤ 0.5°), а система анатомически верна: верхняя челюсть над нижней, резцы впереди оси."""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "verify_facebow_sample.py")
+    spec = importlib.util.spec_from_file_location("verify_facebow_sample", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    res = mod.main(EXOCAD)
+    assert res["share"] > 0.5 and res["max_mm"] <= 0.5 and res["deg"] <= 0.5
+    assert res["upper_y"] > res["lower_y"] and 70 < res["incisal_z"] < 120
+    assert res["fork_vs_standard_deg"] < 5 and res["ours_vs_real_fork_deg"] < 5  # вилка — в стандартной позе
 
 
 @pytest.mark.skipif(EXOCAD is None, reason="exocad не установлен")
