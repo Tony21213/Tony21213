@@ -1,4 +1,4 @@
-// Custom Case Designer, первая версия: КТ и сегментация, совмещение сканов с КТ, экспорт в единых координатах.
+// KStom Case Designer, первая версия: КТ и сегментация, совмещение сканов с КТ, экспорт в единых координатах.
 import { get, mesh, post, run } from './api.js';
 import { icons } from './icons.js';
 import { SliceView } from './slices.js';
@@ -169,7 +169,7 @@ const shownRecent = () => state.recent.filter((r) => r.exists);
 // них — в названиях сканов и в сообщениях. В инкогнито на экране вместо них метки «КТ», «Скан 1», «Кейс»,
 // вместо остальных путей — «…». Сами данные не меняются. Так же, как в журнале ошибок (errorlog.py).
 const WIN_PATH = /(?:[A-Za-z]:[\\/]|\\\\)[^:;"'<>|\r\n\t*?«»]*/g; // в именах файлов Windows нет «:» — путь до неё
-const OWN_FOLDERS = /^CustomCaseDesigner$/i; // папки программы — не личные
+const OWN_FOLDERS = /^(KStomCaseDesigner|CustomCaseDesigner)$/i; // папки программы — не личные
 const chosen = []; // пути, выбранные в этом сеансе
 const scanLabel = (s) => (state.incognito ? `Скан ${state.scans.findIndex((x) => x.id === s.id) + 1}` : s.name);
 

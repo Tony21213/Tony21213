@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-rem Custom Case Designer: запуск из исходников на Windows 10/11 (без сборки exe).
+rem KStom Case Designer: запуск из исходников на Windows 10/11 (без сборки exe).
 rem Нужен Python 3.10-3.12 с python.org (при установке — галочка "Add python.exe to PATH").
 rem Первый запуск ставит библиотеки в папку .venv (несколько минут), дальше — сразу окно программы.
 rem Модели сегментации скачиваются кнопкой в самой программе (шаг «КТ»).

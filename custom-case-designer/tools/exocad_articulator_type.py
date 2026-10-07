@@ -1,12 +1,12 @@
-"""Свой тип антагониста в DentalDB — «В артикуляторе Custom Case Designer» (проверено на exocad 3.3 Chemnitz).
+"""Свой тип антагониста в DentalDB — «В артикуляторе KStom Case Designer» (проверено на exocad 3.3 Chemnitz).
 
 Скрипт не меняет exocad: он кладёт изменённые копии трёх файлов конфигурации в отдельную папку (та же структура,
 кодировка и переводы строк, что у оригиналов), а подкладывает их пользователь — с резервными копиями:
 
-* DentalDB\\config\\WorkParamsDB.xml — значение ArticulatorCustomCaseDesigner в списке AntagonistType
+* DentalDB\\config\\WorkParamsDB.xml — значение ArticulatorKStomCaseDesigner в списке AntagonistType
   (после ArticulatorKlosterneuburg);
 * DentalDB\\languages\\customer.xml — подпись пункта (файл подписей клиента, языковые файлы exocad не трогаются);
-* DentalCADApp\\config\\articulatormappings.xml — тип → папка library\\articulator\\Custom Case Designer
+* DentalCADApp\\config\\articulatormappings.xml — тип → папка library\\articulator\\KStom Case Designer
   (<Antagonists>) и запись артикулятора (<Articulators>).
 
 DentalCAD такой тип принимает: проект с ним открывается, в диалоге «Вирт. артикулятор» сразу выбран наш
@@ -19,9 +19,9 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
-TYPE = "ArticulatorCustomCaseDesigner"
-FOLDER = "Custom Case Designer"
-LABEL = "В артикуляторе Custom Case Designer"
+TYPE = "ArticulatorKStomCaseDesigner"
+FOLDER = "KStom Case Designer"
+LABEL = "В артикуляторе KStom Case Designer"
 FILES = (r"DentalDB\config\WorkParamsDB.xml", r"DentalDB\languages\customer.xml",
          r"DentalCADApp\config\articulatormappings.xml")
 
@@ -51,7 +51,7 @@ def _mappings(t: str) -> str:
     t = t.replace("</Antagonists>", f"\t<Antagonist>\n\t\t\t<Type>{TYPE}</Type>\n\t\t\t<FolderName>{FOLDER}</FolderName>\n"
                                     "\t\t</Antagonist>\n\t</Antagonists>")
     return t.replace("</Articulators>", f"\t<Articulator>\n\t\t\t<FolderName>{FOLDER}</FolderName>\n"
-                                        "\t\t\t<TypeInXML>Custom_Case_Designer</TypeInXML>\n\t\t\t<Assignments />\n"
+                                        "\t\t\t<TypeInXML>KStom_Case_Designer</TypeInXML>\n\t\t\t<Assignments />\n"
                                         "\t\t</Articulator>\n\t</Articulators>")
 
 

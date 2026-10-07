@@ -60,7 +60,7 @@ def wait(base, answer, timeout=300):
 def test_doctor_workflow(server, case_files, tmp_path):
     d, truth = case_files
     page = urllib.request.urlopen(server + "/").read().decode()
-    assert "Custom Case Designer" in page and "app.js" in page
+    assert "KStom Case Designer" in page and "app.js" in page
 
     ct = wait(server, call(server, "ct", {"path": str(d / "ct.nii.gz")}))
     assert ct["shape"] and len(ct["focus"]) == 3
@@ -210,14 +210,14 @@ def test_export_into_exocad_project(case_files, tmp_path):
     s.register(sid)
     plain = s.export(str(tmp_path / "plain"), "scan", "exocad")  # обычная выгрузка: координаты сканера
     res = s.export(str(project), "scan", "exocad")
-    out = project / "CustomCaseDesigner"
+    out = project / "KStomCaseDesigner"
     assert res["out_dir"] == str(out) and res["frame"].startswith("exocad project scene")
     assert "Проект exocad" in res["notes"][0] and not any("не найден" in n for n in res["notes"])
     for name in ("p-lowerjaw.stl", "ct_teeth.stl"):  # сцена = координаты сканера × матрица сканера
         a = trimesh.load_mesh(str(tmp_path / "plain" / name), process=False).vertices
         b = trimesh.load_mesh(str(out / name), process=False).vertices
         assert np.abs(apply(SCANNER, a) - b).max() < 1e-3, name
-    assert sorted(p.name for p in project.iterdir()) == ["CustomCaseDesigner", "p-lowerjaw.stl", "p.dentalProject",
+    assert sorted(p.name for p in project.iterdir()) == ["KStomCaseDesigner", "p-lowerjaw.stl", "p.dentalProject",
                                                          "p.matrix4"]  # файлы exocad не тронуты
     assert plain["frame"].startswith("scanner coordinates")
 

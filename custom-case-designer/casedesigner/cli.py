@@ -1,4 +1,4 @@
-"""Командная строка Custom Case Designer.
+"""Командная строка KStom Case Designer.
 
     python -m casedesigner register КТ --scan upper.stl --scan lower.stl --models модели -o результат
     python -m casedesigner segment КТ --models модели -o результат
@@ -331,7 +331,7 @@ def cmd_facebow(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="casedesigner", description="Custom Case Designer")
+    parser = argparse.ArgumentParser(prog="casedesigner", description="KStom Case Designer")
     sub = parser.add_subparsers(dest="command", required=True)
 
     reg = sub.add_parser("register", help="совместить сканы челюстей с КТ по зубам и экспортировать STL")

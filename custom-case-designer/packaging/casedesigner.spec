@@ -1,4 +1,4 @@
-# PyInstaller: сборка Custom Case Designer в папку с CustomCaseDesigner.exe.
+# PyInstaller: сборка KStom Case Designer в папку с KStomCaseDesigner.exe.
 #   pyinstaller --noconfirm packaging/casedesigner.spec
 # Модели сегментации кладутся рядом с exe в папку models (см. build_windows.bat).
 import os
@@ -26,6 +26,6 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="CustomCaseDesigner", console=False,
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="KStomCaseDesigner", console=False,
           icon=None, upx=False)
-coll = COLLECT(exe, a.binaries, a.datas, name="CustomCaseDesigner", upx=False)
+coll = COLLECT(exe, a.binaries, a.datas, name="KStomCaseDesigner", upx=False)

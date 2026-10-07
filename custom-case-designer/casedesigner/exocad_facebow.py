@@ -50,7 +50,7 @@ FORK_OFFSET_MM = np.array([0.0, -34.4, 0.0])
 
 ORBITAL = (-30.0, 0.0, 70.0)  # точка горизонтали справа (в файле Zebris — орбитальная)
 OPENING_DEG, OPENING_FRAMES, FREQUENCY = 6.0, 61, 60  # короткое шарнирное открывание: в файле должно быть движение
-ARTICULATOR_NAME = "Custom Case Designer"
+ARTICULATOR_NAME = "KStom Case Designer"
 
 
 @dataclass
@@ -188,7 +188,7 @@ def jawmotion_xml(fb: Facebow, description: str = "", movements=None) -> bytes:
     from . import __version__
 
     root = ET.Element("dental_measurement", {"xmlns": "http://www.zebris.de/JMA"})
-    _sub(root, "program", "Custom Case Designer")
+    _sub(root, "program", "KStom Case Designer")
     _sub(root, "program_version", __version__)
     _sub(root, "format_version", "1.0")
     _sub(root, "measuring_system", "")
@@ -337,7 +337,7 @@ def preview_image(size=(700, 770)):
     d.line([(x * s, y * s) for x, y in pts], fill=gold, width=int(14 * s), joint="curve")
     d.ellipse((135 * s, 224 * s, 179 * s, 268 * s), fill=dark)  # головка мыщелка
     d.line((140 * s, 340 * s, 610 * s, 340 * s), fill=accent, width=int(6 * s))  # плоскость гипсовки — горизонталь
-    d.text((170 * s, 420 * s), "Custom Case\nDesigner", fill=dark, font_size=int(64 * s), spacing=int(10 * s))
+    d.text((170 * s, 420 * s), "KStom Case\nDesigner", fill=dark, font_size=int(64 * s), spacing=int(10 * s))
     return im
 
 
@@ -488,7 +488,7 @@ def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: 
     to_art = fb.case_to_articulator
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, jawmotion_name), "wb") as f:
-        f.write(jawmotion_xml(fb, "Custom Case Designer: шарнир на мыщелках пациента, гипсовка по горизонтали монтажа",
+        f.write(jawmotion_xml(fb, "KStom Case Designer: шарнир на мыщелках пациента, гипсовка по горизонтали монтажа",
                               movements))
     marker_mesh(register, fb, upper).apply_transform(to_art).export(os.path.join(out_dir, marker_name))
     spheres = [trimesh.creation.icosphere(subdivisions=2, radius=2.5).apply_translation(p) for p in fb.condyles.values()]

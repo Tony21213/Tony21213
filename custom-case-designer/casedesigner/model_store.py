@@ -104,7 +104,7 @@ def _fetch(url: str, part: str, size: int, sha: str, title: str, on_bytes, cance
         have = 0
     h = _sha256(part) if have else hashlib.sha256()
     if have < size:
-        req = urllib.request.Request(url, headers={"User-Agent": "CustomCaseDesigner"})
+        req = urllib.request.Request(url, headers={"User-Agent": "KStomCaseDesigner"})
         if have:
             req.add_header("Range", f"bytes={have}-")
         try:

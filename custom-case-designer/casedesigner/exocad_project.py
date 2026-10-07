@@ -91,7 +91,7 @@ def find(folder: str) -> ExocadProject | None:
 
 FRAMEWORK_STL = "{stem}-{jaw}jaw-partialframework_cad.stl"
 FRAMEWORK_INFO = "{stem}-{jaw}jaw.partialInfo"
-BONE_MATERIAL = "Кость из КТ (Custom Case Designer)"
+BONE_MATERIAL = "Кость из КТ (KStom Case Designer)"
 
 
 def _partial_info(file_name: str) -> bytes:
@@ -113,7 +113,7 @@ def _partial_info(file_name: str) -> bytes:
         ET.SubElement(axis, k).text = f"{v:.16f}"
     ET.SubElement(item, "MillingDiameter").text = "0.1000000000000000"
     ET.SubElement(root, "UsedReconstructionFileList")
-    ET.SubElement(root, "ProductName").text = "Custom Case Designer"
+    ET.SubElement(root, "ProductName").text = "KStom Case Designer"
     ET.SubElement(root, "SaveTime").text = datetime.now().strftime("%Y-%m-%d-%H-%M")
     ET.indent(root, "    ")
     return ET.tostring(root, encoding="utf-8")
@@ -133,7 +133,7 @@ def write_bone_frameworks(project: ExocadProject, bones: dict) -> tuple[list[str
         stl = FRAMEWORK_STL.format(stem=project.stem, jaw=jaw)
         info = FRAMEWORK_INFO.format(stem=project.stem, jaw=jaw)
         stl_path, info_path = os.path.join(project.folder, stl), os.path.join(project.folder, info)
-        if os.path.exists(info_path) and b"Custom Case Designer" not in open(info_path, "rb").read():
+        if os.path.exists(info_path) and b"KStom Case Designer" not in open(info_path, "rb").read():
             notes.append(f"В проекте уже есть бюгельный каркас {'верхней' if jaw == 'upper' else 'нижней'} "
                          "челюсти — кость не записана, каркас не тронут.")
             continue

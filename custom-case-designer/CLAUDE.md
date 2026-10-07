@@ -1,4 +1,4 @@
-# Custom Case Designer — правила работы
+# KStom Case Designer — правила работы
 
 ## Функции — в дорожную карту
 - Каждую функцию, о которой договорились или которую пользователь попросил
@@ -30,3 +30,10 @@
 
 ## Лицензии
 - Сторонние модели и код — с лицензией и авторством в THIRD_PARTY_NOTICES.md.
+
+## Название
+- Программа называется «KStom Case Designer» (exe — KStomCaseDesigner.exe,
+  подпапка экспорта в проект exocad — KStomCaseDesigner). Папка проекта
+  `custom-case-designer`, пакет `casedesigner` и папка данных пользователя
+  `%LOCALAPPDATA%\CustomCaseDesigner` (модели, журнал) оставлены прежними,
+  чтобы не терять скачанное и не ломать импорт.

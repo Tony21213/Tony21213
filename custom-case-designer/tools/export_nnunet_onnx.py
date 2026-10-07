@@ -1,4 +1,4 @@
-"""Перевод обученной модели nnU-Net v2 в ONNX для Custom Case Designer.
+"""Перевод обученной модели nnU-Net v2 в ONNX для KStom Case Designer.
 
 Нужен один раз на любой машине с PyTorch и nnU-Net (pip install torch nnunetv2);
 приложению потом хватает ONNX Runtime. Скрипт собирает сеть по plans.json,
@@ -113,7 +113,7 @@ def describe(spec: dict, info: dict) -> dict:
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="nnU-Net v2 → ONNX для Custom Case Designer")
+    parser = argparse.ArgumentParser(description="nnU-Net v2 → ONNX для KStom Case Designer")
     parser.add_argument("nnunet_dir", help="папка конфигурации nnU-Net (plans.json, dataset.json, fold_0/)")
     parser.add_argument("out_dir", help="куда положить model.onnx и model.json")
     parser.add_argument("--spec", required=True, help="описание выходов модели (tools/models/*.json)")

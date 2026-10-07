@@ -42,7 +42,7 @@ CASE_EXT = ".ccdcase"
 DEV_COLORS = ("#28aa46", "#e6be1e", "#d23228", "#8a8f99")  # ≤ 0.1, ≤ 0.2, > 0.2 мм, не коронки (как карта в 3D)
 MAX_SLICE_PIXELS = 2048  # сторона картинки видимой части среза
 UPPER_BONES, LOWER_BONES = ("skull", "maxilla"), ("mandible",)  # в exocad — бюгельными каркасами своей челюсти
-EXOCAD_SUBFOLDER = "CustomCaseDesigner"  # куда в папке проекта exocad кладётся экспорт
+EXOCAD_SUBFOLDER = "KStomCaseDesigner"  # куда в папке проекта exocad кладётся экспорт
 SCAN_COLORS = ["#7fb2ff", "#ffb86b", "#b48cff", "#6be0c1"]
 # Скан совмещён до сегментации — только по плотности (см. CaseCT.use_teeth).
 UNGUIDED = ("КТ не сегментировано: зубы найдены только по плотности, и на снимке с большим полем скан может сесть "

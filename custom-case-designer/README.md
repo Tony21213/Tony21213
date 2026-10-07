@@ -1,4 +1,4 @@
-# Custom Case Designer
+# KStom Case Designer
 
 Приложение для Windows: КТ (КЛКТ), сканы челюстей и сегментация анатомии в
 единых координатах, с экспортом в STL.
@@ -41,7 +41,7 @@
    сканов отличается от прикуса на КТ: «Сканов (врача)» — нижняя челюсть со
    своими структурами в прикусе сканов, «Как на КТ» — всё как на снимке. Без сканов —
    структуры КТ в координатах КТ. Если выбрать папку проекта exocad (в ней
-   `.dentalProject`), всё ляжет в его подпапку `CustomCaseDesigner` в
+   `.dentalProject`), всё ляжет в его подпапку `KStomCaseDesigner` в
    координатах сцены exocad — с матрицей сканера из `.scanInfo`/`.matrix4`;
    в exocad — «Load mesh as …». Файлы exocad не меняются ([docs/exocad.md](docs/exocad.md)).
 
@@ -89,8 +89,8 @@ pip install -r packaging/requirements-app.txt
 python -m casedesigner.app
 ```
 
-Сборка exe: `packaging\build_windows.bat` — папка `dist\CustomCaseDesigner` с
-`CustomCaseDesigner.exe` (PyInstaller; `onnxruntime-directml` — расчёт на
+Сборка exe: `packaging\build_windows.bat` — папка `dist\KStomCaseDesigner` с
+`KStomCaseDesigner.exe` (PyInstaller; `onnxruntime-directml` — расчёт на
 любой видеокарте с DirectX 12, без неё — на процессоре). Окно — Edge
 WebView2 (есть в Windows 10/11); без него интерфейс откроется в браузере.
 Всё считается локально, сервер слушает только 127.0.0.1; в сеть программа

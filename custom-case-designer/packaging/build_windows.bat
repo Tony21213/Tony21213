@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
-rem Сборка Custom Case Designer для Windows 10/11.
+rem Сборка KStom Case Designer для Windows 10/11.
 rem Нужен Python 3.10-3.12 (python.org, галочка "Add python.exe to PATH").
-rem Результат: dist\CustomCaseDesigner\CustomCaseDesigner.exe
+rem Результат: dist\KStomCaseDesigner\KStomCaseDesigner.exe
 setlocal
 cd /d "%~dp0\.."
 
@@ -19,12 +19,12 @@ pyinstaller --noconfirm packaging\casedesigner.spec || goto :error
 rem Модели сегментации: если в корне проекта уже есть папка models, кладём её к exe;
 rem иначе их скачают кнопкой в программе.
 if exist models (
-  xcopy /E /I /Y models dist\CustomCaseDesigner\models >nul
+  xcopy /E /I /Y models dist\KStomCaseDesigner\models >nul
 ) else (
   echo Моделей в сборке нет - их скачают кнопкой в программе.
 )
 echo.
-echo Готово: dist\CustomCaseDesigner\CustomCaseDesigner.exe
+echo Готово: dist\KStomCaseDesigner\KStomCaseDesigner.exe
 exit /b 0
 
 :error
