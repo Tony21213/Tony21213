@@ -7,11 +7,13 @@
 * файл движений Zebris (`dental_measurement`, .jawmotion) в системе «ось — плоскость» (axis_orbital).
   У нас это система монтажа: начало — середина между мыщелками, x — влево, y — вверх (нормаль
   горизонтали), z — вперёд. Верхняя челюсть привязана вилкой (bite_fork): в файле — метки вилки;
-* скан маркера — вилка Zebris SD (STL из библиотеки exocad, library\\movementregister\\zebris_type_sd)
-  перед резцами, в координатах сканов. Ни с одной челюстью она не пересекается и не совпадает: копия
-  верхнего скана в маркере ложится на сам скан поверхность в поверхность, вилка между челюстями проходит
-  сквозь нижние зубы — и в exocad щелчок попадает в маркер, ничего не выбрать. exocad находит вилку на
-  скане маркера по геометрии, по меткам переводит модели в систему регистратора и ставит их в артикулятор;
+* скан маркера — «верхняя челюсть на вилке», как `UpperJawOnStand.stl` у SDI Matrix и скан маркера
+  образца exocad 012: копия верхнего скана на месте и вилка Zebris SD (STL из библиотеки exocad,
+  library\\movementregister\\zebris_type_sd) перед резцами, в координатах сканов. exocad сначала
+  совмещает скан маркера с верхним сканом по общей поверхности (у одной вилки её нет — сопоставление
+  укладывало вилку на зубы), затем ставит библиотечную вилку на вилку маркера и по меткам переводит модели
+  в систему регистратора и в артикулятор. Вилка не касается челюстей: сквозь нижние зубы щелчок попадал
+  в маркер;
 * свой артикулятор (папка для library\\articulator): перевод из системы регистратора без наклона, как у
   SAM 2P, — горизонталь артикулятора и есть горизонталь монтажа, середина шарнирной оси — середина между
   мыщелками пациента.
@@ -265,11 +267,16 @@ def read_jawmotion(path: str) -> dict:
             "articulators": [a.tag for a in root.findall("articulator_settings/*")]}
 
 
-def marker_mesh(register: Register, fb: Facebow) -> trimesh.Trimesh:
-    """Скан маркера: только вилка на своём месте, без копии верхнего скана (она легла бы на сам скан)."""
+def marker_mesh(register: Register, fb: Facebow, upper: trimesh.Trimesh | None = None) -> trimesh.Trimesh:
+    """Скан маркера «верхняя челюсть на вилке»: копия верхнего скана на месте (upper — в координатах кейса)
+    и вилка. Как у SDI Matrix (UpperJawOnStand — верхний скан без сдвига и подставка): по копии exocad
+    совмещает маркер с верхним сканом без смещения."""
     fork = register.fork.copy()
     fork.apply_transform(fb.fork_pose)
-    return fork
+    if upper is None:
+        return fork
+    return trimesh.util.concatenate([trimesh.Trimesh(np.asarray(upper.vertices), np.asarray(upper.faces), process=False),
+                                     fork])
 
 
 # --- свой артикулятор ---------------------------------------------------------------------------------
@@ -367,15 +374,15 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
 def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: Register,
            icd: float | None = None, settings: dict | None = None, avoid=None,
            movements=None, jawmotion_name: str = "facebow.jawmotion", marker_name: str = "movementmarker.stl",
-           articulator_dir: str | None = None) -> dict:
-    """Всё для exocad: файл лицевой дуги (с движениями, если даны), скан маркера, мыщелки (сферы для проверки)
-    и свой артикулятор (в articulator_dir или рядом)."""
+           articulator_dir: str | None = None, upper: trimesh.Trimesh | None = None) -> dict:
+    """Всё для exocad: файл лицевой дуги (с движениями, если даны), скан маркера (верхний скан upper на вилке),
+    мыщелки (сферы для проверки) и свой артикулятор (в articulator_dir или рядом)."""
     fb = facebow(frame, condyle_right, condyle_left, incisal, register, avoid)
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, jawmotion_name), "wb") as f:
         f.write(jawmotion_xml(fb, "Custom Case Designer: шарнир на мыщелках пациента, гипсовка по горизонтали монтажа",
                               movements))
-    marker_mesh(register, fb).export(os.path.join(out_dir, marker_name))
+    marker_mesh(register, fb, upper).export(os.path.join(out_dir, marker_name))
     spheres = [trimesh.creation.icosphere(subdivisions=2, radius=2.5).apply_translation(p) for p in fb.condyles.values()]
     trimesh.util.concatenate(spheres).export(os.path.join(out_dir, "condyles.stl"))
     if icd is None:

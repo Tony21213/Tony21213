@@ -120,12 +120,24 @@ def test_own_articulator_folder(tmp_path):
 
 def test_export(case, register, tmp_path):
     frame, p = case
-    res = ef.export(str(tmp_path), frame, p["right"], p["left"], p["incisal"], register)
+    upper = trimesh.creation.icosphere(subdivisions=3, radius=20).apply_translation(p["incisal"] + [0, 0, 5])
+    res = ef.export(str(tmp_path), frame, p["right"], p["left"], p["incisal"], register, upper=upper,
+                    avoid=upper.vertices)
     for name in res["files"]:
         assert (tmp_path / name).is_file(), name
-    marker = trimesh.load_mesh(str(tmp_path / "movementmarker.stl"))
-    assert len(marker.faces) == len(register.fork.faces)  # только вилка: копия скана мешала бы в exocad
     assert res["icd_mm"] == pytest.approx(np.linalg.norm(p["right"] - p["left"]), abs=0.05)
+    # Скан маркера «верхняя челюсть на вилке», как UpperJawOnStand у SDI Matrix: верхний скан — без сдвига
+    # (exocad совмещает по нему маркер с верхним сканом), вилка — отдельно от него.
+    marker = trimesh.load_mesh(str(tmp_path / "movementmarker.stl"))
+    assert len(marker.faces) == len(upper.faces) + len(register.fork.faces)
+    from scipy.spatial import cKDTree
+    d = cKDTree(marker.vertices).query(upper.vertices)[0]
+    assert d.max() < 1e-3
+    extra = marker.vertices[cKDTree(upper.vertices).query(marker.vertices)[0] > 0.01]
+    assert cKDTree(upper.vertices).query(extra)[0].min() >= ef.FORK_CLEARANCE_MM
+    fb = ef.facebow(frame, p["right"], p["left"], p["incisal"], register, avoid=upper.vertices)
+    fork = apply(fb.fork_pose, register.fork.vertices)
+    assert cKDTree(extra).query(fork)[0].max() < 1e-3  # остальное — вилка на своём месте
 
 
 @pytest.mark.skipif(EXOCAD is None, reason="exocad не установлен")
