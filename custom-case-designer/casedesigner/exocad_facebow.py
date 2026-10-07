@@ -314,8 +314,31 @@ def _guide(side: int) -> trimesh.Trimesh:
 
 
 CONDYLAR_HEAD_MM = 4.0  # радиус головки мыщелка артикулятора (condylar_head.off)
-INSERT_ID = "CondylarInsertPatient"
+INSERT_ID = "КТ пациента"  # имя вставки в диалоге exocad (Id; у Harman OSH тоже не только латиница)
 ARTICULATOR_POSITION = (30, -80, -31)
+
+
+def preview_image(size=(700, 770)):
+    """Картинка артикулятора для диалога exocad (preview.png): схема сбоку на прозрачном фоне — рамы, мыщелок
+    на изогнутой вставке, резцовый штифт."""
+    from PIL import Image, ImageDraw
+
+    w, h = size
+    im = Image.new("RGBA", size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    metal, dark, gold, accent = (200, 204, 210, 255), (90, 96, 104, 255), (232, 197, 71, 255), (58, 143, 214, 255)
+    s = w / 700
+    d.rounded_rectangle((60 * s, 150 * s, 640 * s, 200 * s), 18 * s, fill=metal, outline=dark, width=int(3 * s))  # верхняя рама
+    d.rounded_rectangle((60 * s, 600 * s, 640 * s, 650 * s), 18 * s, fill=metal, outline=dark, width=int(3 * s))  # нижняя рама
+    d.rectangle((80 * s, 200 * s, 130 * s, 600 * s), fill=metal, outline=dark, width=int(3 * s))  # стойка
+    d.rectangle((560 * s, 200 * s, 580 * s, 560 * s), fill=metal, outline=dark, width=int(3 * s))  # резцовый штифт
+    d.rounded_rectangle((520 * s, 560 * s, 640 * s, 600 * s), 8 * s, fill=gold, outline=dark, width=int(3 * s))
+    pts = [(150 + 10 * t, 214 + 9 * t - 0.25 * t * t) for t in range(0, 13)]  # изогнутая вставка ССП над мыщелком
+    d.line([(x * s, y * s) for x, y in pts], fill=gold, width=int(14 * s), joint="curve")
+    d.ellipse((135 * s, 224 * s, 179 * s, 268 * s), fill=dark)  # головка мыщелка
+    d.line((140 * s, 340 * s, 610 * s, 340 * s), fill=accent, width=int(6 * s))  # плоскость гипсовки — горизонталь
+    d.text((170 * s, 420 * s), "Custom Case\nDesigner", fill=dark, font_size=int(64 * s), spacing=int(10 * s))
+    return im
 
 
 def condylar_insert(path, tilt_deg: float, head_radius: float = CONDYLAR_HEAD_MM, width: float = 10.0,
@@ -441,7 +464,8 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
             f.write(data)
     for name, mesh in meshes.items():
         write_off(os.path.join(folder, name), mesh)
-    return sorted([*files, *meshes])
+    preview_image().save(os.path.join(folder, "preview.png"))
+    return sorted([*files, *meshes, "preview.png"])
 
 
 def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: Register,
