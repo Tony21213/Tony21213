@@ -317,7 +317,8 @@ def cmd_facebow(args):
     p = anatomy.points
     res = ef.export(args.out, anatomy.frame, p["condyle_right"], p["condyle_left"], p["incisal"],
                     ef.load_register(folder), settings=values, upper=upper,
-                    avoid=np.vstack([upper.vertices, lower.vertices]))
+                    avoid=np.vstack([upper.vertices, lower.vertices]),
+                    meshes={"upperjaw.stl": upper, "lowerjaw.stl": lower})  # сканы — в координатах артикулятора
     print(f"Монтаж: {anatomy.source}")
     print(f"Межмыщелковое расстояние {res['icd_mm']} мм; мыщелки от оси артикулятора: "
           f"справа {res['off_axis_mm']['right']} мм, слева {res['off_axis_mm']['left']} мм")

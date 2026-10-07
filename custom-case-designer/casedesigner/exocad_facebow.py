@@ -9,14 +9,17 @@
   горизонтали), z — вперёд. Верхняя челюсть привязана вилкой (bite_fork): в файле — метки вилки;
 * скан маркера — «верхняя челюсть на вилке», как `UpperJawOnStand.stl` у SDI Matrix и скан маркера
   образца exocad 012: копия верхнего скана на месте и вилка Zebris SD (STL из библиотеки exocad,
-  library\\movementregister\\zebris_type_sd) перед резцами, в координатах сканов. exocad сначала
+  library\\movementregister\\zebris_type_sd) перед резцами. exocad сначала
   совмещает скан маркера с верхним сканом по общей поверхности (у одной вилки её нет — сопоставление
   укладывало вилку на зубы), затем ставит библиотечную вилку на вилку маркера и по меткам переводит модели
   в систему регистратора и в артикулятор. Вилка не касается челюстей: сквозь нижние зубы щелчок попадал
   в маркер;
 * свой артикулятор (папка для library\\articulator): перевод из системы регистратора без наклона, как у
   SAM 2P, — горизонталь артикулятора и есть горизонталь монтажа, середина шарнирной оси — середина между
-  мыщелками пациента.
+  мыщелками пациента;
+* сканы, маркер и кости — в координатах артикулятора: в проекте «модели в артикуляторе» (тип антагониста —
+  артикулятор, для SAM 2P — ArticulatorSendling) exocad ставит модели в артикулятор по координатам файлов,
+  лицевая дуга даёт только движения. В координатах сканера модели вставали в артикулятор повёрнутыми.
 
 Ось артикулятора прямая, а мыщелки пациента могут стоять на разной высоте и глубине: ось идёт через
 середину между ними вдоль горизонтали монтажа, насколько каждый мыщелок от неё — в отчёте.
@@ -46,6 +49,11 @@ REGISTER_TO_ARTICULATOR = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [
 # (пример exocad 012: метка 1 — в 34 мм позади режущего края), но в прикусе сканов она проходила бы сквозь
 # нижние зубы; exocad находит вилку на скане маркера по геометрии, где бы она ни стояла.
 FORK_OFFSET_MM = np.array([0.0, 15.0, 0.0])
+# Вилка в маркере перевёрнута на 180° вокруг ручки: сторона +y STL (её exocad показывает у библиотечной вилки,
+# ручкой вверх) смотрит вниз. На шаге «Регистрация движения» exocad по умолчанию показывает модели снизу,
+# передом вверх — вилка маркера выглядит так же, как библиотечная, и хватает одной общей точки. Кольца меток
+# (выступы на −y) — сверху; положение моделей от позы вилки не зависит (метки в файле — для неё).
+FORK_FLIP = np.diag([-1.0, -1.0, 1.0])
 FORK_CLEARANCE_MM, FORK_STEP_MM = 3.0, 3.0  # вилка не ближе 3 мм к сканам челюстей: иначе отодвигается вперёд
 
 ORBITAL = (-30.0, 0.0, 70.0)  # точка горизонтали справа (в файле Zebris — орбитальная)
@@ -69,6 +77,17 @@ class Facebow:
     condyles: dict  # right/left: мыщелки в координатах кейса
     off_axis_mm: dict  # right/left: насколько мыщелок от оси артикулятора
     notes: list = field(default_factory=list)
+
+    @property
+    def case_to_articulator(self) -> np.ndarray:
+        """Координаты кейса → артикулятор exocad (x вправо, y вперёд, z вверх; середина оси — (30, −80, 60))."""
+        return register_to_articulator() @ self.case_to_register
+
+
+def register_to_articulator() -> np.ndarray:
+    """REGISTER_TO_ARTICULATOR в записи «столбец» (в файле exocad — «точка-строка»)."""
+    M = REGISTER_TO_ARTICULATOR
+    return rigid(M[:3, :3].T, M[3, :3])
 
 
 def find_exocad(roots=(r"C:\Exo", r"C:\exocad", r"C:\Program Files\exocad", r"D:\exocad")) -> str | None:
@@ -103,13 +122,13 @@ def load_register(path: str) -> Register:
 def facebow(frame: np.ndarray, condyle_right, condyle_left, incisal, register: Register, avoid=None) -> Facebow:
     """Лицевая дуга по системе монтажа (frame: координаты кейса → x вправо, y вперёд, z вверх) и мыщелкам.
 
-    Вилка на скане маркера лежит, как у пациента: горизонтально, в окклюзионной плоскости, ручкой вперёд (оси
-    вилки — оси регистратора), перед резцами. exocad сам вилку не ищет: на шаге «Позиция сканов —
-    Сопоставление» пользователь поворачивает библиотечную вилку и скан маркера в одну позицию и щёлкает одну
-    и ту же точку на обоих, затем exocad уточняет. В привычной позе вилку легко сопоставить, а она почти
-    симметрична: зеркальная точка переворачивает вилку, и модели встают криво. Метки в файле — для этой позы,
-    поэтому положение моделей в артикуляторе от позы вилки не зависит. avoid — точки сканов челюстей: вилка
-    отодвигается вперёд, пока не будет от них дальше FORK_CLEARANCE_MM."""
+    Вилка на скане маркера лежит горизонтально, ручкой вперёд, перед резцами, лицевой стороной вниз
+    (FORK_FLIP). exocad сам вилку не ищет: на шаге «Регистрация движения» пользователь ставит библиотечную
+    вилку и скан маркера в одну позицию и щёлкает одну и ту же точку на обоих, затем exocad уточняет. Вилка
+    почти симметрична: зеркальная точка переворачивает её, и движения встают криво; в позе FORK_FLIP вид
+    exocad по умолчанию совпадает с видом библиотечной вилки. Метки в файле — для этой позы, поэтому
+    положение моделей от позы вилки не зависит. avoid — точки сканов челюстей: вилка отодвигается вперёд,
+    пока не будет от них дальше FORK_CLEARANCE_MM."""
     F = np.asarray(frame, float)
     cases = {"right": np.asarray(condyle_right, float), "left": np.asarray(condyle_left, float)}
     mounted = {side: apply(F, p) for side, p in cases.items()}
@@ -117,7 +136,7 @@ def facebow(frame: np.ndarray, condyle_right, condyle_left, incisal, register: R
     to_register = TO_REGISTER @ rigid(np.eye(3), -mid) @ F
     off_axis = {side: round(float(np.linalg.norm((p - mid)[1:])), 2) for side, p in mounted.items()}
     back = np.linalg.inv(F)
-    R = back[:3, :3] @ TO_REGISTER[:3, :3].T  # оси вилки = оси регистратора (x влево, y вверх, z вперёд)
+    R = back[:3, :3] @ TO_REGISTER[:3, :3].T @ FORK_FLIP  # ручкой вперёд, лицевой стороной вниз
     start = apply(back, (apply(F, incisal) + FORK_OFFSET_MM)[None])[0]
     fork_pose = rigid(R, start - R @ register.marks[0])
     if avoid is not None and len(avoid):
@@ -374,22 +393,35 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
 def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: Register,
            icd: float | None = None, settings: dict | None = None, avoid=None,
            movements=None, jawmotion_name: str = "facebow.jawmotion", marker_name: str = "movementmarker.stl",
-           articulator_dir: str | None = None, upper: trimesh.Trimesh | None = None) -> dict:
+           articulator_dir: str | None = None, upper: trimesh.Trimesh | None = None,
+           meshes: dict | None = None) -> dict:
     """Всё для exocad: файл лицевой дуги (с движениями, если даны), скан маркера (верхний скан upper на вилке),
-    мыщелки (сферы для проверки) и свой артикулятор (в articulator_dir или рядом)."""
+    мыщелки (сферы для проверки), сетки meshes (имя файла → сетка в координатах кейса: сканы, кости) и свой
+    артикулятор (в articulator_dir или рядом).
+
+    Сетки, маркер и мыщелки пишутся в координатах артикулятора: в проекте «модели в артикуляторе» exocad
+    берёт координаты файлов сканов как координаты артикулятора (в образце exocad 012 с лицевой дугой Zebris
+    сканы так и лежат — матрица сцены единичная, верхняя дуга горизонтально между шарниром и штифтом).
+    Файл движений — в системе регистратора; по вилке маркера exocad получает тот же перевод."""
     fb = facebow(frame, condyle_right, condyle_left, incisal, register, avoid)
+    to_art = fb.case_to_articulator
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, jawmotion_name), "wb") as f:
         f.write(jawmotion_xml(fb, "Custom Case Designer: шарнир на мыщелках пациента, гипсовка по горизонтали монтажа",
                               movements))
-    marker_mesh(register, fb, upper).export(os.path.join(out_dir, marker_name))
+    marker_mesh(register, fb, upper).apply_transform(to_art).export(os.path.join(out_dir, marker_name))
     spheres = [trimesh.creation.icosphere(subdivisions=2, radius=2.5).apply_translation(p) for p in fb.condyles.values()]
-    trimesh.util.concatenate(spheres).export(os.path.join(out_dir, "condyles.stl"))
+    trimesh.util.concatenate(spheres).apply_transform(to_art).export(os.path.join(out_dir, "condyles.stl"))
+    written = [jawmotion_name, marker_name, "condyles.stl"]
+    for name, mesh in (meshes or {}).items():
+        mesh.copy().apply_transform(to_art).export(os.path.join(out_dir, name))
+        written.append(name)
     if icd is None:
         icd = float(np.linalg.norm(fb.condyles["right"] - fb.condyles["left"]))
     art = os.path.join(articulator_dir or out_dir, ARTICULATOR_NAME)
     files = write_articulator(art, round(icd, 1), settings)
-    return {"files": [jawmotion_name, marker_name, "condyles.stl"],
+    return {"files": written,
             "articulator": art, "articulator_files": files,
             "off_axis_mm": fb.off_axis_mm, "icd_mm": round(icd, 1), "notes": fb.notes,
-            "case_to_register": fb.case_to_register.round(6).tolist()}
+            "case_to_register": fb.case_to_register.round(6).tolist(),
+            "case_to_articulator": to_art.round(6).tolist()}

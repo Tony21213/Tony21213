@@ -98,8 +98,10 @@ def main(app=None):
     d = np.linalg.norm(to_art(ours, uv) - to_art(A, uv), axis=1)
     ang = np.degrees(Rotation.from_matrix(ours[:3, :3] @ A[:3, :3].T).magnitude())
     print(f"модели в артикуляторе: наша цепочка против образца — до {d.max():.4f} мм, поворот {ang:.4f}°")
-    ours_vs_real_fork = float(np.degrees(Rotation.from_matrix(fb.fork_pose[:3, :3] @ B[:3, :3].T).magnitude()))
-    print(f"наша вилка относительно настоящей: поворот {ours_vs_real_fork:.1f}°")
+    # наша вилка нарочно перевёрнута лицом вниз (FORK_FLIP) — сравниваем без этого переворота
+    ours = fb.fork_pose[:3, :3] @ ef.FORK_FLIP.T
+    ours_vs_real_fork = float(np.degrees(Rotation.from_matrix(ours @ B[:3, :3].T).magnitude()))
+    print(f"наша вилка (без переворота лицом вниз) относительно настоящей: поворот {ours_vs_real_fork:.1f}°")
     return {"share": share, "max_mm": float(d.max()), "deg": float(ang), "upper_y": float(U[:, 1].mean()),
             "lower_y": float(L[:, 1].mean()), "incisal_z": float(U[:, 2].max()), "A": A, "B": B,
             "fork_vs_head_deg": fork_vs_head, "ours_vs_real_fork_deg": ours_vs_real_fork}
