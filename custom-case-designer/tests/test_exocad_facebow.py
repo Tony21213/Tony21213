@@ -62,21 +62,23 @@ def test_models_go_into_articulator_by_condyles_and_horizontal(case, register):
         assert np.abs(got - expected).max() < 1e-9, k
     # Мыщелки несимметричны к горизонтали: ось — через середину, отклонение каждого — в отчёте.
     assert fb.off_axis_mm["right"] == pytest.approx(np.hypot(1.5, 0.8), abs=0.01) and fb.notes
-    # Вилка — перед резцами, горизонтально, ручкой вперёд, лицевой стороной вниз (FORK_FLIP: так exocad
-    # показывает её на шаге сопоставления так же, как библиотечную).
+    # Вилка — перед резцами, как у пациента: оси вилки = оси регистратора (горизонтально, ручкой вперёд,
+    # стороной +y вверх). Так вид exocad по умолчанию показывает её той же стороной, что и библиотечную;
+    # перевёрнутая вилка давала в exocad перевёрнутые движения.
     first = apply(frame @ fb.fork_pose, register.marks[:1])[0]
     assert np.abs(first - (np.array([0.5, 98.0, -38.0]) + ef.FORK_OFFSET_MM)).max() < 1e-9
-    assert np.abs((fb.case_to_register @ fb.fork_pose)[:3, :3] - ef.FORK_FLIP).max() < 1e-9
+    assert np.abs((fb.case_to_register @ fb.fork_pose)[:3, :3] - np.eye(3)).max() < 1e-9
 
 
-def test_fork_moves_forward_until_clear_of_the_jaws(case, register):
+def test_fork_in_mouth_like_real_one(case, register):
+    """Вилка во рту, как настоящая в образце exocad 012: метка 1 — на высоте резцовой точки в 34 мм позади неё,
+    метки 2–3 — у клыков (в 4 мм позади резцов, по 25 мм в стороны). Метки и треки exocad — на зубном ряду."""
     frame, p = case
-    near = apply(np.linalg.inv(frame), np.array([[0.5, 98.0 + ef.FORK_OFFSET_MM[1] + 5, -38.0]]))  # «зуб» на месте вилки
-    fb = ef.facebow(frame, p["right"], p["left"], p["incisal"], register, avoid=near)
-    from scipy.spatial import cKDTree
-    assert cKDTree(near).query(apply(fb.fork_pose, register.fork.vertices))[0].min() >= ef.FORK_CLEARANCE_MM
-    fitted = kabsch(apply(fb.fork_pose, register.marks), fb.marks)  # модели — там же, где без сдвига вилки
-    assert np.abs(fitted - fb.case_to_register).max() < 1e-9
+    fb = ef.facebow(frame, p["right"], p["left"], p["incisal"], register)
+    marks = apply(frame @ fb.fork_pose, register.marks) - apply(frame, p["incisal"][None])[0]  # вправо, вперёд, вверх
+    assert np.abs(marks[0] - [0, -34.4, 0]).max() < 1e-6
+    for m in marks[1:]:
+        assert abs(abs(m[0]) - 25) < 1e-6 and -5 < m[1] < -3 and abs(m[2]) < 1e-6
 
 
 def test_jawmotion_file(case, register, tmp_path):
@@ -123,14 +125,14 @@ def test_export(case, register, tmp_path):
     frame, p = case
     upper = trimesh.creation.icosphere(subdivisions=3, radius=20).apply_translation(p["incisal"] + [0, 0, 5])
     res = ef.export(str(tmp_path), frame, p["right"], p["left"], p["incisal"], register, upper=upper,
-                    avoid=upper.vertices, meshes={"upperjaw.stl": upper})
+                    meshes={"upperjaw.stl": upper})
     for name in res["files"]:
         assert (tmp_path / name).is_file(), name
     assert res["icd_mm"] == pytest.approx(np.linalg.norm(p["right"] - p["left"]), abs=0.05)
     from scipy.spatial import cKDTree
     # Всё для проекта — в координатах артикулятора (как сканы образца exocad 012): мыщелки — на шарнирной оси
     # (30, −80, 60), горизонталь монтажа — горизонталь артикулятора.
-    fb = ef.facebow(frame, p["right"], p["left"], p["incisal"], register, avoid=upper.vertices)
+    fb = ef.facebow(frame, p["right"], p["left"], p["incisal"], register)
     to_art = np.array(res["case_to_articulator"])
     assert np.abs(to_art - fb.case_to_articulator).max() < 1e-5
     mid = apply(to_art, (p["right"] + p["left"])[None] / 2)[0]
@@ -142,12 +144,11 @@ def test_export(case, register, tmp_path):
     up_art = trimesh.load_mesh(str(tmp_path / "upperjaw.stl"))
     assert cKDTree(up_art.vertices).query(apply(to_art, upper.vertices))[0].max() < 1e-3
     # Скан маркера «верхняя челюсть на вилке», как UpperJawOnStand у SDI Matrix: копия верхнего скана — на нём
-    # самом (exocad совмещает по ней маркер с верхним сканом), вилка — отдельно, не ближе зазора.
+    # самом (exocad совмещает по ней маркер с верхним сканом), вилка — во рту.
     marker = trimesh.load_mesh(str(tmp_path / "movementmarker.stl"))
     assert len(marker.faces) == len(upper.faces) + len(register.fork.faces)
     assert cKDTree(marker.vertices).query(up_art.vertices)[0].max() < 1e-3
     extra = marker.vertices[cKDTree(up_art.vertices).query(marker.vertices)[0] > 0.01]
-    assert cKDTree(up_art.vertices).query(extra)[0].min() >= ef.FORK_CLEARANCE_MM - 1e-3
     fork = apply(to_art @ fb.fork_pose, register.fork.vertices)
     assert cKDTree(extra).query(fork)[0].max() < 1e-3  # остальное — вилка на своём месте
     # exocad: вилка библиотеки на маркере и метки из файла движений → «файл → регистратор»; с переводом
@@ -171,7 +172,7 @@ def test_sample_012_models_in_articulator_like_exocad():
     res = mod.main(EXOCAD)
     assert res["share"] > 0.5 and res["max_mm"] <= 0.5 and res["deg"] <= 0.5
     assert res["upper_y"] > res["lower_y"] and 70 < res["incisal_z"] < 120
-    assert res["fork_vs_head_deg"] < 10 and res["ours_vs_real_fork_deg"] < 10  # вилка — как у пациента, лицом вниз
+    assert res["fork_vs_head_deg"] < 10 and res["ours_vs_real_fork_deg"] < 10  # вилка — как у пациента
 
 
 @pytest.mark.skipif(EXOCAD is None, reason="exocad не установлен")

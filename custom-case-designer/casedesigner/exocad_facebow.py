@@ -9,11 +9,10 @@
   горизонтали), z — вперёд. Верхняя челюсть привязана вилкой (bite_fork): в файле — метки вилки;
 * скан маркера — «верхняя челюсть на вилке», как `UpperJawOnStand.stl` у SDI Matrix и скан маркера
   образца exocad 012: копия верхнего скана на месте и вилка Zebris SD (STL из библиотеки exocad,
-  library\\movementregister\\zebris_type_sd) перед резцами. exocad сначала
-  совмещает скан маркера с верхним сканом по общей поверхности (у одной вилки её нет — сопоставление
-  укладывало вилку на зубы), затем ставит библиотечную вилку на вилку маркера и по меткам переводит модели
-  в систему регистратора и в артикулятор. Вилка не касается челюстей: сквозь нижние зубы щелчок попадал
-  в маркер;
+  library\\movementregister\\zebris_type_sd) во рту, как настоящая. exocad сначала совмещает скан маркера
+  с верхним сканом по общей поверхности (у одной вилки её нет — сопоставление укладывало вилку на зубы),
+  затем ставит библиотечную вилку на вилку маркера и по меткам связывает движения с моделями. Метки и их
+  траектории лежат на зубном ряду;
 * свой артикулятор (папка для library\\articulator): перевод из системы регистратора без наклона, как у
   SAM 2P, — горизонталь артикулятора и есть горизонталь монтажа, середина шарнирной оси — середина между
   мыщелками пациента;
@@ -44,17 +43,10 @@ TO_REGISTER = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]]
 # Регистратор → артикулятор exocad (запись «точка-строка»): у всех артикуляторов exocad середина шарнирной
 # оси в (30, −80, 60); без наклона (как у SAM 2P) горизонталь артикулятора — горизонталь регистратора.
 REGISTER_TO_ARTICULATOR = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [30, -80, 60, 1]], float)
-# Метка 1 вилки от резцовой точки (вправо, вперёд, вверх), мм: вилка — перед резцами на их высоте (её задний
-# край в 4.5 мм перед режущим краем), не пересекает челюсти. Настоящая вилка лежит на окклюзионной плоскости
-# (пример exocad 012: метка 1 — в 34 мм позади режущего края), но в прикусе сканов она проходила бы сквозь
-# нижние зубы; exocad находит вилку на скане маркера по геометрии, где бы она ни стояла.
-FORK_OFFSET_MM = np.array([0.0, 15.0, 0.0])
-# Вилка в маркере перевёрнута на 180° вокруг ручки: сторона +y STL (её exocad показывает у библиотечной вилки,
-# ручкой вверх) смотрит вниз. На шаге «Регистрация движения» exocad по умолчанию показывает модели снизу,
-# передом вверх — вилка маркера выглядит так же, как библиотечная, и хватает одной общей точки. Кольца меток
-# (выступы на −y) — сверху; положение моделей от позы вилки не зависит (метки в файле — для неё).
-FORK_FLIP = np.diag([-1.0, -1.0, 1.0])
-FORK_CLEARANCE_MM, FORK_STEP_MM = 3.0, 3.0  # вилка не ближе 3 мм к сканам челюстей: иначе отодвигается вперёд
+# Метка 1 вилки от резцовой точки (вправо, вперёд, вверх), мм: вилка во рту, как настоящая в образце exocad 012 —
+# метка 1 на высоте резцовой точки в 34 мм позади неё, метки 2–3 — у клыков, пластина — между зубами (сканы в
+# прикусе её задевают, как и в образце). Метки и их траектории в exocad лежат на зубном ряду, а не перед ртом.
+FORK_OFFSET_MM = np.array([0.0, -34.4, 0.0])
 
 ORBITAL = (-30.0, 0.0, 70.0)  # точка горизонтали справа (в файле Zebris — орбитальная)
 OPENING_DEG, OPENING_FRAMES, FREQUENCY = 6.0, 61, 60  # короткое шарнирное открывание: в файле должно быть движение
@@ -119,16 +111,17 @@ def load_register(path: str) -> Register:
     return Register(trimesh.load_mesh(stl, process=False), marks)
 
 
-def facebow(frame: np.ndarray, condyle_right, condyle_left, incisal, register: Register, avoid=None) -> Facebow:
+def facebow(frame: np.ndarray, condyle_right, condyle_left, incisal, register: Register) -> Facebow:
     """Лицевая дуга по системе монтажа (frame: координаты кейса → x вправо, y вперёд, z вверх) и мыщелкам.
 
-    Вилка на скане маркера лежит горизонтально, ручкой вперёд, перед резцами, лицевой стороной вниз
-    (FORK_FLIP). exocad сам вилку не ищет: на шаге «Регистрация движения» пользователь ставит библиотечную
-    вилку и скан маркера в одну позицию и щёлкает одну и ту же точку на обоих, затем exocad уточняет. Вилка
-    почти симметрична: зеркальная точка переворачивает её, и движения встают криво; в позе FORK_FLIP вид
-    exocad по умолчанию совпадает с видом библиотечной вилки. Метки в файле — для этой позы, поэтому
-    положение моделей от позы вилки не зависит. avoid — точки сканов челюстей: вилка отодвигается вперёд,
-    пока не будет от них дальше FORK_CLEARANCE_MM."""
+    Вилка на скане маркера лежит, как у пациента: во рту (FORK_OFFSET_MM), горизонтально, ручкой вперёд,
+    стороной +y STL вверх (оси вилки — оси регистратора). exocad сам вилку не ищет: на шаге «Регистрация движения»
+    пользователь ставит библиотечную вилку и скан маркера в одну позицию и щёлкает одну и ту же точку на обоих,
+    затем exocad уточняет. В этой позе вид exocad по умолчанию (модели снизу, передом вверх) показывает вилку
+    маркера той же стороной, что и библиотечную, — поворачивать не нужно (проверено в exocad 3.3: открывание
+    идёт вниз). Вилка почти симметрична: если положить её обратной стороной, exocad зеркалит все движения
+    вокруг вилки (открывание идёт вверх) — так было с вилкой, перевёрнутой лицом вниз. Метки в файле — для
+    позы вилки, поэтому положение моделей от неё не зависит."""
     F = np.asarray(frame, float)
     cases = {"right": np.asarray(condyle_right, float), "left": np.asarray(condyle_left, float)}
     mounted = {side: apply(F, p) for side, p in cases.items()}
@@ -136,18 +129,9 @@ def facebow(frame: np.ndarray, condyle_right, condyle_left, incisal, register: R
     to_register = TO_REGISTER @ rigid(np.eye(3), -mid) @ F
     off_axis = {side: round(float(np.linalg.norm((p - mid)[1:])), 2) for side, p in mounted.items()}
     back = np.linalg.inv(F)
-    R = back[:3, :3] @ TO_REGISTER[:3, :3].T @ FORK_FLIP  # ручкой вперёд, лицевой стороной вниз
+    R = back[:3, :3] @ TO_REGISTER[:3, :3].T  # оси вилки = оси регистратора (x влево, y вверх, z вперёд)
     start = apply(back, (apply(F, incisal) + FORK_OFFSET_MM)[None])[0]
     fork_pose = rigid(R, start - R @ register.marks[0])
-    if avoid is not None and len(avoid):
-        from scipy.spatial import cKDTree
-
-        tree = cKDTree(np.asarray(avoid, float))
-        fork_pts = np.asarray(register.fork.vertices)
-        for _ in range(30):
-            if tree.query(apply(fork_pose, fork_pts))[0].min() >= FORK_CLEARANCE_MM:
-                break
-            fork_pose = rigid(np.eye(3), back[:3, 1] * FORK_STEP_MM) @ fork_pose  # вперёд по системе монтажа
     marks = apply(to_register @ fork_pose, register.marks)
     notes = []
     worst = max(off_axis.values())
@@ -391,7 +375,7 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
 
 
 def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: Register,
-           icd: float | None = None, settings: dict | None = None, avoid=None,
+           icd: float | None = None, settings: dict | None = None,
            movements=None, jawmotion_name: str = "facebow.jawmotion", marker_name: str = "movementmarker.stl",
            articulator_dir: str | None = None, upper: trimesh.Trimesh | None = None,
            meshes: dict | None = None) -> dict:
@@ -403,7 +387,7 @@ def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: 
     берёт координаты файлов сканов как координаты артикулятора (в образце exocad 012 с лицевой дугой Zebris
     сканы так и лежат — матрица сцены единичная, верхняя дуга горизонтально между шарниром и штифтом).
     Файл движений — в системе регистратора; по вилке маркера exocad получает тот же перевод."""
-    fb = facebow(frame, condyle_right, condyle_left, incisal, register, avoid)
+    fb = facebow(frame, condyle_right, condyle_left, incisal, register)
     to_art = fb.case_to_articulator
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, jawmotion_name), "wb") as f:
