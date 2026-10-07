@@ -45,8 +45,7 @@ REGISTER_TO_ARTICULATOR = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [
 # нижние зубы; exocad находит вилку на скане маркера по геометрии, где бы она ни стояла.
 FORK_OFFSET_MM = np.array([0.0, 15.0, 0.0])
 FORK_CLEARANCE_MM, FORK_STEP_MM = 3.0, 3.0  # вилка не ближе 3 мм к сканам челюстей: иначе отодвигается вперёд
-# .matrix4 вилки Zebris SD: вилка (x влево, y вверх, z вперёд) → оси скана (x вправо, y вперёд, z вверх).
-STANDARD_SD = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], float)
+
 ORBITAL = (-30.0, 0.0, 70.0)  # точка горизонтали справа (в файле Zebris — орбитальная)
 OPENING_DEG, OPENING_FRAMES, FREQUENCY = 6.0, 61, 60  # короткое шарнирное открывание: в файле должно быть движение
 ARTICULATOR_NAME = "Custom Case Designer"
@@ -58,9 +57,6 @@ class Register:
 
     fork: trimesh.Trimesh
     marks: np.ndarray  # 3×3
-    # «Стандартная» поза вилки в координатах сканов (.matrix4 вилки, в записи «столбец»): так лежит настоящая вилка
-    # на скане маркера (образец exocad 012 — в 2° от неё); от неё exocad, видимо, и ищет вилку.
-    standard: np.ndarray = field(default_factory=lambda: STANDARD_SD.copy())
 
 
 @dataclass
@@ -99,20 +95,18 @@ def load_register(path: str) -> Register:
     marks = np.array([[float(p.findtext(k)) for k in "xyz"] for p in meta.iter("Point")])
     if marks.shape != (3, 3):
         raise ValueError(f"у вилки должно быть три метки: {folder}")
-    from .exocad_project import read_matrix
-
-    m4 = os.path.join(folder, ZEBRIS_SD_STL.replace(".stl", ".matrix4"))
-    standard = read_matrix(ET.parse(m4).getroot()) if os.path.isfile(m4) else STANDARD_SD.copy()
-    return Register(trimesh.load_mesh(stl, process=False), marks, standard)
+    return Register(trimesh.load_mesh(stl, process=False), marks)
 
 
 def facebow(frame: np.ndarray, condyle_right, condyle_left, incisal, register: Register, avoid=None) -> Facebow:
     """Лицевая дуга по системе монтажа (frame: координаты кейса → x вправо, y вперёд, z вверх) и мыщелкам.
 
-    Вилка на скане маркера — в «стандартной» позе относительно осей сканов (register.standard), как настоящая:
-    exocad ищет её на скане маркера, видимо, от этой позы, и вилку, повёрнутую иначе (у сканера с вертикалью
-    по y — на 178°), находил неверно — модели вставали криво. Метки в файле — для этой позы, поэтому
-    положение моделей в артикуляторе от позы вилки не зависит. avoid — точки сканов челюстей: вилка
+    Вилка на скане маркера лежит, как у пациента: горизонтально, в окклюзионной плоскости, ручкой вперёд (оси
+    вилки — оси регистратора), перед резцами. exocad сам вилку не ищет: на шаге «Позиция сканов —
+    Сопоставление» пользователь поворачивает библиотечную вилку и скан маркера в одну позицию и щёлкает одну
+    и ту же точку на обоих, затем exocad уточняет. В привычной позе вилку легко сопоставить, а она почти
+    симметрична: зеркальная точка переворачивает вилку, и модели встают криво. Метки в файле — для этой позы,
+    поэтому положение моделей в артикуляторе от позы вилки не зависит. avoid — точки сканов челюстей: вилка
     отодвигается вперёд, пока не будет от них дальше FORK_CLEARANCE_MM."""
     F = np.asarray(frame, float)
     cases = {"right": np.asarray(condyle_right, float), "left": np.asarray(condyle_left, float)}
@@ -121,7 +115,7 @@ def facebow(frame: np.ndarray, condyle_right, condyle_left, incisal, register: R
     to_register = TO_REGISTER @ rigid(np.eye(3), -mid) @ F
     off_axis = {side: round(float(np.linalg.norm((p - mid)[1:])), 2) for side, p in mounted.items()}
     back = np.linalg.inv(F)
-    R = np.asarray(register.standard, float)[:3, :3]
+    R = back[:3, :3] @ TO_REGISTER[:3, :3].T  # оси вилки = оси регистратора (x влево, y вверх, z вперёд)
     start = apply(back, (apply(F, incisal) + FORK_OFFSET_MM)[None])[0]
     fork_pose = rigid(R, start - R @ register.marks[0])
     if avoid is not None and len(avoid):

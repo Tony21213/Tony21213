@@ -62,10 +62,10 @@ def test_models_go_into_articulator_by_condyles_and_horizontal(case, register):
         assert np.abs(got - expected).max() < 1e-9, k
     # Мыщелки несимметричны к горизонтали: ось — через середину, отклонение каждого — в отчёте.
     assert fb.off_axis_mm["right"] == pytest.approx(np.hypot(1.5, 0.8), abs=0.01) and fb.notes
-    # Вилка — перед резцами, в стандартной позе относительно осей сканов (как настоящая на скане маркера).
+    # Вилка — перед резцами, как у пациента: оси вилки = оси регистратора (горизонтально, ручкой вперёд).
     first = apply(frame @ fb.fork_pose, register.marks[:1])[0]
     assert np.abs(first - (np.array([0.5, 98.0, -38.0]) + ef.FORK_OFFSET_MM)).max() < 1e-9
-    assert np.abs(fb.fork_pose[:3, :3] - register.standard[:3, :3]).max() < 1e-12
+    assert np.abs((fb.case_to_register @ fb.fork_pose)[:3, :3] - np.eye(3)).max() < 1e-9
 
 
 def test_fork_moves_forward_until_clear_of_the_jaws(case, register):
@@ -142,7 +142,7 @@ def test_sample_012_models_in_articulator_like_exocad():
     res = mod.main(EXOCAD)
     assert res["share"] > 0.5 and res["max_mm"] <= 0.5 and res["deg"] <= 0.5
     assert res["upper_y"] > res["lower_y"] and 70 < res["incisal_z"] < 120
-    assert res["fork_vs_standard_deg"] < 5 and res["ours_vs_real_fork_deg"] < 5  # вилка — в стандартной позе
+    assert res["fork_vs_head_deg"] < 10 and res["ours_vs_real_fork_deg"] < 10  # вилка — как у пациента
 
 
 @pytest.mark.skipif(EXOCAD is None, reason="exocad не установлен")

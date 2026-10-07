@@ -80,8 +80,8 @@ def main(app=None):
     print(f"анатомия в системе регистратора (x влево, y вверх, z вперёд): верхний скан y {U[:, 1].mean():+.1f}, "
           f"нижний y {L[:, 1].mean():+.1f}; резцы z {U[:, 2].max():.1f} мм; середина дуги x {np.median(U[:, 0]):+.1f} мм")
     up_axis = A[:3, :3].T @ [0, 1, 0]
-    fork_vs_standard = float(np.degrees(Rotation.from_matrix(B[:3, :3] @ reg.standard[:3, :3].T).magnitude()))
-    print(f"настоящая вилка относительно стандартной позы (.matrix4 вилки): поворот {fork_vs_standard:.1f}°")
+    fork_vs_head = float(np.degrees(Rotation.from_matrix((A @ B)[:3, :3]).magnitude()))
+    print(f"настоящая вилка относительно осей регистратора (головы): поворот {fork_vs_head:.1f}°")
 
     # Наша цепочка с той же системой: мыщелки на шарнирной оси (±50 мм), резцовая точка — передняя точка верхнего.
     frame = np.linalg.inv(ef.TO_REGISTER) @ A  # сканы → система монтажа (x вправо, y вперёд, z вверх)
@@ -102,7 +102,7 @@ def main(app=None):
     print(f"наша вилка относительно настоящей: поворот {ours_vs_real_fork:.1f}°")
     return {"share": share, "max_mm": float(d.max()), "deg": float(ang), "upper_y": float(U[:, 1].mean()),
             "lower_y": float(L[:, 1].mean()), "incisal_z": float(U[:, 2].max()), "A": A, "B": B,
-            "fork_vs_standard_deg": fork_vs_standard, "ours_vs_real_fork_deg": ours_vs_real_fork}
+            "fork_vs_head_deg": fork_vs_head, "ours_vs_real_fork_deg": ours_vs_real_fork}
 
 
 if __name__ == "__main__":
