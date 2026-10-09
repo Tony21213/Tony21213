@@ -21,7 +21,7 @@ from .. import model_store
 from .. import landmarks as lmk
 from ..fusion import (BITE, SHARED_SHARE, CaseCT, Registration, Scan, deviation_colors, export_case, in_occlusion,
                       is_bite_name, jaw_by_name, place_bites, shared_share, split_by_jaw)
-from ..jawcase import JawCase
+from ..jawcase import JawCase, Mesh as JawMesh
 from ..learning import AlignmentMemory
 from ..register import apply
 from ..segment import Segmenter
@@ -200,6 +200,7 @@ class Session:
         self.case_path: str | None = None  # файл кейса, куда сохранять
         self.guide_teeth: dict = {}  # зубы из сегментации — опора совмещения (сохраняются с кейсом)
         self.jaw = JawCase()  # артикуляция: монтаж, суставы, движения, контакты (интерфейс — позже)
+        self._articulation_ready = False
 
     # --- настройки (рядом с памятью совмещений) -----------------------------
     def _load_settings(self) -> dict:
@@ -494,6 +495,9 @@ class Session:
 
     def _place_bites(self):
         """Сканы прикуса — на сканы челюстей; нижний скан — в прикус по ним, если челюсти не в прикусе."""
+        # Любое изменение совмещения требует заново передать модели в окно
+        # артикулятора, иначе просмотр мог бы использовать старую гипсовку.
+        self._articulation_ready = False
         try:
             self._place_bite_scans()
         finally:
@@ -786,6 +790,68 @@ class Session:
     def structure_mesh(self, key: str) -> bytes:
         v, f, _version = self._shown_structure(key)
         return mesh_bytes(v, f)
+
+    # --- предварительная артикуляция ---------------------------------------
+    def _prepare_jawcase(self):
+        """Передать совмещённые сканы и кости в ядро артикулятора.
+
+        Монтаж всегда выполняется в положении прикуса сканов, если такой
+        прикус найден. Это даёт пользователю ту же картину, которую он увидит
+        при экспорте, ещё до создания файлов exocad.
+        """
+        up, lo = self._jaw_items()
+        if up is None or lo is None or up.get("reg") is None or lo.get("reg") is None:
+            raise ValueError("сначала поставьте верхний и нижний сканы")
+
+        def vertices(item, bite=True):
+            T = item["reg"].transform
+            if bite and item["reg"].jaw == "lower" and self.bite_motion is not None:
+                T = self.bite_motion @ T
+            return apply(T, item["scan"].vertices)
+
+        self.jaw.set_scans(JawMesh(vertices(up), up["scan"].faces, "скан верхней челюсти"),
+                           JawMesh(vertices(lo), lo["scan"].faces, "скан нижней челюсти"))
+        if self.case is not None:
+            for key, attr in (("mandible", "mandible"), ("skull", "skull")):
+                source = self.structures.get(key)
+                if source is not None:
+                    setattr(self.jaw, attr, JawMesh(np.asarray(source.vertices), np.asarray(source.faces), key))
+        self._articulation_ready = True
+
+    def articulation_prepare(self) -> dict:
+        """Подготовить окно визуальной проверки артикуляции."""
+        self._prepare_jawcase()
+        return self.jaw.state()
+
+    def articulation_mount(self, method: str = "auto") -> dict:
+        """Смонтировать модели для предварительного просмотра."""
+        if not self._articulation_ready:
+            self._prepare_jawcase()
+        return self.jaw.mount(method)
+
+    def articulation_generate(self, travel: float = 6.0) -> dict:
+        """Построить виртуальные движения для просмотра до экспорта."""
+        if not self._articulation_ready:
+            self._prepare_jawcase()
+        self.jaw.generate(travel=float(travel), guided=True)
+        return self.jaw.state()
+
+    def articulation_analysis(self) -> dict:
+        """Рассчитать сводку суставных путей и контактов."""
+        if not self._articulation_ready:
+            self._prepare_jawcase()
+        return self.jaw.analysis()
+
+    def articulation_motion(self, mid: str) -> dict:
+        """Отдать кадры одного движения для визуального проигрывания."""
+        if mid not in self.jaw.movements:
+            raise ValueError("движение не найдено")
+        rec = self.jaw.movements[mid].recording
+        # Для интерактивного окна достаточно 61 кадров, исходная запись
+        # остаётся полной и экспортируется отдельно.
+        ids = np.linspace(0, len(rec.transforms) - 1, min(61, len(rec.transforms))).round().astype(int)
+        return {"id": mid, "name": rec.name, "frames": rec.transforms[ids].round(6).tolist(),
+                "duration_s": round(rec.duration, 2) if rec.timed else None}
 
     def ct_surface(self) -> bytes:
         """Зубы по плотности — для 3D до сегментации."""

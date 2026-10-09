@@ -148,6 +148,14 @@ export class Viewer3D {
     mesh.visible = true;
   }
 
+  // Матрица движения для структуры, чья геометрия уже лежит в координатах КТ.
+  setObjectTransform(key, transform) {
+    const mesh = this.objects.get(key);
+    if (!mesh) return;
+    const M = new THREE.Matrix4().set(...transform.flat());
+    M.decompose(mesh.position, mesh.quaternion, mesh.scale);
+  }
+
   // Центр скана в мм пациента (вокруг него вращает манипулятор на срезах).
   scanCentre(id) {
     const mesh = this.objects.get(id);

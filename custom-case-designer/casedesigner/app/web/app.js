@@ -7,6 +7,7 @@ import { Viewer3D } from './viewer3d.js';
 const STEPS = [
   { id: 'ct', title: 'КТ', icon: 'ct' },
   { id: 'scans', title: 'Сканы', icon: 'tooth' },
+  { id: 'articulation', title: 'Артикулятор', icon: 'move' },
   { id: 'export', title: 'Экспорт', icon: 'export' },
 ];
 // Что видно сразу после сегментации: отдельные зубы, кости, каналы, пазухи.
@@ -17,7 +18,7 @@ const TRANSLUCENT = { mandible: 0.42, maxilla: 0.42, skull: 0.3, maxillary_sinus
 const state = {
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
   modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
-  models: null, download: null, downloadError: null,
+  models: null, download: null, downloadError: null, articulation: null, articulationAnalysis: null,
   opacity: {}, // объект → прозрачность, заданная кнопкой (иначе — по умолчанию)
   warnOpen: new Set(), // карточки сканов с раскрытым списком предупреждений
   moving: new Map(), // скан → номер последней ручной поправки, ещё не оценённой сервером
@@ -464,6 +465,45 @@ async function toggleBite() {
   });
 }
 
+async function prepareArticulation() {
+  try {
+    state.articulation = await post('articulation/prepare');
+    render();
+  } catch (e) { toast(e.message); }
+}
+
+async function articulationAction(kind, body = {}, title = 'Артикулятор') {
+  await busy(title, async (progress) => {
+    state.articulation = await run(`articulation/${kind}`, body, progress);
+  });
+}
+
+const matMul = (a, b) => {
+  const out = Array.from({ length: 4 }, () => Array(4).fill(0));
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++)
+    for (let k = 0; k < 4; k++) out[i][j] += a[i][k] * b[k][j];
+  return out;
+};
+
+async function playArticulation(id) {
+  try {
+    const motion = await get(`articulation/motion/${id}`);
+    const lower = state.scans.find((s) => s.jaw === 'lower' && s.role !== 'bite' && s.transform);
+    if (!lower) throw new Error('нижний скан не поставлен');
+    const base = lower.transform;
+    const lowerStructures = state.structures.filter((s) => s.jaw === 'lower');
+    const existing = new Map(lowerStructures.map((s) => [s.key, viewer.objects.get(s.key)?.visible]));
+    for (const frame of motion.frames) {
+      viewer.setTransform(lower.id, matMul(frame, base));
+      for (const s of lowerStructures) viewer.setObjectTransform(s.key, frame);
+      await new Promise((ok) => setTimeout(ok, 28));
+    }
+    viewer.setTransform(lower.id, base);
+    for (const s of lowerStructures) viewer.setObjectTransform(s.key, [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
+    for (const [key, visible] of existing) if (visible !== undefined) viewer.setVisible(key, visible);
+  } catch (e) { toast(e.message); }
+}
+
 async function register(ids, body = {}) {
   await busy(state.ct ? 'Совмещаю по коронкам зубов' : 'Расставляю сканы', async (progress) => {
     const failed = [];
@@ -839,12 +879,39 @@ function renderExport() {
     ${ready ? '' : `<p class="muted small">${state.ct ? 'Сегментируйте КТ или совместите сканы.' : 'Добавьте сканы.'}</p>`}${result}`;
 }
 
-const RENDER = { ct: renderCt, scans: renderScans, export: renderExport };
+function renderArticulation() {
+  const a = state.articulation || {};
+  const scans = a.scans || {};
+  const ready = !!(scans.upper && scans.lower);
+  const mounted = !!a.mounting;
+  const moves = a.movements || [];
+  const analysis = state.articulationAnalysis;
+  const mountButtons = `<div class="label">Гипсовка</div><div class="seg">
+    <button data-art-mount="${state.ct && a.ct?.mandible ? 'ct' : 'average'}" ${ready ? '' : 'disabled'}>${state.ct && a.ct?.mandible ? 'По КТ' : 'Средний артикулятор'}</button>
+    <button data-art-mount="average" ${ready ? '' : 'disabled'}>Средний</button></div>`;
+  const movementCards = moves.length ? `<div class="label">Движения</div>${moves.map((m) => `<div class="card"><div class="card-head">${icons.move}<h3>${hide(m.name)}</h3><span class="muted small">${m.frames} кадров</span></div>
+    <button class="btn wide" data-art-play="${m.id}">${icons.play}Проиграть в 3D</button></div>`).join('') : '';
+  const settings = a.settings?.values;
+  const settingsText = settings ? `<p class="muted small">ССП: ${fmt(settings.sagittal_right_deg, 1)}° / ${fmt(settings.sagittal_left_deg, 1)}° · Беннетт: ${fmt(settings.bennett_right_deg, 1)}° / ${fmt(settings.bennett_left_deg, 1)}°</p>` : '';
+  const analysisText = analysis ? `<div class="card"><div class="card-head">${icons.check}<h3>Проверка движений</h3></div>
+    <p class="muted small">${hide(analysis.notes?.join(' ') || (analysis.recordings?.length ? `Проанализировано движений: ${analysis.recordings.length}` : 'Анализ завершён.'))}</p>
+    ${analysis.worst_incisal_mm != null ? `<p class="muted small">Максимальное отклонение резцов: ${fmt(analysis.worst_incisal_mm, 2)} мм</p>` : ''}</div>` : '';
+  return `<h2>Артикулятор</h2><p class="lead">Здесь выполняется предварительная гипсовка, проигрываются движения и проверяются контакты до экспорта в exocad.</p>
+    ${!ready ? '<div class="card"><p>Нужны поставленные верхний и нижний сканы.</p><button class="btn wide" data-step="scans">Перейти к сканам</button></div>' : `${mountButtons}
+      <div class="card"><div class="card-head">${icons.align}<h3>${mounted ? `Монтаж: ${hide(a.mounting.name)}` : 'Монтаж ещё не выполнен'}</h3></div>
+        <p class="muted small">${hide(a.mounting?.source || 'Положение моделей будет показано в 3D.')}</p>${settingsText}
+        <button class="btn ${mounted ? '' : 'primary'} wide" data-art-generate="1" ${mounted ? '' : 'disabled'}>${icons.play}Рассчитать движения</button>
+        <button class="btn wide" data-art-analysis="1" ${moves.length ? '' : 'disabled'}>${icons.heat}Проверить контакты и траектории</button></div>
+      ${movementCards}${analysisText}`}`;
+}
+
+const RENDER = { ct: renderCt, scans: renderScans, articulation: renderArticulation, export: renderExport };
 
 function render() {
   const done = {
     ct: state.structures.length > 0,
     scans: state.scans.length > 0 && state.scans.every((s) => s.registered),
+    articulation: !!state.articulation?.mounting,
     export: !!state.exported,
   };
   $('#rail').innerHTML = STEPS.map((s) => `<button class="step ${s.id === state.step ? 'active' : ''} ${done[s.id] ? 'done' : ''}" data-step="${s.id}">
@@ -873,10 +940,14 @@ function render() {
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-bite],[data-jaw]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play]');
   if (!t || t.disabled) return;
   const d = t.dataset;
-  if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return render(); }
+  if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return d.step === 'articulation' ? prepareArticulation() : render(); }
+  if (d.artMount) return articulationAction('mount', { method: d.artMount }, 'Гипсовка моделей');
+  if (d.artGenerate) return articulationAction('generate', { travel: 6.0 }, 'Расчёт движений');
+  if (d.artAnalysis) return busy('Анализ движений', async (progress) => { state.articulationAnalysis = await run('articulation/analysis', {}, progress); });
+  if (d.artPlay) return playArticulation(d.artPlay);
   if (d.remove) { e.stopPropagation(); return removeScan(d.remove); }
   if (d.register) return register([d.register]);
   if (d.jaw) { e.stopPropagation(); return register([d.jaw], { jaw: NEXT_JAW[scanById(d.jaw)?.jaw] || 'upper' }); }
@@ -947,6 +1018,7 @@ document.addEventListener('keydown', (e) => {
   state.models = s.models;
   state.parts = s.segment_parts;
   state.biteView = s.bite_view;
+  state.articulation = s.articulation;
   state.caseInfo = s.case;
   state.recent = s.recent || [];
   state.incognito = !!s.incognito;
