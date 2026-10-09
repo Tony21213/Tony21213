@@ -38,3 +38,26 @@ def test_ct_series_returns_job(monkeypatch):
             raise AssertionError("фоновой запрос не завершился")
     finally:
         srv.shutdown()
+
+
+def test_articulation_analysis_returns_contact_report():
+    class Session:
+        def articulation_report(self):
+            return {"analysis": {"recordings": []}, "contacts": []}
+
+    srv = serve(Session())
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        answer = _call(base, "articulation/analysis", {})
+        assert "job" in answer
+        for _ in range(50):
+            with urllib.request.urlopen(f"{base}/api/jobs/{answer['job']}") as response:
+                job = json.loads(response.read())
+            if job["status"] == "done":
+                assert job["result"] == {"analysis": {"recordings": []}, "contacts": []}
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("анализ артикулятора не завершился")
+    finally:
+        srv.shutdown()

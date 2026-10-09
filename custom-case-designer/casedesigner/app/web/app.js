@@ -19,6 +19,7 @@ const state = {
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
   modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
   models: null, download: null, downloadError: null, articulation: null, articulationAnalysis: null,
+  articulationContacts: [], articulationGuides: null,
   opacity: {}, // объект → прозрачность, заданная кнопкой (иначе — по умолчанию)
   warnOpen: new Set(), // карточки сканов с раскрытым списком предупреждений
   moving: new Map(), // скан → номер последней ручной поправки, ещё не оценённой сервером
@@ -468,6 +469,8 @@ async function toggleBite() {
 async function prepareArticulation() {
   try {
     state.articulation = await post('articulation/prepare');
+    state.articulationGuides = await get('articulation/guides');
+    drawArticulationGuides();
   } catch (e) { toast(e.message); }
   render();
 }
@@ -475,7 +478,27 @@ async function prepareArticulation() {
 async function articulationAction(kind, body = {}, title = 'Артикулятор') {
   await busy(title, async (progress) => {
     state.articulation = await run(`articulation/${kind}`, body, progress);
+    state.articulationGuides = await get('articulation/guides');
+    drawArticulationGuides();
   });
+}
+
+function clearArticulationGuides() {
+  for (const key of [...viewer.objects.keys()].filter((k) => String(k).startsWith('art:'))) viewer.remove(key);
+}
+
+function drawArticulationGuides() {
+  clearArticulationGuides();
+  const g = state.articulationGuides;
+  if (!g?.available) return;
+  const p = g.points || {};
+  if (p.condyle_right) viewer.setMarker('art:condyle_right', p.condyle_right, '#ff6b6b');
+  if (p.condyle_left) viewer.setMarker('art:condyle_left', p.condyle_left, '#6ba8ff');
+  if (p.incisal) viewer.setMarker('art:incisal', p.incisal, '#f5d76e');
+  if (g.hinge?.[0] && g.hinge?.[1]) viewer.setPath('art:hinge', g.hinge, '#ffffff');
+  const colors = { condyle_right: '#ff6b6b', condyle_left: '#6ba8ff', incisal: '#f5d76e' };
+  for (const path of g.paths || []) for (const key of Object.keys(colors))
+    viewer.setPath(`art:path:${path.id}:${key}`, path[key], colors[key]);
 }
 
 const matMul = (a, b) => {
@@ -886,6 +909,7 @@ function renderArticulation() {
   const mounted = !!a.mounting;
   const moves = a.movements || [];
   const analysis = state.articulationAnalysis;
+  const guides = state.articulationGuides;
   const mountMethod = state.ct && a.ct?.mandible ? 'ct' : 'average';
   const mountTitle = state.ct && a.ct?.mandible ? 'По КТ' : 'Средний артикулятор';
   const disabled = ready ? '' : 'disabled';
@@ -902,10 +926,15 @@ function renderArticulation() {
     + fmt(settings.bennett_left_deg, 1) + '°</p>' : '';
   const analysisSummary = analysis && (analysis.notes?.join(' ') || (analysis.recordings?.length
     ? 'Проанализировано движений: ' + analysis.recordings.length : 'Анализ завершён.'));
+  const contactText = state.articulationContacts.length ? state.articulationContacts.map((c) => {
+    const sectors = Object.keys(c.sectors || {}).join(', ') || 'нет выраженных контактов';
+    return '<p class="muted small"><b>' + hide(c.name) + '</b>: ' + c.pairs + ' пар · ' + hide(sectors) + '</p>';
+  }).join('') : '';
+  const basisText = guides?.available ? '<p class="muted small">Основа динамики: ' + hide(guides.basis) + '</p>' : '';
   const analysisText = analysis ? '<div class="card"><div class="card-head">' + icons.check
     + '<h3>Проверка движений</h3></div><p class="muted small">' + hide(analysisSummary) + '</p>'
     + (analysis.worst_incisal_mm != null ? '<p class="muted small">Максимальное отклонение резцов: '
-      + fmt(analysis.worst_incisal_mm, 2) + ' мм</p>' : '') + '</div>' : '';
+      + fmt(analysis.worst_incisal_mm, 2) + ' мм</p>' : '') + contactText + '</div>' : '';
   let body = '';
   if (!ready) {
     body = '<div class="card"><p>Нужны поставленные верхний и нижний сканы.</p>'
@@ -914,7 +943,7 @@ function renderArticulation() {
     const mountingName = mounted ? `Монтаж: ${hide(a.mounting.name)}` : 'Монтаж ещё не выполнен';
     body = mountButtons
       + `<div class="card"><div class="card-head">${icons.align}<h3>${mountingName}</h3></div>`
-      + `<p class="muted small">${hide(a.mounting?.source || 'Положение моделей будет показано в 3D.')}</p>${settingsText}`
+      + `<p class="muted small">${hide(a.mounting?.source || 'Положение моделей будет показано в 3D.')}</p>${basisText}${settingsText}`
       + `<button class="btn ${mounted ? '' : 'primary'} wide" data-art-generate="1" ${mounted ? '' : 'disabled'}>${icons.play}Рассчитать движения</button>`
       + `<button class="btn wide" data-art-analysis="1" ${moves.length ? '' : 'disabled'}>${icons.heat}Проверить контакты и траектории</button></div>`
       + movementCards + analysisText;
@@ -963,7 +992,11 @@ document.addEventListener('click', async (e) => {
   if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return d.step === 'articulation' ? prepareArticulation() : render(); }
   if (d.artMount) return articulationAction('mount', { method: d.artMount }, 'Гипсовка моделей');
   if (d.artGenerate) return articulationAction('generate', { travel: 6.0 }, 'Расчёт движений');
-  if (d.artAnalysis) return busy('Анализ движений', async (progress) => { state.articulationAnalysis = await run('articulation/analysis', {}, progress); });
+  if (d.artAnalysis) return busy('Анализ контактов и движений', async (progress) => {
+    const report = await run('articulation/analysis', {}, progress);
+    state.articulationAnalysis = report.analysis;
+    state.articulationContacts = report.contacts || [];
+  });
   if (d.artPlay) return playArticulation(d.artPlay);
   if (d.remove) { e.stopPropagation(); return removeScan(d.remove); }
   if (d.register) return register([d.register]);
@@ -1036,6 +1069,7 @@ document.addEventListener('keydown', (e) => {
   state.parts = s.segment_parts;
   state.biteView = s.bite_view;
   state.articulation = s.articulation;
+  state.articulationGuides = s.articulation_guides;
   state.caseInfo = s.case;
   state.recent = s.recent || [];
   state.incognito = !!s.incognito;

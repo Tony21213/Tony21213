@@ -203,6 +203,16 @@ export class Viewer3D {
     m.position.set(...point);
   }
 
+  setPath(key, points, color = '#f5b84b') {
+    this.remove(key);
+    if (!points || points.length < 2) return;
+    const geometry = new THREE.BufferGeometry().setFromPoints(points.map((p) => new THREE.Vector3(...p)));
+    const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 }));
+    line.renderOrder = 9;
+    this.scene.add(line);
+    this.objects.set(key, line);
+  }
+
   setVisible(key, on) {
     const mesh = this.objects.get(key);
     if (mesh) mesh.visible = on;

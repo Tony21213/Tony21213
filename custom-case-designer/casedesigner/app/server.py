@@ -201,7 +201,9 @@ def make_handler(session: Session, jobs: Jobs):
             if p == ["articulation", "generate"] and method == "POST":
                 return self.job("Расчёт движений", lambda progress: s.articulation_generate(self.body().get("travel", 6.0)))
             if p == ["articulation", "analysis"] and method == "POST":
-                return self.job("Анализ движений", lambda progress: s.articulation_analysis())
+                return self.job("Анализ контактов и движений", lambda progress: s.articulation_report())
+            if p == ["articulation", "guides"]:
+                return self.json(s.articulation_guides())
             if len(p) == 3 and p[:2] == ["articulation", "motion"]:
                 return self.json(s.articulation_motion(p[2]))
             if p == ["segment"] and method == "POST":

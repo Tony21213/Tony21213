@@ -842,6 +842,37 @@ class Session:
             self._prepare_jawcase()
         return self.jaw.analysis()
 
+    def articulation_report(self) -> dict:
+        """Рассчитать траектории и карту контактов по каждому движению."""
+        if not self._articulation_ready:
+            self._prepare_jawcase()
+        analysis = self.jaw.analysis()
+        contacts = []
+        for movement in self.jaw.movements.values():
+            result = self.jaw.contacts(movement.id)
+            contacts.append({"id": movement.id, "name": movement.recording.name,
+                             "sectors": result["sectors"], "teeth": result["teeth"],
+                             "pairs": len(result["teeth"])})
+        return {"analysis": analysis, "contacts": contacts}
+
+    def articulation_guides(self) -> dict:
+        """Точки и линии, объясняющие в 3D основу построения динамики."""
+        if not self._articulation_ready or self.jaw.anatomy is None:
+            return {"available": False, "points": {}, "paths": []}
+        a = self.jaw.anatomy
+        points = {k: np.asarray(v, float).round(3).tolist() for k, v in a.points.items()
+                  if k in ("condyle_right", "condyle_left", "incisal")}
+        paths = []
+        for movement in self.jaw.movements.values():
+            T = movement.recording.transforms
+            paths.append({"id": movement.id, "name": movement.recording.name,
+                          "source": "запись движения" if movement.recorded else "виртуальный артикулятор",
+                          "condyle_right": apply(T, a.points["condyle_right"]).round(3).tolist(),
+                          "condyle_left": apply(T, a.points["condyle_left"]).round(3).tolist(),
+                          "incisal": apply(T, a.points["incisal"]).round(3).tolist()})
+        return {"available": True, "points": points, "hinge": [points.get("condyle_right"), points.get("condyle_left")],
+                "paths": paths, "basis": "мыщелки пациента + резцовое ведение по сканам челюстей"}
+
     def articulation_motion(self, mid: str) -> dict:
         """Отдать кадры одного движения для визуального проигрывания."""
         if mid not in self.jaw.movements:
@@ -1207,4 +1238,4 @@ class Session:
                 "segment_parts": self.segment_parts_info(), "bite_view": self.bite_info(),
                 "incognito": self.settings["incognito"],
                 **self.landmarks_info(),
-                "articulation": self.jaw.state()}
+                "articulation": self.jaw.state(), "articulation_guides": self.articulation_guides()}
