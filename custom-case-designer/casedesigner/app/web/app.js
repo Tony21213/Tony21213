@@ -468,8 +468,8 @@ async function toggleBite() {
 async function prepareArticulation() {
   try {
     state.articulation = await post('articulation/prepare');
-    render();
   } catch (e) { toast(e.message); }
+  render();
 }
 
 async function articulationAction(kind, body = {}, title = 'Артикулятор') {
@@ -886,23 +886,40 @@ function renderArticulation() {
   const mounted = !!a.mounting;
   const moves = a.movements || [];
   const analysis = state.articulationAnalysis;
-  const mountButtons = `<div class="label">Гипсовка</div><div class="seg">
-    <button data-art-mount="${state.ct && a.ct?.mandible ? 'ct' : 'average'}" ${ready ? '' : 'disabled'}>${state.ct && a.ct?.mandible ? 'По КТ' : 'Средний артикулятор'}</button>
-    <button data-art-mount="average" ${ready ? '' : 'disabled'}>Средний</button></div>`;
-  const movementCards = moves.length ? `<div class="label">Движения</div>${moves.map((m) => `<div class="card"><div class="card-head">${icons.move}<h3>${hide(m.name)}</h3><span class="muted small">${m.frames} кадров</span></div>
-    <button class="btn wide" data-art-play="${m.id}">${icons.play}Проиграть в 3D</button></div>`).join('') : '';
+  const mountMethod = state.ct && a.ct?.mandible ? 'ct' : 'average';
+  const mountTitle = state.ct && a.ct?.mandible ? 'По КТ' : 'Средний артикулятор';
+  const disabled = ready ? '' : 'disabled';
+  const mountButtons = '<div class="label">Гипсовка</div><div class="seg">'
+    + '<button data-art-mount="' + mountMethod + '" ' + disabled + '>' + mountTitle + '</button>'
+    + '<button data-art-mount="average" ' + disabled + '>Средний</button></div>';
+  const movementCards = moves.length ? '<div class="label">Движения</div>' + moves.map((m) =>
+    '<div class="card"><div class="card-head">' + icons.move + '<h3>' + hide(m.name) + '</h3>'
+    + '<span class="muted small">' + m.frames + ' кадров</span></div>'
+    + '<button class="btn wide" data-art-play="' + m.id + '">' + icons.play + 'Проиграть в 3D</button></div>').join('') : '';
   const settings = a.settings?.values;
-  const settingsText = settings ? `<p class="muted small">ССП: ${fmt(settings.sagittal_right_deg, 1)}° / ${fmt(settings.sagittal_left_deg, 1)}° · Беннетт: ${fmt(settings.bennett_right_deg, 1)}° / ${fmt(settings.bennett_left_deg, 1)}°</p>` : '';
-  const analysisText = analysis ? `<div class="card"><div class="card-head">${icons.check}<h3>Проверка движений</h3></div>
-    <p class="muted small">${hide(analysis.notes?.join(' ') || (analysis.recordings?.length ? `Проанализировано движений: ${analysis.recordings.length}` : 'Анализ завершён.'))}</p>
-    ${analysis.worst_incisal_mm != null ? `<p class="muted small">Максимальное отклонение резцов: ${fmt(analysis.worst_incisal_mm, 2)} мм</p>` : ''}</div>` : '';
-  return `<h2>Артикулятор</h2><p class="lead">Здесь выполняется предварительная гипсовка, проигрываются движения и проверяются контакты до экспорта в exocad.</p>
-    ${!ready ? '<div class="card"><p>Нужны поставленные верхний и нижний сканы.</p><button class="btn wide" data-step="scans">Перейти к сканам</button></div>' : `${mountButtons}
-      <div class="card"><div class="card-head">${icons.align}<h3>${mounted ? `Монтаж: ${hide(a.mounting.name)}` : 'Монтаж ещё не выполнен'}</h3></div>
-        <p class="muted small">${hide(a.mounting?.source || 'Положение моделей будет показано в 3D.')}</p>${settingsText}
-        <button class="btn ${mounted ? '' : 'primary'} wide" data-art-generate="1" ${mounted ? '' : 'disabled'}>${icons.play}Рассчитать движения</button>
-        <button class="btn wide" data-art-analysis="1" ${moves.length ? '' : 'disabled'}>${icons.heat}Проверить контакты и траектории</button></div>
-      ${movementCards}${analysisText}`}`;
+  const settingsText = settings ? '<p class="muted small">ССП: ' + fmt(settings.sagittal_right_deg, 1) + '° / '
+    + fmt(settings.sagittal_left_deg, 1) + '° · Беннетт: ' + fmt(settings.bennett_right_deg, 1) + '° / '
+    + fmt(settings.bennett_left_deg, 1) + '°</p>' : '';
+  const analysisSummary = analysis && (analysis.notes?.join(' ') || (analysis.recordings?.length
+    ? 'Проанализировано движений: ' + analysis.recordings.length : 'Анализ завершён.'));
+  const analysisText = analysis ? '<div class="card"><div class="card-head">' + icons.check
+    + '<h3>Проверка движений</h3></div><p class="muted small">' + hide(analysisSummary) + '</p>'
+    + (analysis.worst_incisal_mm != null ? '<p class="muted small">Максимальное отклонение резцов: '
+      + fmt(analysis.worst_incisal_mm, 2) + ' мм</p>' : '') + '</div>' : '';
+  let body = '';
+  if (!ready) {
+    body = '<div class="card"><p>Нужны поставленные верхний и нижний сканы.</p>'
+      + '<button class="btn wide" data-step="scans">Перейти к сканам</button></div>';
+  } else {
+    const mountingName = mounted ? `Монтаж: ${hide(a.mounting.name)}` : 'Монтаж ещё не выполнен';
+    body = mountButtons
+      + `<div class="card"><div class="card-head">${icons.align}<h3>${mountingName}</h3></div>`
+      + `<p class="muted small">${hide(a.mounting?.source || 'Положение моделей будет показано в 3D.')}</p>${settingsText}`
+      + `<button class="btn ${mounted ? '' : 'primary'} wide" data-art-generate="1" ${mounted ? '' : 'disabled'}>${icons.play}Рассчитать движения</button>`
+      + `<button class="btn wide" data-art-analysis="1" ${moves.length ? '' : 'disabled'}>${icons.heat}Проверить контакты и траектории</button></div>`
+      + movementCards + analysisText;
+  }
+  return '<h2>Артикулятор</h2><p class="lead">Здесь выполняется предварительная гипсовка, проигрываются движения и проверяются контакты до экспорта в exocad.</p>' + body;
 }
 
 const RENDER = { ct: renderCt, scans: renderScans, articulation: renderArticulation, export: renderExport };
