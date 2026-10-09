@@ -134,9 +134,14 @@ async function choose(kind, title) {
 }
 
 async function choosePaths(kind, title) {
-  if (window.pywebview?.api) {
-    const paths = await window.pywebview.api.choose(kind);
-    return paths?.length ? paths : null;
+  if (typeof window.pywebview?.api?.choose === 'function') {
+    try {
+      const paths = await window.pywebview.api.choose(kind);
+      return paths?.length ? paths : null;
+    } catch (err) {
+      reportError(err.message, err.stack);
+      toast('Не удалось открыть диалог. Укажите путь в появившемся поле.');
+    }
   }
   return new Promise((done) => {
     const back = document.createElement('div');
@@ -274,7 +279,7 @@ function seriesDialog(list) {
 async function openCt(kind) {
   const paths = await choose(kind, kind === 'ctdir' ? 'Папка DICOM' : 'Файл КТ или архив');
   if (!paths) return;
-  const all = await busy('Читаю КТ', () => post('ct/series', { path: paths[0] }));
+  const all = await busy('Читаю КТ', () => run('ct/series', { path: paths[0] }, () => {}));
   if (!all) return;
   const list = all.filter((x) => Math.max(x.files, x.size?.[2] || 0) >= SERIES_MIN);
   const series = list.length > 1 ? await seriesDialog(list) : list[0]?.id ?? null;
@@ -398,12 +403,14 @@ async function addScans() {
   const paths = await choose('scan', 'Скан челюсти (STL, PLY, OBJ)');
   if (!paths) return;
   await busy('Загружаю сканы', async () => {
-    for (const path of paths) {
-      const info = await post('scans', { path });
-      updateScan(info);
+    // File parsing and mesh transfer are independent; start them together so
+    // selecting upper, lower and bite scans does not wait serially.
+    const infos = await Promise.all(paths.map((path) => post('scans', { path })));
+    infos.forEach(updateScan);
+    await Promise.all(infos.map(async (info) => {
       viewer.setScan(info.id, await mesh(`scans/${info.id}/mesh`), info.color, null);
       state.selected ??= info.id;
-    }
+    }));
   });
   registerPending(); // без КТ — в координатах сканера
 }

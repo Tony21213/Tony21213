@@ -26,19 +26,21 @@ class WindowApi:
     """Функции, которые интерфейс вызывает через window.pywebview.api: системные диалоги."""
 
     def __init__(self):
-        self.window = None
+        # pywebview recursively exposes public attributes. The Window object
+        # contains the renderer and must never be traversed as part of the API.
+        self._window = None
 
     def choose(self, kind: str):
         import webview
 
         if kind in ("ctdir", "models", "out"):
-            result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+            result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         elif kind == "save":
-            result = self.window.create_file_dialog(webview.SAVE_DIALOG, save_filename="кейс.ccdcase",
+            result = self._window.create_file_dialog(webview.SAVE_DIALOG, save_filename="кейс.ccdcase",
                                                     file_types=FILE_TYPES["case"])
             result = [result] if isinstance(result, str) else result
         else:
-            result = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=kind == "scan",
+            result = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=kind == "scan",
                                                     file_types=FILE_TYPES.get(kind, ()))
         return list(result) if result else []
 
@@ -78,7 +80,7 @@ def main(argv=None):
             import webview
 
             api = WindowApi()
-            api.window = webview.create_window("KStom Case Designer", url, js_api=api, width=1480, height=920,
+            api._window = webview.create_window("KStom Case Designer", url, js_api=api, width=1480, height=920,
                                                min_size=(1100, 700), background_color="#0d0f13")
             webview.start()
             return 0

@@ -126,7 +126,9 @@ def make_handler(session: Session, jobs: Jobs):
                 b = self.body()
                 return self.job("Открываю КТ", lambda progress: s.load_ct(b["path"], progress, b.get("series")))
             if p == ["ct", "series"] and method == "POST":
-                return self.json(s.ct_series(self.body()["path"]))
+                # DICOM folders and archives can contain thousands of files. Keep
+                # the UI responsive while SimpleITK inspects them.
+                return self.job("Читаю серии КТ", lambda progress: s.ct_series(self.body()["path"]))
             if p == ["log"] and method == "POST":  # ошибка в интерфейсе
                 b = self.body()
                 errorlog.error("интерфейс", details=f"{str(b.get('message', ''))[:2000]}\n{str(b.get('stack', ''))[:6000]}")
