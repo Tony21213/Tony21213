@@ -133,7 +133,12 @@ def write_bone_frameworks(project: ExocadProject, bones: dict) -> tuple[list[str
         stl = FRAMEWORK_STL.format(stem=project.stem, jaw=jaw)
         info = FRAMEWORK_INFO.format(stem=project.stem, jaw=jaw)
         stl_path, info_path = os.path.join(project.folder, stl), os.path.join(project.folder, info)
-        if os.path.exists(info_path) and b"KStom Case Designer" not in open(info_path, "rb").read():
+        owned = True
+        if os.path.exists(info_path):
+            with open(info_path, "rb") as f:
+                info_data = f.read()
+            owned = any(name in info_data for name in (b"KStom Case Designer", b"Custom Case Designer"))
+        if not owned:
             notes.append(f"В проекте уже есть бюгельный каркас {'верхней' if jaw == 'upper' else 'нижней'} "
                          "челюсти — кость не записана, каркас не тронут.")
             continue

@@ -1,11 +1,12 @@
 [project]
-name = "custom-case-designer"
+name = "kstom-case-designer"
 version = "0.1.0"
 description = "КТ, сканы челюстей и сегментация в единых координатах"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "scipy>=1.10", "scikit-image>=0.21", "SimpleITK>=2.3", "trimesh>=4.0", "onnxruntime>=1.17", "pillow>=10"]
 
 [project.gui-scripts]
+kstom-case-designer = "casedesigner.app.main:main"
 custom-case-designer = "casedesigner.app.main:main"
 
 [project.optional-dependencies]

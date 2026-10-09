@@ -72,3 +72,17 @@ def test_no_matrices_is_identity(project):
     folder, _ = project
     proj = ep.find(str(folder))
     assert proj.default == pytest.approx(np.eye(4)) and proj.source.startswith("нет")
+
+
+@pytest.mark.parametrize("brand", ["Custom Case Designer", "KStom Case Designer", "partialCAD"])
+def test_framework_ownership_after_rebrand(project, brand):
+    folder, _ = project
+    proj = ep.find(str(folder))
+    info = folder / "p-lowerjaw.partialInfo"
+    info.write_text(f"<PartialInfo><ProductName>{brand}</ProductName></PartialInfo>", encoding="utf-8")
+    before = info.read_bytes()
+    files, _ = ep.write_bone_frameworks(proj, {"lower": trimesh.creation.box()})
+    if brand == "partialCAD":
+        assert files == [] and info.read_bytes() == before
+    else:
+        assert len(files) == 2 and b"KStom Case Designer" in info.read_bytes()

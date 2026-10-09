@@ -52,3 +52,24 @@ def test_patch_adds_type_label_and_mapping(exocad, tmp_path):
     assert at.FOLDER in [a.findtext("FolderName") for a in maps.iter("Articulator")]
     # повторный запуск по уже изменённым файлам ничего не дублирует
     assert at.patch(str(out), str(tmp_path / "again")) == []
+
+
+def test_rebrand_existing_type_without_duplicate(exocad, tmp_path):
+    old = tmp_path / "old"
+    at.patch(str(exocad), str(old))
+    for rel in at.FILES:
+        p = old / rel.replace("\\", os.sep)
+        p.write_bytes(p.read_bytes().replace(b"KStom Case Designer", b"Custom Case Designer"))
+    original = {rel: (old / rel.replace("\\", os.sep)).read_bytes() for rel in at.FILES}
+    out = tmp_path / "renamed"
+    written = at.patch(str(old), str(out))
+    assert len(written) == 2  # WorkParams identifier is deliberately unchanged.
+    for rel in at.FILES:
+        assert (old / rel.replace("\\", os.sep)).read_bytes() == original[rel]
+    customer = ET.parse(out / at.FILES[1]).getroot()
+    assert [t.findtext("Text") for t in customer.iter("Translation")
+            if t.findtext("Keyword") == f"AntagonistType.Value.{at.TYPE}"] == [at.LABEL]
+    mapping = ET.parse(out / at.FILES[2]).getroot()
+    assert [a.findtext("FolderName") for a in mapping.iter("Antagonist")
+            if a.findtext("Type") == at.TYPE] == [at.FOLDER]
+    assert "Custom_Case_Designer" in [a.findtext("TypeInXML") for a in mapping.iter("Articulator")]

@@ -169,7 +169,7 @@ const shownRecent = () => state.recent.filter((r) => r.exists);
 // них — в названиях сканов и в сообщениях. В инкогнито на экране вместо них метки «КТ», «Скан 1», «Кейс»,
 // вместо остальных путей — «…». Сами данные не меняются. Так же, как в журнале ошибок (errorlog.py).
 const WIN_PATH = /(?:[A-Za-z]:[\\/]|\\\\)[^:;"'<>|\r\n\t*?«»]*/g; // в именах файлов Windows нет «:» — путь до неё
-const OWN_FOLDERS = /^(KStomCaseDesigner|CustomCaseDesigner)$/i; // папки программы — не личные
+const OWN_FOLDERS = /^(?:KStomCaseDesigner|CustomCaseDesigner)$/i; // папки программы — не личные
 const chosen = []; // пути, выбранные в этом сеансе
 const scanLabel = (s) => (state.incognito ? `Скан ${state.scans.findIndex((x) => x.id === s.id) + 1}` : s.name);
 

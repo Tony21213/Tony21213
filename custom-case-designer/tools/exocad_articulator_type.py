@@ -3,7 +3,7 @@
 Скрипт не меняет exocad: он кладёт изменённые копии трёх файлов конфигурации в отдельную папку (та же структура,
 кодировка и переводы строк, что у оригиналов), а подкладывает их пользователь — с резервными копиями:
 
-* DentalDB\\config\\WorkParamsDB.xml — значение ArticulatorKStomCaseDesigner в списке AntagonistType
+* DentalDB\\config\\WorkParamsDB.xml — значение ArticulatorCustomCaseDesigner в списке AntagonistType
   (после ArticulatorKlosterneuburg);
 * DentalDB\\languages\\customer.xml — подпись пункта (файл подписей клиента, языковые файлы exocad не трогаются);
 * DentalCADApp\\config\\articulatormappings.xml — тип → папка library\\articulator\\KStom Case Designer
@@ -19,7 +19,8 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
-TYPE = "ArticulatorKStomCaseDesigner"
+TYPE = "ArticulatorCustomCaseDesigner"
+# Keep this project identifier and Custom_Case_Designer in motion files stable.
 FOLDER = "KStom Case Designer"
 LABEL = "В артикуляторе KStom Case Designer"
 FILES = (r"DentalDB\config\WorkParamsDB.xml", r"DentalDB\languages\customer.xml",
@@ -51,7 +52,7 @@ def _mappings(t: str) -> str:
     t = t.replace("</Antagonists>", f"\t<Antagonist>\n\t\t\t<Type>{TYPE}</Type>\n\t\t\t<FolderName>{FOLDER}</FolderName>\n"
                                     "\t\t</Antagonist>\n\t</Antagonists>")
     return t.replace("</Articulators>", f"\t<Articulator>\n\t\t\t<FolderName>{FOLDER}</FolderName>\n"
-                                        "\t\t\t<TypeInXML>KStom_Case_Designer</TypeInXML>\n\t\t\t<Assignments />\n"
+                                        "\t\t\t<TypeInXML>Custom_Case_Designer</TypeInXML>\n\t\t\t<Assignments />\n"
                                         "\t\t</Articulator>\n\t</Articulators>")
 
 
@@ -65,10 +66,11 @@ def patch(root: str, out: str) -> list[str]:
         raw = open(os.path.join(root, rel), "rb").read()
         bom = raw.startswith(b"\xef\xbb\xbf")
         text = raw.decode("utf-8-sig")
-        if TYPE in text:
+        renamed = text.replace("Custom Case Designer", FOLDER)
+        if TYPE in text and renamed == text:
             print(f"уже есть, пропускаю: {rel}")
             continue
-        new = edit(text)
+        new = renamed if TYPE in text else edit(renamed)
         ET.fromstring(new.encode("utf-8"))  # копия должна оставаться правильным XML
         dst = os.path.join(out, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
