@@ -156,7 +156,7 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
         raise FileExistsError("папка для копии проекта уже существует и не пуста — выберите другую")
     os.makedirs(folder, exist_ok=True)
     antagonist, type_note, art_name = antagonist_type(exocad_app)
-    notes = copy_project(project_dir, folder, stem, antagonist) + [type_note]
+    notes = copy_project(project_dir, folder, stem, antagonist) + [type_note] + fb.notes
     written = {"проект": f"{stem}.dentalProject"}
 
     def path(suffix):

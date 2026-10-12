@@ -108,6 +108,8 @@ def test_export_writes_exocad_project_copy_in_articulator_coordinates(case, proj
     assert np.array_equal(np.asarray(up.visual.vertex_colors)[:, :3], case.upper.colors[:, :3])
     mid = (np.array(res["condyles_articulator"]["right"]) + np.array(res["condyles_articulator"]["left"])) / 2
     assert np.abs(mid - [30, -80, 60]).max() < 1e-3
+    # мыщелки фантома — на разной высоте: ось через середину, предупреждение — в сводке
+    assert max(res["off_axis_mm"].values()) > 1.0 and any("несимметрично" in n for n in res["notes"])
     # плоскость гипсовки — горизонталь на высоте резцовой точки; папка артикулятора с вставками
     # папка — под тем именем, на которое наш тип указывает в конфигурации exocad (установка под прежним названием)
     assert res["articulator_folder"] == "Custom Case Designer"
