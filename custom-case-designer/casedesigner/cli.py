@@ -294,6 +294,28 @@ def _segment_options(parser, required):
     parser.add_argument("--smooth", type=int, default=10, help="итераций сглаживания поверхностей (10)")
 
 
+def cmd_exocad_articulator(args):
+    """Копия проекта exocad, где модели уже стоят в нашем артикуляторе: монтаж по мыщелкам кейса, движения."""
+    from . import exocad_articulator_export as xa
+    from .app.session import Session
+
+    s = Session()
+    s.open_case(args.case, ct_path=args.ct)
+    s.articulation_prepare()
+    mounted = s.articulation_mount("auto").get("mounting") or {}
+    if not args.no_movements:
+        s.articulation_generate(args.travel)
+    res = xa.export(xa.case_from_session(s), args.project, args.out, exocad_app=args.exocad)
+    print(f"Монтаж: {mounted.get('name', 'нет')}; межмыщелковое {res['icd_mm']} мм; "
+          f"плоскость гипсовки на высоте {res['plane_height_mm']} мм (ось — 60)")
+    print("Суставы: " + ", ".join(f"{k} {v}" for k, v in res["articulator"].items()))
+    print("Записано: " + ", ".join(res["files"]) + f"; движений {res['movements']}")
+    print("Папка копии: " + ("указанная" if args.out else "рядом с проектом, суффикс -KStom")
+          + f"; артикулятор — в {xa.SUBFOLDER}\\articulator (скопировать в library\\articulator exocad)")
+    for note in res["notes"]:
+        print(f"  ! {note}")
+
+
 def cmd_facebow(args):
     """Лицевая дуга для exocad: шарнир артикулятора — на мыщелках, гипсовка — по горизонтали монтажа."""
     import trimesh
@@ -404,6 +426,17 @@ def main(argv=None):
     fb.add_argument("--exocad", help="папка DentalCADApp exocad (по умолчанию ищется на дисках)")
     fb.add_argument("-o", "--out", required=True, help="папка результата")
     fb.set_defaults(func=cmd_facebow)
+
+    xa = sub.add_parser("exocad-articulator",
+                        help="копия проекта exocad: модели уже стоят в нашем артикуляторе (по кейсу .ccdcase)")
+    xa.add_argument("case", help="кейс .ccdcase: КТ, совмещённые сканы, мыщелки")
+    xa.add_argument("project", help="папка проекта exocad (.dentalProject); сам проект не меняется")
+    xa.add_argument("-o", "--out", help="папка копии проекта (по умолчанию — рядом, с суффиксом -KStom)")
+    xa.add_argument("--ct", help="КТ, если его перенесли после сохранения кейса")
+    xa.add_argument("--exocad", help="папка DentalCADApp exocad (вилка Zebris SD, тип антагониста)")
+    xa.add_argument("--travel", type=float, default=6.0, help="ход построенных движений, мм (6)")
+    xa.add_argument("--no-movements", action="store_true", help="без построенных движений (только монтаж)")
+    xa.set_defaults(func=cmd_exocad_articulator)
 
     args = parser.parse_args(argv)
     try:
