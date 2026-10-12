@@ -378,6 +378,23 @@ def condylar_insert(path, tilt_deg: float, head_radius: float = CONDYLAR_HEAD_MM
     return trimesh.Trimesh(v, faces, process=False)
 
 
+def bennett_insert(side: str, head_radius: float = CONDYLAR_HEAD_MM, reach=(-6.0, 16.0),
+                   height=(-5.0, 13.0)) -> trimesh.Trimesh:
+    """Вставка Беннетта в системе дорожки: вертикальная открытая пластина у внутреннего полюса головки нормалью
+    к ней, как «Planar» у Harman OSH (левая — x = +r, правая — x = −r). exocad ждёт её у каждой вставки ССП (у всех
+    библиотечных артикуляторов со вставками ССП есть и вставки Беннетта с тем же Id)."""
+    x = head_radius if side == "left" else -head_radius
+    ys, zs = np.linspace(*reach, 23), np.linspace(*height, 7)
+    v = np.array([(x, y, z) for z in zs for y in ys])
+    n = len(ys)
+    faces = []
+    for r in range(len(zs) - 1):
+        for i in range(n - 1):
+            a, b, c, d = r * n + i, r * n + i + 1, (r + 1) * n + i + 1, (r + 1) * n + i
+            faces += [(a, b, c), (a, c, d)] if side == "right" else [(a, c, b), (a, d, c)]
+    return trimesh.Trimesh(v, faces, process=False)
+
+
 def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = None, inserts: dict | None = None,
                       plane_height: float | None = None) -> list[str]:
     """Папка своего артикулятора для library\\articulator exocad: перевод из регистратора без наклона,
@@ -416,11 +433,12 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
                        ("CollapseHeightIncisalNeedleOffset", "false"), ("CollapseRotationAxis", "true"),
                        ("CollapseRotationFrontplateY", "false"), ("CollapseRotationFrontplateZ", "true"),
                        ("CollapseTiltFrontplate", "false"), ("FrontplateAdjustable", "true"),
-                       ("CollapseCondylarInsert", "false")):
+                       ("CollapseCondylarInsert", "false"), ("CollapseBennettInsert", "true")):
         _sub(root, tag, value)
     if inserts:
         for side in ("Left", "Right"):
             _sub(root, f"CurrentCondylarInsertColor{side}", INSERT_ID)
+            _sub(root, f"CurrentBennettInsertColor{side}", INSERT_ID)
     parts = _sub(root, "ArticulatorMainParts")
     for tag, name in (("Incisalneedle", "incisal_needle.off"), ("FrontplateLeft", "incisal_plate_left.off"),
                       ("FrontplateRight", "incisal_plate_right.off")):
@@ -432,6 +450,15 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
             name = f"condylar_insert_{side}.off"
             tilt = values[f"TiltCondylarGuide{side.capitalize()}"]
             insert_meshes[name] = condylar_insert(inserts[side], tilt)
+            mesh = _sub(node, "ArticulatorMesh")
+            for tag, value in (("Id", INSERT_ID), ("Filename", name), ("ColorDiffuse", "#E8C547"),
+                               ("Side", side.capitalize())):
+                _sub(mesh, tag, value)
+        # Без вставок Беннетта exocad при расчёте движения рисует вставку ССП копиями по кольцу (кейс 3).
+        node = _sub(parts, "BennettInserts")
+        for side in ("right", "left"):
+            name = f"bennett_insert_{side}.off"
+            insert_meshes[name] = bennett_insert(side)
             mesh = _sub(node, "ArticulatorMesh")
             for tag, value in (("Id", INSERT_ID), ("Filename", name), ("ColorDiffuse", "#E8C547"),
                                ("Side", side.capitalize())):

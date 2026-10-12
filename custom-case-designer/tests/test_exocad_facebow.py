@@ -171,6 +171,17 @@ def test_articulator_with_patient_inserts_and_mounting_plane(tmp_path):
         assert m.findtext("Id") == ef.INSERT_ID and m.findtext("Filename") in files
         mesh = trimesh.load_mesh(str(tmp_path / "art" / m.findtext("Filename")))
         assert _roof(mesh, 0.0) == pytest.approx(ef.CONDYLAR_HEAD_MM, abs=1e-3)
+    # к каждой вставке ССП — вставка Беннетта с тем же Id (как у всех библиотечных артикуляторов со вставками):
+    # пластина у внутреннего полюса головки нормалью к ней
+    assert root.findtext("CurrentBennettInsertColorLeft") == ef.INSERT_ID
+    for m in root.findall("ArticulatorMainParts/BennettInserts/ArticulatorMesh"):
+        assert m.findtext("Id") == ef.INSERT_ID and m.findtext("Filename") in files
+        plate = trimesh.load_mesh(str(tmp_path / "art" / m.findtext("Filename")), process=False)
+        x = ef.CONDYLAR_HEAD_MM if m.findtext("Side") == "Left" else -ef.CONDYLAR_HEAD_MM
+        assert np.allclose(plate.vertices[:, 0], x) and not plate.is_watertight
+        assert (np.sign(plate.face_normals[:, 0]) == -np.sign(x)).all()
+    assert {m.findtext("Side") for m in root.findall("ArticulatorMainParts/BennettInserts/ArticulatorMesh")} == {
+        "Left", "Right"}
     # плоскость гипсовки: горизонталь на высоте 26.5 (точки — от ArticulatorPosition)
     pos = float(root.findtext("ArticulatorPosition/z"))
     heights = [float(root.findtext(f"{tag}/z")) + pos for tag in
