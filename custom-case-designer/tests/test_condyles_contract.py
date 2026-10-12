@@ -215,7 +215,6 @@ def test_server_routes():
 
 # --- задачи ведомого ------------------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="ведомый: проверка «точка на сетке нижней челюсти»")
 def test_point_off_mandible_is_flagged():
     mesh = np.asarray(mandible_mesh().vertices)
     pts = cond.resolve({"Co_R": CO_R, "Co_L": CO_L + (0, 0, 7.0)}, set(), {})
@@ -224,7 +223,6 @@ def test_point_off_mandible_is_flagged():
     assert found["on_mandible_left"].level == "error" and found["on_mandible_left"].value > cond.ON_MANDIBLE_ERROR_MM
 
 
-@pytest.mark.xfail(strict=True, reason="ведомый: проверка асимметрии в системе монтажа")
 def test_asymmetry_is_flagged():
     frame = np.eye(4)
     frame[:3, :3] = [[-1, 0, 0], [0, -1, 0], [0, 0, 1]]  # мм КТ (LPS) → вправо, вперёд, вверх

@@ -21,6 +21,8 @@
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.spatial import cKDTree
+from trimesh.triangles import closest_point
 
 from .register import apply
 
@@ -116,15 +118,53 @@ def _check_sides(points) -> Check:
     return Check("sides", "ok", None, "стороны верны")
 
 
-def _check_on_mandible(point: CondylePoint, mandible_vertices) -> Check:
-    """Точка на поверхности нижней челюсти (как на КТ). Ведомому: расстояние до сетки, пороги
-    ON_MANDIBLE_WARN_MM / ON_MANDIBLE_ERROR_MM; точка у венечного отростка — warn."""
+def _surface_distance(point, vertices, faces=None) -> float:
+    """Расстояние до поверхности без пространственного индекса ``rtree``.
+
+    Ближайшие вершины дают ограниченную окрестность. Если известны грани, точка
+    дополнительно проецируется на треугольники этой окрестности; это не штрафует
+    точку на середине крупного треугольника редкой сегментационной сетки.
+    """
+    vertices = np.asarray(vertices, float).reshape(-1, 3)
+    if not len(vertices):
+        raise ValueError("пустая сетка нижней челюсти")
+    count = min(16, len(vertices))
+    distance, nearest = cKDTree(vertices).query(np.asarray(point, float), k=count)
+    best = float(np.min(np.atleast_1d(distance)))
+    if faces is None:
+        return best
+    faces = np.asarray(faces, int).reshape(-1, 3)
+    if not len(faces):
+        return best
+    nearest = np.atleast_1d(nearest)
+    local = faces[np.any(np.isin(faces, nearest), axis=1)]
+    if not len(local):
+        return best
+    triangles = vertices[local]
+    query = np.repeat(np.asarray(point, float)[None], len(triangles), axis=0)
+    projected = closest_point(triangles, query)
+    return min(best, float(np.linalg.norm(projected - query, axis=1).min()))
+
+
+def _check_on_mandible(point: CondylePoint, mandible_vertices, mandible_faces=None) -> Check:
+    """Точка на поверхности нижней челюсти (как на КТ)."""
     cid = f"on_mandible_{point.side}"
     if point.point is None:
         return Check(cid, "unknown", None, "точки нет")
     if mandible_vertices is None:
         return Check(cid, "unknown", None, "нет сегментации нижней челюсти — проверить нечем")
-    return Check(cid, "unknown", None, "проверка ещё не реализована")  # TODO(ведомый)
+    try:
+        distance = _surface_distance(point.point, mandible_vertices, mandible_faces)
+    except ValueError:
+        return Check(cid, "unknown", None, "сетка нижней челюсти пуста — проверить нечем")
+    side = "правого" if point.side == "right" else "левого"
+    if distance > ON_MANDIBLE_ERROR_MM:
+        return Check(cid, "error", distance,
+                     f"точка {side} мыщелка в {distance:.1f} мм от нижней челюсти")
+    if distance > ON_MANDIBLE_WARN_MM:
+        return Check(cid, "warn", distance,
+                     f"точка {side} мыщелка в {distance:.1f} мм от поверхности — проверьте")
+    return Check(cid, "ok", distance, f"точка {side} мыщелка на нижней челюсти")
 
 
 def _check_asymmetry(points, frame) -> Check:
@@ -134,14 +174,27 @@ def _check_asymmetry(points, frame) -> Check:
         return Check("asymmetry", "unknown", None, "нет одной из точек")
     if frame is None:
         return Check("asymmetry", "unknown", None, "нет системы монтажа")
-    return Check("asymmetry", "unknown", None, "проверка ещё не реализована")  # TODO(ведомый)
+    right = apply(np.asarray(frame, float), points["right"].point[None])[0]
+    left = apply(np.asarray(frame, float), points["left"].point[None])[0]
+    depth, height = float(right[1] - left[1]), float(right[2] - left[2])
+    value = max(abs(depth), abs(height))
+    details = []
+    if abs(height) > ASYMMETRY_WARN_MM:
+        details.append(f"{'правый' if height > 0 else 'левый'} выше на {abs(height):.1f} мм")
+    if abs(depth) > ASYMMETRY_WARN_MM:
+        # В системе монтажа +y направлена вперёд, поэтому меньший y расположен глубже.
+        details.append(f"{'левый' if depth > 0 else 'правый'} глубже на {abs(depth):.1f} мм")
+    if details:
+        return Check("asymmetry", "warn", value, "; ".join(details) + " — проверьте точки")
+    return Check("asymmetry", "ok", value,
+                 f"разница по высоте {abs(height):.1f} мм, по глубине {abs(depth):.1f} мм")
 
 
-def checks(points: dict[str, CondylePoint], mandible_vertices=None, frame=None) -> list[Check]:
-    """Все проверки точек, в мм КТ (челюсть как на КТ). mandible_vertices — сетка нижней челюсти КТ."""
+def checks(points: dict[str, CondylePoint], mandible_vertices=None, frame=None, mandible_faces=None) -> list[Check]:
+    """Все проверки точек в мм КТ; грани нужны для точного расстояния до редкой сетки."""
     return [_check_icd(points), _check_sides(points),
-            _check_on_mandible(points["right"], mandible_vertices),
-            _check_on_mandible(points["left"], mandible_vertices),
+            _check_on_mandible(points["right"], mandible_vertices, mandible_faces),
+            _check_on_mandible(points["left"], mandible_vertices, mandible_faces),
             _check_asymmetry(points, frame)]
 
 
