@@ -139,7 +139,7 @@ def test_condylar_insert_straight_and_curved():
     t = np.linspace(0, 12, 49)
     straight = np.c_[t * np.cos(np.radians(tilt)), -t * np.sin(np.radians(tilt))]
     flat = ef.condylar_insert(straight, tilt)
-    # как у Harman OSH и KaVo PROTARevo 5B: открытая поверхность нормалями к головке (замкнутую exocad дублирует)
+    # как у Harman OSH и KaVo PROTARevo 5B: открытая поверхность нормалями к головке
     assert not flat.is_watertight and (flat.face_normals[:, 2] < -0.999).all()
     for y in (-4.0, 0.0, 6.0, 15.0):
         assert _roof(flat, y) == pytest.approx(ef.CONDYLAR_HEAD_MM, abs=1e-6)
