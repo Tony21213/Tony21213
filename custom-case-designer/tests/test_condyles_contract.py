@@ -18,6 +18,7 @@ import phantom
 from casedesigner import condyles as cond
 from casedesigner.app.server import serve
 from casedesigner.app.session import Session
+from casedesigner.guidance import CONDYLE_RADIUS_MM
 from casedesigner.jawcase import JawCase, Mesh
 from casedesigner.register import apply, axis_angle, rigid
 
@@ -150,9 +151,13 @@ def test_mount_uses_given_condyles_without_mandible():
     right, left = np.array([-48.0, -70.0, 22.0]), np.array([50.0, -71.0, 24.0])
     case.mount("auto", condyles={"right": right, "left": left})  # кости нет, точки есть — монтаж по КТ
     assert case.mounting == "ct"
-    assert np.allclose(case.anatomy.points["condyle_right"], right) and np.allclose(case.anatomy.points["condyle_left"], left)
+    # шарнир — центры головок: на радиус головки ниже точек Co по вертикали монтажа
+    up = case.anatomy.frame[2, :3]
+    r = CONDYLE_RADIUS_MM
+    assert np.allclose(case.anatomy.points["condyle_right"], right - r * up)
+    assert np.allclose(case.anatomy.points["condyle_left"], left - r * up)
     origin = apply(case.anatomy.frame, ((right + left) / 2)[None])[0]
-    assert np.allclose(origin, 0, atol=1e-9)  # начало системы монтажа — середина шарнирной оси
+    assert np.allclose(origin, [0, 0, r], atol=1e-9)  # начало системы монтажа — середина шарнирной оси
 
 
 def test_case_file_keeps_sources(tmp_path):
@@ -306,7 +311,9 @@ def test_http_set_mount_applied_in_scan_bite(session):
         assert status == 200 and job["status"] == "done", job.get("error")
         status, state = call("/api/articulation/condyles")
         assert status == 200 and state["applied"] and state["bite"] == "scan"
-        assert np.allclose(session.jaw.anatomy.points["condyle_right"], cond.to_view(CO_R, session.bite_motion))
+        up = session.jaw.anatomy.frame[2, :3]  # шарнир — центр головки под точкой Co в прикусе сканов
+        assert np.allclose(session.jaw.anatomy.points["condyle_right"],
+                           cond.to_view(CO_R, session.bite_motion) - CONDYLE_RADIUS_MM * up)
     finally:
         server.shutdown()
 

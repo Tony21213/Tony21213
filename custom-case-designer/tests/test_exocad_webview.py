@@ -135,7 +135,8 @@ def test_dynamics_from_scene(tmp_path):
     assert "Иванов" not in json.dumps(report, ensure_ascii=False)
     back = np.linalg.inv(TO_SCENE)
     right = apply(back, anatomy.points["condyle_right"][None])[0]
-    assert right == pytest.approx([50, 0, 0], abs=1.0)  # правый — справа, хотя оси сцены развёрнуты
+    # правый — справа, хотя оси сцены развёрнуты; шарнир — центр головки (шар r = 4 с верхушкой в z = 0)
+    assert right == pytest.approx([50, 0, -4], abs=1.0)
     assert report["intercondylar_mm"] == pytest.approx(100, abs=1.0)
     assert report["eminence"]["right"]["sagittal_deg"] == pytest.approx(40, abs=1.0)
     assert report["eminence"]["left"]["sagittal_deg"] == pytest.approx(30, abs=1.0)

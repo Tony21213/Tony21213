@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from casedesigner import exocad_webview as ew
+from casedesigner.guidance import CONDYLE_RADIUS_MM
 from casedesigner import mount_planes as mp
 from casedesigner.jawcase import JawCase, Mesh
 from casedesigner.register import apply
@@ -69,7 +70,8 @@ def test_frankfurt_mount_and_angles_from_plane():
     lm = landmarks()
     po, orb = np.array(lm["Po_R"]), np.array(lm["Or_R"])
     assert apply(a.frame, po[None])[0][2] == pytest.approx(apply(a.frame, orb[None])[0][2], abs=1e-6)  # горизонталь
-    assert apply(a.frame, ((CO["right"] + CO["left"]) / 2)[None])[0] == pytest.approx([0, 0, 0], abs=1e-9)
+    # шарнир — центры головок: середина между Co — на радиус головки выше начала системы
+    assert apply(a.frame, ((CO["right"] + CO["left"]) / 2)[None])[0] == pytest.approx([0, 0, CONDYLE_RADIUS_MM], abs=1e-9)
     for side in ("right", "left"):
         assert s.get("sagittal", side) == pytest.approx(ALPHA[side] + 10.0, abs=0.7)
     assert any("передом вверх на 10.0°" in n for n in notes)
@@ -82,13 +84,28 @@ def test_axis_orbital_hinge_through_both_condyles():
     occl, *_ = mount("occlusal", condyles=tilted, bone=False)
     axis, *_ = mount("axis_orbital", condyles=tilted, bone=False)
     half = np.linalg.norm(tilted["right"] - tilted["left"]) / 2
-    assert apply(axis.frame, tilted["right"][None])[0] == pytest.approx([half, 0, 0], abs=1e-9)
-    assert apply(axis.frame, tilted["left"][None])[0] == pytest.approx([-half, 0, 0], abs=1e-9)
-    assert np.hypot(*apply(occl.frame, tilted["right"][None])[0][1:]) == pytest.approx(np.hypot(1, 3), abs=0.05)
-    # орбиталь — в горизонтальной плоскости шарнира
+    r = CONDYLE_RADIUS_MM  # Co — на радиус головки над шарниром
+    assert apply(axis.frame, tilted["right"][None])[0] == pytest.approx([half, 0, r], abs=1e-6)
+    assert apply(axis.frame, tilted["left"][None])[0] == pytest.approx([-half, 0, r], abs=1e-6)
+    for side in ("right", "left"):  # центры головок — на оси x
+        assert apply(axis.frame, axis.points[f"condyle_{side}"][None])[0][1:] == pytest.approx([0, 0], abs=1e-6)
+    # у окклюзионной шарнир — горизонтально через середину: центр головки от оси на hypot(1, 3)
+    assert np.hypot(*apply(occl.frame, occl.points["condyle_right"][None])[0][1:]) == pytest.approx(np.hypot(1, 3),
+                                                                                                     abs=0.05)
+    # орбиталь — в горизонтальной плоскости шарнира (через центры головок)
     lm = landmarks()
     orb = (np.array(lm["Or_R"]) + np.array(lm["Or_L"])) / 2
     assert apply(axis.frame, orb[None])[0][2] == pytest.approx(0, abs=1e-6)
+
+
+def test_hinge_at_head_centres_below_co():
+    """Шарнир — центры головок на радиус ниже Co по вертикали монтажа; ССП — по бугорку от Co (не меняется)."""
+    a, s, _e, _n = mount("frankfurt")
+    up = a.frame[2, :3]
+    for side in ("right", "left"):
+        assert a.points[f"condyle_{side}"] == pytest.approx(CO[side] - CONDYLE_RADIUS_MM * up, abs=1e-9)
+    assert np.linalg.norm(a.points["condyle_right"] - a.points["condyle_left"]) == pytest.approx(100.0)
+    assert "центры головок" in a.source
 
 
 def test_camper_and_hip_build_from_their_points():
