@@ -27,11 +27,18 @@ const viewer = {objects: new Map(), renderer: {domElement: {}}, markers: {},
   remove(k) {this.objects.delete(k)}, pick(k) {picked = k; return [-48,11,2]},
 };
 const requests = [];
-let picked, viewPointerDown;
+let picked, viewPointerDown, applyPosts = false;
 const mesh = async url => {assert.equal(url, 'ct/surface?part=bone'); return {bone: true}};
 const render = () => {};
 const toast = message => {throw new Error(message)};
-const post = async (url, body) => {requests.push(body); return state.articulationCondyles};
+const post = async (url, body) => {
+  requests.push(body);
+  if (applyPosts) {  // как сервер: вернуть состояние с новой точкой, но не сразу
+    await new Promise(resolve => setTimeout(resolve, 5));
+    state.articulationCondyles.points[body.side][body.space] = body.point;
+  }
+  return state.articulationCondyles;
+};
 """ + handlers + r"""
 (async () => {
   await editCondyle('right');
@@ -72,6 +79,12 @@ const post = async (url, body) => {requests.push(body); return state.articulatio
   state.articulationCondyles = {available:false};
   drawArticulationGuides();
   assert(viewer.paths.includes('art:path:test:condyle_right'));
+  // два быстрых нажатия (автоповтор): второй шаг — от точки после первого, шаги не теряются
+  state.articulationCondyles = {available:true, segmentation:{mandible:false}, points:{right:{ct:[0,0,0], view:[0,0,0]}}};
+  state.condyleEditing = 'right';
+  applyPosts = true;
+  await Promise.all([nudgeCondyle('ArrowUp'), nudgeCondyle('ArrowUp')]);
+  assert.deepEqual(requests.slice(-2).map(r => r.point), [[0,-0.5,0], [0,-1,0]]);
 })().catch(error => {console.error(error); process.exitCode = 1});
 """
     result = subprocess.run([node, "-"], input=script, capture_output=True, text=True, timeout=20)

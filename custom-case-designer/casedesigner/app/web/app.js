@@ -582,23 +582,32 @@ async function handleCondylePick(e) {
   await updateCondyles('', { side, point, space: condyleSpace() });
 }
 
-async function nudgeCondyle(key, precise = false, depth = false) {
-  const side = state.condyleEditing, item = state.articulationCondyles?.points?.[side];
-  const space = condyleSpace();
-  if (!side || !item?.[space]) return;
-  const axes = state.articulationGuides?.[space === 'ct' ? 'ct_axes' : 'axes'] || {
-    right: [-1, 0, 0], forward: [0, -1, 0], up: [0, 0, 1],
-  };
-  let axis, sign;
-  if (key === 'ArrowLeft' || key === 'ArrowRight') {
-    axis = axes.right; sign = key === 'ArrowRight' ? 1 : -1;
-  } else {
-    axis = depth ? axes.forward : axes.up;
-    sign = key === 'ArrowUp' ? 1 : -1;
-  }
-  const amount = precise ? 0.1 : 0.5;
-  const point = item[space].map((v, i) => v + sign * amount * axis[i]);
-  await updateCondyles('', { side, point, space });
+// Нажатия стрелок — по очереди: каждый шаг считается от точки, которую сервер вернул на предыдущий
+// (иначе при автоповторе клавиши два запроса считаются от одной точки и шаг теряется).
+let condyleNudges = Promise.resolve();
+
+function nudgeCondyle(key, precise = false, depth = false) {
+  const side = state.condyleEditing;
+  if (!side) return condyleNudges;
+  condyleNudges = condyleNudges.then(async () => {
+    const item = state.articulationCondyles?.points?.[side];
+    const space = condyleSpace();
+    if (state.condyleEditing !== side || !item?.[space]) return;
+    const axes = state.articulationGuides?.[space === 'ct' ? 'ct_axes' : 'axes'] || {
+      right: [-1, 0, 0], forward: [0, -1, 0], up: [0, 0, 1],
+    };
+    let axis, sign;
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      axis = axes.right; sign = key === 'ArrowRight' ? 1 : -1;
+    } else {
+      axis = depth ? axes.forward : axes.up;
+      sign = key === 'ArrowUp' ? 1 : -1;
+    }
+    const amount = precise ? 0.1 : 0.5;
+    const point = item[space].map((v, i) => v + sign * amount * axis[i]);
+    await updateCondyles('', { side, point, space });
+  });
+  return condyleNudges;
 }
 
 async function remountCondyles() {
