@@ -118,32 +118,48 @@ def _check_sides(points) -> Check:
     return Check("sides", "ok", None, "стороны верны")
 
 
-def _surface_distance(point, vertices, faces=None) -> float:
-    """Расстояние до поверхности без пространственного индекса ``rtree``.
+class MandibleSurface:
+    """Дерево вершин и соседние грани: строятся один раз на неизменную сетку."""
 
-    Ближайшие вершины дают ограниченную окрестность. Если известны грани, точка
-    дополнительно проецируется на треугольники этой окрестности; это не штрафует
-    точку на середине крупного треугольника редкой сегментационной сетки.
-    """
-    vertices = np.asarray(vertices, float).reshape(-1, 3)
-    if not len(vertices):
-        raise ValueError("пустая сетка нижней челюсти")
-    count = min(16, len(vertices))
-    distance, nearest = cKDTree(vertices).query(np.asarray(point, float), k=count)
-    best = float(np.min(np.atleast_1d(distance)))
-    if faces is None:
-        return best
-    faces = np.asarray(faces, int).reshape(-1, 3)
-    if not len(faces):
-        return best
-    nearest = np.atleast_1d(nearest)
-    local = faces[np.any(np.isin(faces, nearest), axis=1)]
-    if not len(local):
-        return best
-    triangles = vertices[local]
-    query = np.repeat(np.asarray(point, float)[None], len(triangles), axis=0)
-    projected = closest_point(triangles, query)
-    return min(best, float(np.linalg.norm(projected - query, axis=1).min()))
+    def __init__(self, vertices, faces=None):
+        self.vertices = np.asarray(vertices, float).reshape(-1, 3)
+        self.tree = cKDTree(self.vertices)
+        self.faces = np.empty((0, 3), int) if faces is None else np.asarray(faces, int).reshape(-1, 3)
+        # Для каждой вершины храним диапазон индексов прилегающих граней.
+        flat = self.faces.ravel()
+        self.face_ids = np.argsort(flat, kind="stable") // 3
+        self.offsets = np.r_[0, np.cumsum(np.bincount(flat, minlength=len(self.vertices)))]
+
+    def distance(self, point) -> float:
+        if not len(self.vertices):
+            raise ValueError("пустая сетка нижней челюсти")
+        distance, nearest = self.tree.query(np.asarray(point, float), k=min(16, len(self.vertices)))
+        best = float(np.min(np.atleast_1d(distance)))
+        if not len(self.faces):
+            return best
+        ids = np.unique(np.concatenate([self.face_ids[self.offsets[v]:self.offsets[v + 1]]
+                                        for v in np.atleast_1d(nearest)]))
+        if not len(ids):
+            return best
+        triangles = self.vertices[self.faces[ids]]
+        query = np.repeat(np.asarray(point, float)[None], len(triangles), axis=0)
+        projected = closest_point(triangles, query)
+        return min(best, float(np.linalg.norm(projected - query, axis=1).min()))
+
+
+def cached_surface(mesh) -> MandibleSurface:
+    """Кэш Trimesh сбрасывается при замене или изменении вершин и граней."""
+    surface = mesh._cache["condyle_surface"]
+    if surface is None:
+        surface = MandibleSurface(mesh.vertices, mesh.faces)
+        mesh._cache["condyle_surface"] = surface
+    return surface
+
+
+def _surface_distance(point, vertices, faces=None) -> float:
+    """Ближайшие вершины и проекции на соседние грани, без rtree."""
+    surface = vertices if isinstance(vertices, MandibleSurface) else MandibleSurface(vertices, faces)
+    return surface.distance(point)
 
 
 def _check_on_mandible(point: CondylePoint, mandible_vertices, mandible_faces=None) -> Check:

@@ -865,8 +865,7 @@ class Session:
             motion = np.eye(4) if self.bite_motion is None else np.asarray(self.bite_motion, float)
             frame = np.asarray(self.jaw.anatomy.frame, float) @ motion
         return cond.checks(points,
-                           None if mandible is None else np.asarray(mandible.vertices), frame,
-                           None if mandible is None else np.asarray(mandible.faces))
+                           None if mandible is None else cond.cached_surface(mandible), frame)
 
     def _suggest_missing_condyles(self):
         """Недостающие точки — предложение по нижней челюсти (как «Предложить» в ориентирах); подтверждённые

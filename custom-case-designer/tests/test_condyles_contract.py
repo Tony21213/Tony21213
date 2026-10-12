@@ -234,6 +234,35 @@ def test_asymmetry_is_flagged():
     assert found["asymmetry"].level == "warn" and found["asymmetry"].value == pytest.approx(7.0, abs=0.1)
 
 
+def test_surface_cache_reused_and_invalidated(session):
+    mesh = mandible_mesh()
+    session.structures["mandible"] = mesh
+    session.landmarks.update(Co_R=CO_R.copy(), Co_L=CO_L.copy())
+    session.articulation_condyles()
+    first = cond.cached_surface(mesh)
+    session.set_condyle("right", (CO_R + (0, 0, -0.1)).tolist())
+    assert cond.cached_surface(mesh) is first
+    mesh.vertices += (0, 0, 200)
+    moved = session.articulation_condyles()
+    assert cond.cached_surface(mesh) is not first
+    assert next(c for c in moved["checks"] if c["id"] == "on_mandible_right")["level"] == "error"
+    changed = cond.cached_surface(mesh)
+    mesh.faces = mesh.faces[:10]
+    assert cond.cached_surface(mesh) is not changed
+    session.structures["mandible"] = mandible_mesh()
+    restored = session.articulation_condyles()
+    assert next(c for c in restored["checks"] if c["id"] == "on_mandible_right")["level"] == "ok"
+
+
+def test_cached_surface_projects_onto_sparse_faces():
+    mesh = trimesh.Trimesh(vertices=[[-20, -20, 0], [20, -20, 0], [0, 20, 0]],
+                           faces=[[0, 1, 2]], process=False)
+    surface = cond.cached_surface(mesh)
+    assert surface.distance([0, 0, 0]) == pytest.approx(0)
+    assert surface.distance([0, 0, 2]) == pytest.approx(2)
+    assert surface.distance([0, 0, 6]) == pytest.approx(6)
+
+
 # --- интеграция ведомого -------------------------------------------------------------------------------
 
 def _http(server):
