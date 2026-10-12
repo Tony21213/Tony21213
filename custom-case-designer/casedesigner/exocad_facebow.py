@@ -342,10 +342,12 @@ def preview_image(size=(700, 770)):
 
 
 def condylar_insert(path, tilt_deg: float, head_radius: float = CONDYLAR_HEAD_MM, width: float = 10.0,
-                    thickness: float = 2.0, reach=(-6.0, 16.0), step: float = 0.25) -> trimesh.Trimesh:
+                    reach=(-6.0, 16.0), step: float = 0.25) -> trimesh.Trimesh:
     """Индивидуальная вставка ССП: сетка в системе дорожки мыщелка (x — вбок, y — вперёд по дорожке, z — вверх,
-    начало — центр головки в покое), как вставки exocad (у Harman OSH «плоская» — нижняя грань на высоте радиуса
-    головки, «анатомическая» — изогнута). Нижняя грань — крыша, по которой скользит головка.
+    начало — центр головки в покое), как вставки exocad (у Harman OSH «плоская» — на высоте радиуса головки,
+    «анатомическая» — изогнута). Сетка — одна открытая поверхность, крыша, по которой скользит головка, нормалями
+    вниз, к головке: так устроены вставки Harman OSH и KaVo PROTARevo 5B. Замкнутое тело exocad 3.3 при
+    «Расчёт движения артикулятора» рисует копиями по кольцу через начало координат и головку (кейс 3).
 
     path — путь центра головки мыщелка пациента (N×2: вперёд, вверх; мм, система монтажа — guidance.condylar_path),
     tilt_deg — ССП дорожки в артикуляторе (TiltCondylarGuide). Путь поворачивается в систему дорожки; его
@@ -365,21 +367,15 @@ def condylar_insert(path, tilt_deg: float, head_radius: float = CONDYLAR_HEAD_MM
     slope = np.polyfit(yl[tail], zl[tail], 1)[0] if tail.sum() >= 2 else 0.0
     ahead = ys > yl[-1]
     dev[ahead] = zl[-1] + slope * (ys[ahead] - yl[-1])
-    low = head_radius + dev
-    n, h = len(ys), width / 2
-    v = np.concatenate([np.c_[np.full(n, x), ys, z] for x, z in ((-h, low), (h, low), (-h, low + thickness),
-                                                                 (h, low + thickness))])
-    L0, L1, U0, U1 = (np.arange(n) + k * n for k in range(4))
-    quads = []
-    for i in range(n - 1):
-        j = i + 1
-        quads += [(L0[i], L1[i], L1[j], L0[j]), (U0[i], U0[j], U1[j], U1[i]),
-                  (L0[i], L0[j], U0[j], U0[i]), (L1[i], U1[i], U1[j], L1[j])]
-    quads += [(L0[0], U0[0], U1[0], L1[0]), (L0[-1], L1[-1], U1[-1], U0[-1])]
-    faces = [(a_, b_, c_) for a_, b_, c_, d_ in quads] + [(a_, c_, d_) for a_, b_, c_, d_ in quads]
-    mesh = trimesh.Trimesh(v, faces, process=True)
-    trimesh.repair.fix_normals(mesh)
-    return mesh
+    roof = head_radius + dev
+    n, xs = len(ys), np.linspace(-width / 2, width / 2, 5)
+    v = np.concatenate([np.c_[np.full(n, x), ys, roof] for x in xs])
+    cols = [np.arange(n) + k * n for k in range(len(xs))]
+    faces = []
+    for c0, c1 in zip(cols[:-1], cols[1:]):  # c0 — левее (меньше x); обход по часовой сверху — нормаль вниз
+        for i in range(n - 1):
+            faces += [(c0[i], c0[i + 1], c1[i + 1]), (c0[i], c1[i + 1], c1[i])]
+    return trimesh.Trimesh(v, faces, process=False)
 
 
 def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = None, inserts: dict | None = None,
