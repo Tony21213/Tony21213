@@ -31,6 +31,7 @@ export class Viewer3D {
     this.el = el;
     this.onTransformEnd = onTransformEnd;
     this.objects = new Map();
+    this.raycaster = new THREE.Raycaster();
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -211,6 +212,21 @@ export class Viewer3D {
     line.renderOrder = 9;
     this.scene.add(line);
     this.objects.set(key, line);
+  }
+
+  // Точка на видимой сетке в мировых координатах текущего 3D-вида.
+  pick(key, clientX, clientY) {
+    const object = this.objects.get(key);
+    if (!object?.visible) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const mouse = new THREE.Vector2(
+      2 * (clientX - rect.left) / rect.width - 1,
+      1 - 2 * (clientY - rect.top) / rect.height,
+    );
+    this.raycaster.setFromCamera(mouse, this.camera);
+    const hit = this.raycaster.intersectObject(object, true)[0];
+    return hit ? hit.point.toArray() : null;
   }
 
   setVisible(key, on) {

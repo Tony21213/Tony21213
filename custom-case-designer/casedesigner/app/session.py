@@ -900,6 +900,7 @@ class Session:
 
     def articulation_condyles(self) -> dict:
         """Состояние точек мыщелков для шага «Артикулятор» (condyles.state)."""
+        self._suggest_missing_condyles()
         points = self._condyle_points()
         found = self._condyle_checks(points)
         applied = (self.jaw.anatomy is not None and self._mounted_condyles is not None
@@ -931,6 +932,7 @@ class Session:
             self.landmarks[key] = p
             self.suggested.discard(key)
             self.landmark_sources[key] = cond.SOURCE_USER
+            self._mounted_condyles = None
         return self.articulation_condyles()
 
     def confirm_condyle(self, side: str = "both") -> dict:
@@ -941,6 +943,7 @@ class Session:
                 raise ValueError(f"нет точки мыщелка: {s}")
             with self.lock:
                 self.suggested.discard(key)
+                self._mounted_condyles = None
         return self.articulation_condyles()
 
     def reset_condyle(self, side: str = "both") -> dict:
@@ -952,6 +955,7 @@ class Session:
                 self.landmarks.pop(key, None)
                 self.suggested.discard(key)
                 self.landmark_sources.pop(key, None)
+                self._mounted_condyles = None
         self._suggest_missing_condyles()
         return self.articulation_condyles()
 
@@ -983,9 +987,12 @@ class Session:
 
     def articulation_guides(self) -> dict:
         """Точки и линии, объясняющие в 3D основу построения динамики."""
+        fallback_axes = {"right": [-1.0, 0.0, 0.0], "forward": [0.0, -1.0, 0.0], "up": [0.0, 0.0, 1.0]}
         if not self._articulation_ready or self.jaw.anatomy is None:
-            return {"available": False, "points": {}, "paths": []}
+            return {"available": False, "points": {}, "paths": [], "axes": fallback_axes}
         a = self.jaw.anatomy
+        axes = {name: np.asarray(a.frame, float)[i, :3].round(6).tolist()
+                for i, name in enumerate(("right", "forward", "up"))}
         points = {k: np.asarray(v, float).round(3).tolist() for k, v in a.points.items()
                   if k in ("condyle_right", "condyle_left", "incisal")}
         paths = []
@@ -997,7 +1004,8 @@ class Session:
                           "condyle_left": apply(T, a.points["condyle_left"]).round(3).tolist(),
                           "incisal": apply(T, a.points["incisal"]).round(3).tolist()})
         return {"available": True, "points": points, "hinge": [points.get("condyle_right"), points.get("condyle_left")],
-                "paths": paths, "basis": "мыщелки пациента + резцовое ведение по сканам челюстей"}
+                "paths": paths, "axes": axes,
+                "basis": "мыщелки пациента + резцовое ведение по сканам челюстей"}
 
     def articulation_motion(self, mid: str) -> dict:
         """Отдать кадры одного движения для визуального проигрывания."""

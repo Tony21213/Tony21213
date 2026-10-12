@@ -19,7 +19,8 @@ const state = {
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
   modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
   models: null, download: null, downloadError: null, articulation: null, articulationAnalysis: null,
-  articulationContacts: [], articulationGuides: null,
+  articulationContacts: [], articulationGuides: null, articulationCondyles: null,
+  condyleEditing: null, // right / left: точка ставится на кости в 3D и двигается стрелками
   opacity: {}, // объект → прозрачность, заданная кнопкой (иначе — по умолчанию)
   warnOpen: new Set(), // карточки сканов с раскрытым списком предупреждений
   moving: new Map(), // скан → номер последней ручной поправки, ещё не оценённой сервером
@@ -93,7 +94,12 @@ const panel = $('#panel');
 const viewer = new Viewer3D($('#view3d'));
 const slices = [...document.querySelectorAll('.view[data-axis]')].map((el) => new SliceView(el, el.dataset.axis, app));
 window.ccd = { app, slices, viewer, state }; // для проверки интерфейса в браузере
-$('#view3d').addEventListener('dblclick', () => app.toggleMax($('#view3d'))); // развернуть 3D (Esc — обратно)
+let viewPointerDown = null;
+$('#view3d').addEventListener('pointerdown', (e) => { viewPointerDown = [e.clientX, e.clientY]; });
+$('#view3d').addEventListener('pointerup', handleCondylePick);
+$('#view3d').addEventListener('dblclick', () => {
+  if (!state.condyleEditing) app.toggleMax($('#view3d'));
+}); // развернуть 3D (Esc — обратно)
 
 // ---------- общие помощники ----------
 function toast(text, kind = 'error') {
@@ -468,7 +474,18 @@ async function toggleBite() {
 
 async function prepareArticulation() {
   try {
+    if (state.biteView?.available && !state.biteView.on) {
+      state.biteView = await post('bite_view', { on: true });
+      await reloadStructureMeshes();
+      await refreshScans(true);
+      overlayVersion += 1;
+    }
+  } catch (e) { toast(e.message); }
+  try {
     state.articulation = await post('articulation/prepare');
+  } catch (e) { toast(e.message); }
+  try {
+    state.articulationCondyles = await get('articulation/condyles');
     state.articulationGuides = await get('articulation/guides');
     drawArticulationGuides();
   } catch (e) { toast(e.message); }
@@ -478,27 +495,94 @@ async function prepareArticulation() {
 async function articulationAction(kind, body = {}, title = 'Артикулятор') {
   await busy(title, async (progress) => {
     state.articulation = await run(`articulation/${kind}`, body, progress);
+    state.articulationCondyles = await get('articulation/condyles');
     state.articulationGuides = await get('articulation/guides');
     drawArticulationGuides();
   });
 }
 
 function clearArticulationGuides() {
-  for (const key of [...viewer.objects.keys()].filter((k) => String(k).startsWith('art:'))) viewer.remove(key);
+  for (const key of [...viewer.objects.keys()].filter((k) => String(k).startsWith('art:') || String(k).startsWith('lm:art:')))
+    viewer.remove(key);
 }
 
 function drawArticulationGuides() {
   clearArticulationGuides();
   const g = state.articulationGuides;
-  if (!g?.available) return;
-  const p = g.points || {};
-  if (p.condyle_right) viewer.setMarker('art:condyle_right', p.condyle_right, '#ff6b6b');
-  if (p.condyle_left) viewer.setMarker('art:condyle_left', p.condyle_left, '#6ba8ff');
+  const current = state.articulationCondyles?.points || {};
+  const p = g?.points || {};
+  const right = current.right?.view || p.condyle_right;
+  const left = current.left?.view || p.condyle_left;
+  if (right) viewer.setMarker('art:condyle_right', right, '#ff6b6b');
+  if (left) viewer.setMarker('art:condyle_left', left, '#6ba8ff');
   if (p.incisal) viewer.setMarker('art:incisal', p.incisal, '#f5d76e');
-  if (g.hinge?.[0] && g.hinge?.[1]) viewer.setPath('art:hinge', g.hinge, '#ffffff');
+  if (right && left) viewer.setPath('art:hinge', [right, left], '#ffffff');
+  if (!g?.available || (state.articulationCondyles?.available && !state.articulationCondyles.applied)) return;
   const colors = { condyle_right: '#ff6b6b', condyle_left: '#6ba8ff', incisal: '#f5d76e' };
   for (const path of g.paths || []) for (const key of Object.keys(colors))
     viewer.setPath(`art:path:${path.id}:${key}`, path[key], colors[key]);
+}
+
+async function updateCondyles(path = '', body = {}) {
+  try {
+    state.articulationCondyles = await post(`articulation/condyles${path}`, body);
+    drawArticulationGuides();
+    render();
+    return true;
+  } catch (e) {
+    toast(e.message);
+    return false;
+  }
+}
+
+function editCondyle(side) {
+  state.condyleEditing = state.condyleEditing === side ? null : side;
+  if (state.condyleEditing) {
+    const target = viewer.objects.has('mandible') ? 'mandible' : 'ct_teeth';
+    viewer.setVisible(target, true);
+    if (target === 'mandible') state.visible.add('mandible');
+  }
+  render();
+}
+
+async function handleCondylePick(e) {
+  const side = state.condyleEditing;
+  const started = viewPointerDown;
+  viewPointerDown = null;
+  if (!side || e.button !== 0 || state.step !== 'articulation' || !started) return;
+  if (Math.hypot(e.clientX - started[0], e.clientY - started[1]) > 4) return;
+  const target = viewer.objects.has('mandible') ? 'mandible' : 'ct_teeth';
+  const point = viewer.pick(target, e.clientX, e.clientY);
+  if (!point) return toast(target === 'mandible' ? 'Щёлкните по кости нижней челюсти' : 'Щёлкните по поверхности КТ');
+  await updateCondyles('', { side, point, space: 'view' });
+}
+
+async function nudgeCondyle(key, precise = false, depth = false) {
+  const side = state.condyleEditing, item = state.articulationCondyles?.points?.[side];
+  if (!side || !item?.view) return;
+  const axes = state.articulationGuides?.axes || {
+    right: [-1, 0, 0], forward: [0, -1, 0], up: [0, 0, 1],
+  };
+  let axis, sign;
+  if (key === 'ArrowLeft' || key === 'ArrowRight') {
+    axis = axes.right; sign = key === 'ArrowRight' ? 1 : -1;
+  } else {
+    axis = depth ? axes.forward : axes.up;
+    sign = key === 'ArrowUp' ? 1 : -1;
+  }
+  const amount = precise ? 0.1 : 0.5;
+  const point = item.view.map((v, i) => v + sign * amount * axis[i]);
+  await updateCondyles('', { side, point, space: 'view' });
+}
+
+async function remountCondyles() {
+  await busy('Перемонтаж по мыщелкам', async (progress) => {
+    state.articulation = await run('articulation/mount', { method: 'ct' }, progress);
+    state.articulation = await run('articulation/generate', { travel: 6.0 }, progress);
+    state.articulationCondyles = await get('articulation/condyles');
+    state.articulationGuides = await get('articulation/guides');
+    drawArticulationGuides();
+  });
 }
 
 const matMul = (a, b) => {
@@ -902,6 +986,54 @@ function renderExport() {
     ${ready ? '' : `<p class="muted small">${state.ct ? 'Сегментируйте КТ или совместите сканы.' : 'Добавьте сканы.'}</p>`}${result}`;
 }
 
+const CONDYLE_SIDES = {
+  right: { title: 'Правый', color: '#ff6b6b' },
+  left: { title: 'Левый', color: '#6ba8ff' },
+};
+
+function condyleReason(c) {
+  if (!c) return 'точки ещё не прочитаны';
+  const missing = Object.entries(c.points || {}).filter(([, p]) => !p.ct).map(([side]) => CONDYLE_SIDES[side].title.toLowerCase());
+  const errors = (c.checks || []).filter((x) => x.level === 'error').map((x) => x.text);
+  return [...(missing.length ? [`нет точки: ${missing.join(', ')}`] : []), ...errors].join('; ') || 'точки готовы';
+}
+
+function renderCondylePanel(scansReady) {
+  const c = state.articulationCondyles;
+  if (!c?.available) return '';
+  const rows = Object.entries(CONDYLE_SIDES).map(([side, meta]) => {
+    const p = c.points?.[side] || {};
+    const source = p.source_label || 'нет точки';
+    const verify = p.ct && !p.confirmed ? ' · проверьте' : '';
+    return `<div class="condyle-side ${state.condyleEditing === side ? 'editing' : ''}">
+      <div class="condyle-name"><i style="background:${meta.color}"></i><b>${meta.title}</b>
+        <em class="${p.confirmed ? 'ok' : ''}">${p.confirmed ? 'подтверждён' : 'не подтверждён'}</em></div>
+      <div class="condyle-source">${hide(source + verify)}</div>
+      <div class="condyle-actions">
+        <button class="btn sm" data-condyle-confirm="${side}" ${p.ct && !p.confirmed ? '' : 'disabled'}>${icons.check}Подтвердить</button>
+        <button class="btn sm ${state.condyleEditing === side ? 'primary' : ''}" data-condyle-edit="${side}">${icons.target}Поправить</button>
+        <button class="btn ghost sm" data-condyle-reset="${side}" ${p.ct || c.segmentation.mandible ? '' : 'disabled'}>${icons.undo}Сбросить</button>
+      </div></div>`;
+  }).join('');
+  const checks = (c.checks || []).map((x) => `<div class="condyle-check ${x.level}"><i></i><span>${hide(x.text)}</span></div>`).join('');
+  const missing = Object.entries(c.points || {}).filter(([, p]) => !p.ct).map(([s]) => CONDYLE_SIDES[s].title.toLowerCase());
+  const hints = [
+    !c.segmentation.mandible ? 'Нижняя челюсть не сегментирована: поставьте точки вручную по 3D-поверхности КТ.' : '',
+    missing.length === 1 ? `Не найдена ${missing[0]} точка — поставьте её вручную.` : '',
+    !c.segmentation.skull ? 'Череп не сегментирован: наклон суставных путей останется по умолчанию.' : '',
+  ].filter(Boolean).map((x) => `<div class="condyle-hint">${icons.warn}<span>${hide(x)}</span></div>`).join('');
+  const apply = c.applied
+    ? `<div class="condyle-applied">${icons.check}<span>Точки применены к текущему монтажу</span></div>`
+    : `<button class="btn primary wide" data-condyle-remount="1" ${c.ready && scansReady ? '' : 'disabled'}>${icons.move}Перемонтировать</button>
+       <p class="muted small">${hide(c.ready ? (scansReady ? 'После перемонтажа движения будут рассчитаны заново.' : 'Сначала поставьте оба скана.') : condyleReason(c))}</p>`;
+  const editHint = state.condyleEditing
+    ? '<div class="condyle-edit-hint">Щёлкните по нижней челюсти. ←/→ — вправо/влево, ↑/↓ — вверх/вниз, Ctrl+↑/↓ — вперёд/назад; Shift — 0,1 мм.</div>' : '';
+  return `<div class="card condyles"><div class="card-head">${icons.target}<h3>Мыщелки</h3>
+      <span class="badge ${c.ready ? 'ok' : 'warn'}">${c.icd_mm == null ? 'расстояние —' : `${fmt(c.icd_mm, 1)} мм`}</span></div>
+    <p class="muted small">Координаты: ${c.bite === 'scan' ? 'прикус сканов' : 'прикус КТ'}.</p>
+    ${rows}${editHint}<div class="condyle-checks">${checks}</div>${hints}${apply}</div>`;
+}
+
 function renderArticulation() {
   const a = state.articulation || {};
   const scans = a.scans || {};
@@ -910,12 +1042,13 @@ function renderArticulation() {
   const moves = a.movements || [];
   const analysis = state.articulationAnalysis;
   const guides = state.articulationGuides;
-  const mountMethod = state.ct && a.ct?.mandible ? 'ct' : 'average';
-  const mountTitle = state.ct && a.ct?.mandible ? 'По КТ' : 'Средний артикулятор';
   const disabled = ready ? '' : 'disabled';
+  const c = state.articulationCondyles;
+  const ctDisabled = ready && c?.ready ? '' : 'disabled';
   const mountButtons = '<div class="label">Гипсовка</div><div class="seg">'
-    + '<button data-art-mount="' + mountMethod + '" ' + disabled + '>' + mountTitle + '</button>'
-    + '<button data-art-mount="average" ' + disabled + '>Средний</button></div>';
+    + (state.ct ? `<button data-art-mount="ct" ${ctDisabled}>По точкам КТ</button>` : '')
+    + `<button data-art-mount="average" ${disabled}>Средний артикулятор</button></div>`
+    + (state.ct && !c?.ready ? `<p class="muted small">Монтаж по КТ недоступен: ${hide(condyleReason(c))}.</p>` : '');
   const movementCards = moves.length ? '<div class="label">Движения</div>' + moves.map((m) =>
     '<div class="card"><div class="card-head">' + icons.move + '<h3>' + hide(m.name) + '</h3>'
     + '<span class="muted small">' + m.frames + ' кадров</span></div>'
@@ -948,7 +1081,8 @@ function renderArticulation() {
       + `<button class="btn wide" data-art-analysis="1" ${moves.length ? '' : 'disabled'}>${icons.heat}Проверить контакты и траектории</button></div>`
       + movementCards + analysisText;
   }
-  return '<h2>Артикулятор</h2><p class="lead">Здесь выполняется предварительная гипсовка, проигрываются движения и проверяются контакты до экспорта в exocad.</p>' + body;
+  return '<h2>Артикулятор</h2><p class="lead">Здесь выполняется предварительная гипсовка, проигрываются движения и проверяются контакты до экспорта в exocad.</p>'
+    + renderCondylePanel(ready) + body;
 }
 
 const RENDER = { ct: renderCt, scans: renderScans, articulation: renderArticulation, export: renderExport };
@@ -973,6 +1107,7 @@ function render() {
       : 'Инкогнито: скрыть имена пациентов и пути — для показа программы. Системные окна выбора файлов и проводник показывают их как есть'}">${icons.incognito}${state.incognito ? 'Инкогнито' : ''}</button>
     <button class="btn ghost sm help-btn" data-a="help" title="Мышь и клавиши (?)">?</button>`;
   $('#empty3d').innerHTML = ct || state.scans.length ? '' : '<span>Откройте КТ или добавьте сканы</span>';
+  $('#view3d').classList.toggle('picking', state.step === 'articulation' && !!state.condyleEditing);
   const legend = $('#legend');
   legend.hidden = !(heatOn() && state.scans.some((s) => s.registered));
   legend.innerHTML = '<span><i style="background:#28aa46"></i>≤ 0.1 мм</span><span><i style="background:#e6be1e"></i>≤ 0.2 мм</span>' +
@@ -986,10 +1121,19 @@ function render() {
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount]');
   if (!t || t.disabled) return;
   const d = t.dataset;
-  if (d.step) { state.step = d.step; slices.forEach((v) => v.draw()); return d.step === 'articulation' ? prepareArticulation() : render(); }
+  if (d.step) {
+    state.step = d.step;
+    state.condyleEditing = null;
+    slices.forEach((v) => v.draw());
+    return d.step === 'articulation' ? prepareArticulation() : render();
+  }
+  if (d.condyleConfirm) return updateCondyles('/confirm', { side: d.condyleConfirm });
+  if (d.condyleReset) return updateCondyles('/reset', { side: d.condyleReset });
+  if (d.condyleEdit) return editCondyle(d.condyleEdit);
+  if ('condyleRemount' in d) return remountCondyles();
   if (d.artMount) return articulationAction('mount', { method: d.artMount }, 'Гипсовка моделей');
   if (d.artGenerate) return articulationAction('generate', { travel: 6.0 }, 'Расчёт движений');
   if (d.artAnalysis) return busy('Анализ контактов и движений', async (progress) => {
@@ -1056,6 +1200,15 @@ document.addEventListener('keydown', (e) => {
     return stepHistory((key === 'z' || key === 'я') && !e.shiftKey);
   }
   if (e.key === 'Escape' && $('.modal-back.help')) return $('.modal-back.help').remove();
+  if (e.key === 'Escape' && state.condyleEditing) {
+    state.condyleEditing = null;
+    return render();
+  }
+  if (state.step === 'articulation' && state.condyleEditing
+      && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+    e.preventDefault();
+    return nudgeCondyle(e.key, e.shiftKey, e.ctrlKey || e.metaKey);
+  }
   if (e.key === '?' || (e.key === ',' && e.shiftKey && e.code === 'Slash')) return helpDialog();
   if (e.key === 'Escape' && $('.main').classList.contains('one-max')) return app.toggleMax($('.view.max'));
   SliceView.onKey(e); // стрелки — точная поправка скана в срезе под мышью

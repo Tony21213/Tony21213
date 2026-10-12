@@ -5,7 +5,9 @@
 
 import json
 import time
+import urllib.error
 import urllib.request
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -195,11 +197,12 @@ def test_server_routes():
 
     srv = serve(Fake())
     base = f"http://127.0.0.1:{srv.server_address[1]}/api/articulation/condyles"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def call(path="", body=None):
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(base + path, data=data, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req) as r:
+        with opener.open(req) as r:
             return json.loads(r.read())
 
     try:
@@ -229,3 +232,116 @@ def test_asymmetry_is_flagged():
     pts = cond.resolve({"Co_R": CO_R + (0, 0, 7.0), "Co_L": CO_L}, set(), {})
     found = {c.id: c for c in cond.checks(pts, None, frame)}
     assert found["asymmetry"].level == "warn" and found["asymmetry"].value == pytest.approx(7.0, abs=0.1)
+
+
+# --- интеграция ведомого -------------------------------------------------------------------------------
+
+def _http(server):
+    root = f"http://127.0.0.1:{server.server_address[1]}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def call(path, body=None):
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(root + path, data=data, headers={"Content-Type": "application/json"})
+        try:
+            with opener.open(request) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    return call
+
+
+def test_http_set_mount_applied_in_scan_bite(session):
+    up_v, up_f = phantom.make_scan("upper", resolution=0.6)
+    lo_v, lo_f = phantom.make_scan("lower", resolution=0.6)
+    session.jaw.set_scans(Mesh(up_v, up_f, "верх"), Mesh(lo_v, lo_f, "низ"))
+    session._articulation_ready = True
+    session.bite_motion = bite_motion()
+    server = serve(session)
+    call = _http(server)
+    try:
+        for side, point in (("right", cond.to_view(CO_R, session.bite_motion)),
+                            ("left", cond.to_view(CO_L, session.bite_motion))):
+            status, state = call("/api/articulation/condyles",
+                                 {"side": side, "point": point.tolist(), "space": "view"})
+            assert status == 200 and not state["applied"]
+        status, started = call("/api/articulation/mount", {"method": "ct"})
+        assert status == 200 and "job" in started
+        limit = time.monotonic() + 15
+        while time.monotonic() < limit:
+            status, job = call(f"/api/jobs/{started['job']}")
+            if job["status"] != "running":
+                break
+            time.sleep(0.02)
+        assert status == 200 and job["status"] == "done", job.get("error")
+        status, state = call("/api/articulation/condyles")
+        assert status == 200 and state["applied"] and state["bite"] == "scan"
+        assert np.allclose(session.jaw.anatomy.points["condyle_right"], cond.to_view(CO_R, session.bite_motion))
+    finally:
+        server.shutdown()
+
+
+def test_condyle_api_errors_are_400(tmp_path, jaw_ct):
+    session = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    server = serve(session)
+    call = _http(server)
+    try:
+        status, answer = call("/api/articulation/condyles", {"side": "right", "point": CO_R.tolist()})
+        assert status == 400 and "КТ" in answer["error"]
+        session.case = jaw_ct
+        for body in ({"side": "middle", "point": CO_R.tolist()},
+                     {"side": "right", "point": CO_R.tolist(), "space": "screen"}):
+            status, answer = call("/api/articulation/condyles", body)
+            assert status == 400 and answer["error"]
+    finally:
+        server.shutdown()
+
+
+def test_old_case_without_landmark_sources(tmp_path, jaw_ct):
+    session = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    session.case = jaw_ct
+    session.landmarks = {"Co_R": CO_R, "Co_L": CO_L}
+    session.suggested = {"Co_L"}
+    path = session.save_case(str(tmp_path / "case"))["path"]
+    with np.load(path, allow_pickle=False) as archive:
+        arrays = {key: archive[key] for key in archive.files}
+    meta = json.loads(str(arrays["meta"]))
+    meta.pop("landmark_sources")
+    arrays["meta"] = np.array(json.dumps(meta, ensure_ascii=False))
+    with open(path, "wb") as stream:
+        np.savez_compressed(stream, **arrays)
+    restored = Session(memory_path=str(tmp_path / "memory2.jsonl"))
+    restored.open_case(path)
+    state = restored.articulation_condyles()
+    assert state["points"]["right"]["source"] == cond.SOURCE_USER
+    assert state["points"]["left"]["source"] == cond.SOURCE_MANDIBLE
+
+
+def test_ali_search_keeps_confirmed_condyle(monkeypatch, session, tmp_path):
+    from casedesigner import auto_landmarks as auto
+
+    session.vol = object()
+    session.landmarks = {"Co_R": CO_R.copy(), "Co_L": CO_L.copy()}
+    session.suggested = {"Co_L"}
+    session.landmark_sources = {"Co_R": cond.SOURCE_USER, "Co_L": cond.SOURCE_MANDIBLE}
+    monkeypatch.setattr(session, "_landmark_folder", lambda: str(tmp_path))
+
+    class Models:
+        def __init__(self, _folder):
+            pass
+
+        @staticmethod
+        def available():
+            return ["test"]
+
+    monkeypatch.setattr(auto, "Models", Models)
+    monkeypatch.setattr(auto, "find", lambda *_a, **_k: {
+        "Co_R": SimpleNamespace(point=CO_R + (0, 0, 20), note=""),
+        "Co_L": SimpleNamespace(point=CO_L + (0, 0, 2), note=""),
+    })
+    session.auto_landmarks(keys=["Co_R", "Co_L"])
+    assert np.allclose(session.landmarks["Co_R"], CO_R)
+    assert np.allclose(session.landmarks["Co_L"], CO_L + (0, 0, 2))
+    assert session.landmark_sources["Co_R"] == cond.SOURCE_USER
+    assert session.landmark_sources["Co_L"] == cond.SOURCE_ALI
