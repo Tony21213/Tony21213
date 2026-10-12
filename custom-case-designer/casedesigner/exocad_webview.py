@@ -32,7 +32,7 @@ import numpy as np
 from . import kinematics as kin
 from . import motion as mo
 from .arch_teeth import ArchLine, contacts_by_tooth
-from .guidance import condylar_path, eminence_profile, hanau_bennett
+from .guidance import CONDYLE_RADIUS_MM, condylar_path, eminence_profile, hanau_bennett
 from .landmarks import suggest_condyles
 from .register import apply, rigid
 
@@ -385,11 +385,13 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=No
 
     Горизонталь — плоскость монтажа plane (casedesigner/mount_planes.py; по умолчанию окклюзионная по сканам,
     иначе по ориентирам landmarks в мм КТ), резцовая точка — на нижних резцах.
-    Мыщелки — condyles ({"right", "left"}: шарнирные точки в координатах сканов, как lower_vertices; см.
+    Мыщелки — condyles ({"right", "left"}: верхушки Co в координатах сканов, как lower_vertices; см.
     casedesigner/condyles.py), иначе по кости нижней челюсти (mandible: объект с vertices), иначе средний
-    артикулятор. ССП — по суставному бугорку черепа (skull: vertices и faces) у точек eminence_condyles — в
-    координатах черепа, то есть в соотношении КТ (без них — у шарнирных точек), от плоскости монтажа; угол
-    Беннетта — по Ханау; чего нет — значения по умолчанию.
+    артикулятор. Шарнир (Anatomy.points condyle_*, вокруг них вращается челюсть, на них головки артикулятора) —
+    центры головок: на радиус головки (guidance.CONDYLE_RADIUS_MM) ниже Co по вертикали монтажа; путь мыщелка
+    по бугорку — путь этого же центра. ССП — по суставному бугорку черепа (skull: vertices и faces) у точек Co
+    eminence_condyles — в координатах черепа, то есть в соотношении КТ (без них — у condyles), от плоскости
+    монтажа; угол Беннетта — по Ханау; чего нет — значения по умолчанию.
     """
     from . import mount_planes as mp
 
@@ -404,13 +406,20 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=No
     else:
         co = suggest_condyles(mandible.vertices, up=up, left=-right, anterior=anterior) if mandible is not None else {}
         where = "КТ: мыщелки по нижней челюсти"
-    if len(co) == 2:
-        hinge = (co["Co_R"] + co["Co_L"]) / 2
-        R = mp.rotation(plane, up, anterior, landmarks, {"right": co["Co_R"], "left": co["Co_L"]})
+    tops = {"right": co["Co_R"], "left": co["Co_L"]} if len(co) == 2 else {}
+    if tops:
+        R = mp.rotation(plane, up, anterior, landmarks, tops)
+        # Шарнир — центры головок: на радиус ниже Co по вертикали монтажа. У оси-орбитальной плоскость сама
+        # проходит через шарнир, поэтому её строим по центрам (сходится за пару шагов).
+        for _ in range(3 if plane == "axis_orbital" else 0):
+            R = mp.rotation(plane, up, anterior, landmarks, {s: p - CONDYLE_RADIUS_MM * R[2] for s, p in tops.items()})
+        centres = {s: p - CONDYLE_RADIUS_MM * R[2] for s, p in tops.items()}
+        hinge = (centres["right"] + centres["left"]) / 2
         horizontal = "окклюзионная плоскость" if plane == mp.DEFAULT else mp.PLANES[plane]["name"].lower()
         anatomy = mo.Anatomy(rigid(R, -R @ hinge),
-                             {"incisal": incisal, "condyle_right": co["Co_R"], "condyle_left": co["Co_L"]},
-                             f"{where}; горизонталь — {horizontal}")
+                             {"incisal": incisal, "condyle_right": centres["right"], "condyle_left": centres["left"]},
+                             f"{where}; шарнир — центры головок ({CONDYLE_RADIUS_MM:g} мм ниже Co); "
+                             f"горизонталь — {horizontal}")
         if plane != mp.DEFAULT:
             tilt = mp.relative_angles(R, up, anterior)
             notes.append(f"плоскость монтажа к окклюзионной: передом {'вверх' if tilt['pitch_deg'] >= 0 else 'вниз'} "
@@ -422,9 +431,9 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=No
         if mandible is not None:
             notes.append("мыщелки на кости нижней челюсти не найдены — средний артикулятор")
     eminence = {}
-    if skull is not None and len(co) == 2:
+    if skull is not None and tops:
         for side in ("right", "left"):
-            at = anatomy.points[f"condyle_{side}"] if eminence_condyles is None else eminence_condyles[side]
+            at = tops[side] if eminence_condyles is None else eminence_condyles[side]  # профиль — от верхушки Co
             try:
                 info = condylar_path(*eminence_profile(skull.vertices, skull.faces, anatomy.frame, at))
             except ValueError as e:
