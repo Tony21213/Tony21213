@@ -446,7 +446,11 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
                                    ("TiltCondylarGuideRight", None, -20, 75), ("ImmediateSideshiftLeft", None, 0, 3),
                                    ("ImmediateSideshiftRight", None, 0, 3), ("HeightIncisalNeedleOffset", 0, -10, 10),
                                    ("RotationFrontplateYLeft", 0, 0, 60), ("RotationFrontplateYRight", 0, 0, 60),
-                                   ("TiltFrontplate", None, 0, 89)):
+                                   ("TiltFrontplate", None, 0, 89),
+                                   # Скрытый параметр exocad (группа CollapseRotationAxis, подписи нет): при любом
+                                   # ненулевом значении — и при NaN по умолчанию, если его нет в XML, — exocad рисует
+                                   # лишние копии дорожек и вставок в 70–170 мм над шарниром; головки он не двигает.
+                                   ("RotationAxisRight", 0, 0, 6), ("RotationAxisLeft", 0, 0, 6)):
         _param(root, kind, values[kind] if value is None else value, low, high)
     ET.indent(root, "\t")
     files = {"articulatorparameters.xml": b'<?xml version="1.0"?>\n' + ET.tostring(root, encoding="utf-8")}

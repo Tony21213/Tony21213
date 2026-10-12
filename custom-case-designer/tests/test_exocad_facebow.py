@@ -119,6 +119,9 @@ def test_own_articulator_folder(tmp_path):
             assert len(mesh.faces) > 0, name
     head = trimesh.load_mesh(str(tmp_path / "art" / "condylar_head.off"))
     assert np.abs(np.linalg.norm(head.vertices, axis=1) - 4.0).max() < 0.01  # головка — сфера в начале координат
+    for side in ("Right", "Left"):  # скрытый RotationAxis — явный 0: иначе exocad рисует копии дорожек над шарниром
+        assert root.findtext(f"RotationAxis{side}Param/Value") == "0"
+    assert root.findtext("CollapseRotationAxis") == "true"
 
 
 def _roof(mesh, y):
