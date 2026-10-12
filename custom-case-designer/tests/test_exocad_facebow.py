@@ -139,7 +139,8 @@ def test_condylar_insert_straight_and_curved():
     t = np.linspace(0, 12, 49)
     straight = np.c_[t * np.cos(np.radians(tilt)), -t * np.sin(np.radians(tilt))]
     flat = ef.condylar_insert(straight, tilt)
-    assert flat.is_watertight
+    # как у Harman OSH и KaVo PROTARevo 5B: открытая поверхность нормалями к головке (замкнутую exocad дублирует)
+    assert not flat.is_watertight and (flat.face_normals[:, 2] < -0.999).all()
     for y in (-4.0, 0.0, 6.0, 15.0):
         assert _roof(flat, y) == pytest.approx(ef.CONDYLAR_HEAD_MM, abs=1e-6)
     # путь круче вначале и положе дальше (выпуклый, как у бугорка): вставка — ниже прямой, потом выше
@@ -147,6 +148,7 @@ def test_condylar_insert_straight_and_curved():
     step = np.c_[np.cos(ang), -np.sin(ang)] * 0.25
     curved = np.vstack([[0, 0], np.cumsum(step, axis=0)])
     ins = ef.condylar_insert(curved, tilt)
+    assert (ins.face_normals[:, 2] < 0).all()
     a = np.radians(tilt)
     for y_fwd, z_up in curved[::8]:
         yl, zl = y_fwd * np.cos(a) - z_up * np.sin(a), y_fwd * np.sin(a) + z_up * np.cos(a)
