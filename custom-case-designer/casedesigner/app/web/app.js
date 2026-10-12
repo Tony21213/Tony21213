@@ -469,6 +469,7 @@ async function toggleBite() {
     await refreshScans(true);
     overlayVersion += 1;
     app.setCursor(app.cursor);
+    if (state.step === 'articulation') drawArticulationGuides();
   });
 }
 
@@ -506,18 +507,30 @@ function clearArticulationGuides() {
     viewer.remove(key);
 }
 
+function condyleSpace() {
+  if (state.condyleEditing && !state.articulationCondyles?.segmentation.mandible) return 'ct';
+  return state.biteView?.on ? 'view' : 'ct';
+}
+
+function endCondyleEdit() {
+  state.condyleEditing = null;
+  viewer.remove('ct_bone');
+  drawArticulationGuides();
+}
+
 function drawArticulationGuides() {
   clearArticulationGuides();
   const g = state.articulationGuides;
   const current = state.articulationCondyles?.points || {};
   const p = g?.points || {};
-  const right = current.right?.view || p.condyle_right;
-  const left = current.left?.view || p.condyle_left;
+  const space = condyleSpace();
+  const right = current.right?.[space] || (!state.articulationCondyles?.available ? p.condyle_right : null);
+  const left = current.left?.[space] || (!state.articulationCondyles?.available ? p.condyle_left : null);
   if (right) viewer.setMarker('art:condyle_right', right, '#ff6b6b');
   if (left) viewer.setMarker('art:condyle_left', left, '#6ba8ff');
   if (p.incisal) viewer.setMarker('art:incisal', p.incisal, '#f5d76e');
   if (right && left) viewer.setPath('art:hinge', [right, left], '#ffffff');
-  if (!g?.available || (state.articulationCondyles?.available && !state.articulationCondyles.applied)) return;
+  if (space === 'ct' || !g?.available || (state.articulationCondyles?.available && !state.articulationCondyles.applied)) return;
   const colors = { condyle_right: '#ff6b6b', condyle_left: '#6ba8ff', incisal: '#f5d76e' };
   for (const path of g.paths || []) for (const key of Object.keys(colors))
     viewer.setPath(`art:path:${path.id}:${key}`, path[key], colors[key]);
@@ -535,13 +548,23 @@ async function updateCondyles(path = '', body = {}) {
   }
 }
 
-function editCondyle(side) {
-  state.condyleEditing = state.condyleEditing === side ? null : side;
-  if (state.condyleEditing) {
-    const target = viewer.objects.has('mandible') ? 'mandible' : 'ct_teeth';
+async function editCondyle(side) {
+  if (state.condyleEditing === side) {
+    endCondyleEdit();
+    return render();
+  }
+  try {
+    const target = state.articulationCondyles?.segmentation.mandible ? 'mandible' : 'ct_bone';
+    if (target === 'ct_bone' && !viewer.objects.has(target)) {
+      const surface = await mesh('ct/surface?part=bone');
+      if (state.step !== 'articulation') return;
+      viewer.setMesh(target, surface, { color: '#cfc5b5' });
+    }
     viewer.setVisible(target, true);
     if (target === 'mandible') state.visible.add('mandible');
-  }
+    state.condyleEditing = side;
+    drawArticulationGuides();
+  } catch (e) { toast(e.message); }
   render();
 }
 
@@ -550,17 +573,19 @@ async function handleCondylePick(e) {
   const started = viewPointerDown;
   viewPointerDown = null;
   if (!side || e.button !== 0 || state.step !== 'articulation' || !started) return;
+  if (e.target !== viewer.renderer.domElement) return;
   if (Math.hypot(e.clientX - started[0], e.clientY - started[1]) > 4) return;
-  const target = viewer.objects.has('mandible') ? 'mandible' : 'ct_teeth';
+  const target = state.articulationCondyles?.segmentation.mandible ? 'mandible' : 'ct_bone';
   const point = viewer.pick(target, e.clientX, e.clientY);
   if (!point) return toast(target === 'mandible' ? 'Щёлкните по кости нижней челюсти' : 'Щёлкните по поверхности КТ');
-  await updateCondyles('', { side, point, space: 'view' });
+  await updateCondyles('', { side, point, space: condyleSpace() });
 }
 
 async function nudgeCondyle(key, precise = false, depth = false) {
   const side = state.condyleEditing, item = state.articulationCondyles?.points?.[side];
-  if (!side || !item?.view) return;
-  const axes = state.articulationGuides?.axes || {
+  const space = condyleSpace();
+  if (!side || !item?.[space]) return;
+  const axes = state.articulationGuides?.[space === 'ct' ? 'ct_axes' : 'axes'] || {
     right: [-1, 0, 0], forward: [0, -1, 0], up: [0, 0, 1],
   };
   let axis, sign;
@@ -571,8 +596,8 @@ async function nudgeCondyle(key, precise = false, depth = false) {
     sign = key === 'ArrowUp' ? 1 : -1;
   }
   const amount = precise ? 0.1 : 0.5;
-  const point = item.view.map((v, i) => v + sign * amount * axis[i]);
-  await updateCondyles('', { side, point, space: 'view' });
+  const point = item[space].map((v, i) => v + sign * amount * axis[i]);
+  await updateCondyles('', { side, point, space });
 }
 
 async function remountCondyles() {
@@ -1018,7 +1043,7 @@ function renderCondylePanel(scansReady) {
   const checks = (c.checks || []).map((x) => `<div class="condyle-check ${x.level}"><i></i><span>${hide(x.text)}</span></div>`).join('');
   const missing = Object.entries(c.points || {}).filter(([, p]) => !p.ct).map(([s]) => CONDYLE_SIDES[s].title.toLowerCase());
   const hints = [
-    !c.segmentation.mandible ? 'Нижняя челюсть не сегментирована: поставьте точки вручную по 3D-поверхности КТ.' : '',
+    !c.segmentation.mandible ? 'Нижняя челюсть не сегментирована: «Поправить» покажет кость по плотности КТ. Выберите верхушку головки мыщелка; точки и кость показаны как на КТ.' : '',
     missing.length === 1 ? `Не найдена ${missing[0]} точка — поставьте её вручную.` : '',
     !c.segmentation.skull ? 'Череп не сегментирован: наклон суставных путей останется по умолчанию.' : '',
   ].filter(Boolean).map((x) => `<div class="condyle-hint">${icons.warn}<span>${hide(x)}</span></div>`).join('');
@@ -1027,10 +1052,10 @@ function renderCondylePanel(scansReady) {
     : `<button class="btn primary wide" data-condyle-remount="1" ${c.ready && scansReady ? '' : 'disabled'}>${icons.move}Перемонтировать</button>
        <p class="muted small">${hide(c.ready ? (scansReady ? 'После перемонтажа движения будут рассчитаны заново.' : 'Сначала поставьте оба скана.') : condyleReason(c))}</p>`;
   const editHint = state.condyleEditing
-    ? '<div class="condyle-edit-hint">Щёлкните по нижней челюсти. ←/→ — вправо/влево, ↑/↓ — вверх/вниз, Ctrl+↑/↓ — вперёд/назад; Shift — 0,1 мм.</div>' : '';
+    ? `<div class="condyle-edit-hint">Щёлкните по ${c.segmentation.mandible ? 'нижней челюсти' : 'головке мыщелка на кости КТ'}. ←/→ — вправо/влево, ↑/↓ — вверх/вниз, Ctrl+↑/↓ — вперёд/назад по осям монтажа; шаг 0,5 мм, с Shift — 0,1 мм.</div>` : '';
   return `<div class="card condyles"><div class="card-head">${icons.target}<h3>Мыщелки</h3>
       <span class="badge ${c.ready ? 'ok' : 'warn'}">${c.icd_mm == null ? 'расстояние —' : `${fmt(c.icd_mm, 1)} мм`}</span></div>
-    <p class="muted small">Координаты: ${c.bite === 'scan' ? 'прикус сканов' : 'прикус КТ'}.</p>
+    <p class="muted small">${condyleSpace() === 'ct' ? 'Точки показаны в координатах КТ.' : 'Модели показаны в прикусе сканов — точки ставятся в нём'}</p>
     ${rows}${editHint}<div class="condyle-checks">${checks}</div>${hints}${apply}</div>`;
 }
 
@@ -1126,7 +1151,7 @@ document.addEventListener('click', async (e) => {
   const d = t.dataset;
   if (d.step) {
     state.step = d.step;
-    state.condyleEditing = null;
+    endCondyleEdit();
     slices.forEach((v) => v.draw());
     return d.step === 'articulation' ? prepareArticulation() : render();
   }
@@ -1201,7 +1226,7 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.key === 'Escape' && $('.modal-back.help')) return $('.modal-back.help').remove();
   if (e.key === 'Escape' && state.condyleEditing) {
-    state.condyleEditing = null;
+    endCondyleEdit();
     return render();
   }
   if (state.step === 'articulation' && state.condyleEditing

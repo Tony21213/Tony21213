@@ -298,6 +298,44 @@ def test_condyle_api_errors_are_400(tmp_path, jaw_ct):
         server.shutdown()
 
 
+def test_ct_bone_surface_route_and_default(session):
+    from casedesigner.app.session import mesh_bytes
+
+    server = serve(session)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    root = f"http://127.0.0.1:{server.server_address[1]}/api/ct/surface"
+    try:
+        surfaces = session.case.surfaces(step=2)
+        for query, name in (("", "ct_teeth"), ("?part=bone", "ct_bone")):
+            with opener.open(root + query) as response:
+                mesh = surfaces[name]
+                assert len(mesh.vertices) > 0
+                assert response.read() == mesh_bytes(mesh.vertices, mesh.faces)
+        with pytest.raises(urllib.error.HTTPError) as error:
+            opener.open(root + "?part=unknown")
+        assert error.value.code == 400
+    finally:
+        server.shutdown()
+
+
+def test_http_ct_point_stays_on_ct_with_scan_bite(session):
+    session.bite_motion = bite_motion()
+    server = serve(session)
+    try:
+        point = CO_R + (0, 0, -2)
+        status, state = _http(server)("/api/articulation/condyles",
+                                     {"side": "right", "point": point.tolist(), "space": "ct"})
+        assert status == 200 and not state["segmentation"]["mandible"]
+        assert np.allclose(session.landmarks["Co_R"], point)
+        assert np.allclose(state["points"]["right"]["ct"], point)
+        assert np.allclose(state["points"]["right"]["view"], cond.to_view(point, session.bite_motion), atol=1e-3)
+        guides = session.articulation_guides()
+        for key, axis in guides["axes"].items():
+            assert np.allclose(session.bite_motion[:3, :3] @ guides["ct_axes"][key], axis, atol=1e-6)
+    finally:
+        server.shutdown()
+
+
 def test_old_case_without_landmark_sources(tmp_path, jaw_ct):
     session = Session(memory_path=str(tmp_path / "memory.jsonl"))
     session.case = jaw_ct

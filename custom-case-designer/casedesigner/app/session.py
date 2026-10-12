@@ -988,8 +988,13 @@ class Session:
     def articulation_guides(self) -> dict:
         """Точки и линии, объясняющие в 3D основу построения динамики."""
         fallback_axes = {"right": [-1.0, 0.0, 0.0], "forward": [0.0, -1.0, 0.0], "up": [0.0, 0.0, 1.0]}
+        def ct_axes(axes):
+            rotation = np.eye(3) if self.bite_motion is None else np.linalg.inv(self.bite_motion)[:3, :3]
+            return {key: (rotation @ value).round(6).tolist() for key, value in axes.items()}
+
         if not self._articulation_ready or self.jaw.anatomy is None:
-            return {"available": False, "points": {}, "paths": [], "axes": fallback_axes}
+            return {"available": False, "points": {}, "paths": [], "axes": fallback_axes,
+                    "ct_axes": ct_axes(fallback_axes)}
         a = self.jaw.anatomy
         axes = {name: np.asarray(a.frame, float)[i, :3].round(6).tolist()
                 for i, name in enumerate(("right", "forward", "up"))}
@@ -1004,7 +1009,7 @@ class Session:
                           "condyle_left": apply(T, a.points["condyle_left"]).round(3).tolist(),
                           "incisal": apply(T, a.points["incisal"]).round(3).tolist()})
         return {"available": True, "points": points, "hinge": [points.get("condyle_right"), points.get("condyle_left")],
-                "paths": paths, "axes": axes,
+                "paths": paths, "axes": axes, "ct_axes": ct_axes(axes),
                 "basis": "мыщелки пациента + резцовое ведение по сканам челюстей"}
 
     def articulation_motion(self, mid: str) -> dict:
@@ -1018,10 +1023,12 @@ class Session:
         return {"id": mid, "name": rec.name, "frames": rec.transforms[ids].round(6).tolist(),
                 "duration_s": round(rec.duration, 2) if rec.timed else None}
 
-    def ct_surface(self) -> bytes:
-        """Зубы по плотности — для 3D до сегментации."""
+    def ct_surface(self, part: str = "teeth") -> bytes:
+        """Поверхность зубов или кости по плотности, всегда в координатах КТ."""
         self._require_ct()
-        mesh = self.case.surfaces(step=2)["ct_teeth"]
+        if part not in ("teeth", "bone"):
+            raise ValueError("неизвестная поверхность КТ")
+        mesh = self.case.surfaces(step=2)["ct_" + part]
         return mesh_bytes(mesh.vertices, mesh.faces)
 
     # --- ориентиры и плоскости ----------------------------------------------

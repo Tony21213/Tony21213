@@ -150,7 +150,7 @@ def make_handler(session: Session, jobs: Jobs):
                     return self.binary(s.slice_raw(q["axis"], float(q["pos"]), level, width, region, size))
                 return self.send(s.slice_png(q["axis"], float(q["pos"]), level, width, region, size), "image/png")
             if p == ["ct", "surface"]:
-                return self.binary(s.ct_surface())
+                return self.binary(s.ct_surface(q.get("part", "teeth")))
             if p == ["overlays"] and method == "POST":
                 b = self.body()
                 return self.json(s.overlays(b["axis"], float(b["pos"]), b.get("visible", []), bool(b.get("heat"))))
