@@ -856,9 +856,16 @@ class Session:
 
     def _condyle_checks(self, points) -> list:
         mandible = self.structures.get("mandible")
-        # TODO(ведомый): система монтажа для проверки асимметрии — в мм КТ (поворот jaw.anatomy.frame;
-        # в прикусе сканов — с поправкой на bite_motion).
-        return cond.checks(points, None if mandible is None else np.asarray(mandible.vertices), None)
+        if self.jaw.anatomy is None:
+            # DICOM LPS → оси монтажа: x вправо, y вперёд, z вверх.
+            frame = np.diag([-1.0, -1.0, 1.0, 1.0])
+        else:
+            # Anatomy.frame ждёт координаты окна; хранимые в КТ точки сначала едут
+            # вместе с нижней челюстью в прикус сканов.
+            motion = np.eye(4) if self.bite_motion is None else np.asarray(self.bite_motion, float)
+            frame = np.asarray(self.jaw.anatomy.frame, float) @ motion
+        return cond.checks(points,
+                           None if mandible is None else cond.cached_surface(mandible), frame)
 
     def _suggest_missing_condyles(self):
         """Недостающие точки — предложение по нижней челюсти (как «Предложить» в ориентирах); подтверждённые
@@ -892,6 +899,7 @@ class Session:
 
     def articulation_condyles(self) -> dict:
         """Состояние точек мыщелков для шага «Артикулятор» (condyles.state)."""
+        self._suggest_missing_condyles()
         points = self._condyle_points()
         found = self._condyle_checks(points)
         applied = (self.jaw.anatomy is not None and self._mounted_condyles is not None
@@ -923,6 +931,7 @@ class Session:
             self.landmarks[key] = p
             self.suggested.discard(key)
             self.landmark_sources[key] = cond.SOURCE_USER
+            self._mounted_condyles = None
         return self.articulation_condyles()
 
     def confirm_condyle(self, side: str = "both") -> dict:
@@ -933,6 +942,7 @@ class Session:
                 raise ValueError(f"нет точки мыщелка: {s}")
             with self.lock:
                 self.suggested.discard(key)
+                self._mounted_condyles = None
         return self.articulation_condyles()
 
     def reset_condyle(self, side: str = "both") -> dict:
@@ -944,6 +954,7 @@ class Session:
                 self.landmarks.pop(key, None)
                 self.suggested.discard(key)
                 self.landmark_sources.pop(key, None)
+                self._mounted_condyles = None
         self._suggest_missing_condyles()
         return self.articulation_condyles()
 
@@ -975,21 +986,34 @@ class Session:
 
     def articulation_guides(self) -> dict:
         """Точки и линии, объясняющие в 3D основу построения динамики."""
+        fallback_axes = {"right": [-1.0, 0.0, 0.0], "forward": [0.0, -1.0, 0.0], "up": [0.0, 0.0, 1.0]}
+        def ct_axes(axes):
+            rotation = np.eye(3) if self.bite_motion is None else np.linalg.inv(self.bite_motion)[:3, :3]
+            return {key: (rotation @ value).round(6).tolist() for key, value in axes.items()}
+
         if not self._articulation_ready or self.jaw.anatomy is None:
-            return {"available": False, "points": {}, "paths": []}
+            return {"available": False, "points": {}, "paths": [], "axes": fallback_axes,
+                    "ct_axes": ct_axes(fallback_axes)}
         a = self.jaw.anatomy
+        axes = {name: np.asarray(a.frame, float)[i, :3].round(6).tolist()
+                for i, name in enumerate(("right", "forward", "up"))}
         points = {k: np.asarray(v, float).round(3).tolist() for k, v in a.points.items()
                   if k in ("condyle_right", "condyle_left", "incisal")}
         paths = []
         for movement in self.jaw.movements.values():
-            T = movement.recording.transforms
+            T = np.asarray(movement.recording.transforms, float)  # кадры N×4×4
+
+            def track(point):  # путь точки по кадрам: N×3
+                return (np.einsum("nij,j->ni", T[:, :3, :3], np.asarray(point, float)) + T[:, :3, 3]).round(3).tolist()
+
             paths.append({"id": movement.id, "name": movement.recording.name,
                           "source": "запись движения" if movement.recorded else "виртуальный артикулятор",
-                          "condyle_right": apply(T, a.points["condyle_right"]).round(3).tolist(),
-                          "condyle_left": apply(T, a.points["condyle_left"]).round(3).tolist(),
-                          "incisal": apply(T, a.points["incisal"]).round(3).tolist()})
+                          "condyle_right": track(a.points["condyle_right"]),
+                          "condyle_left": track(a.points["condyle_left"]),
+                          "incisal": track(a.points["incisal"])})
         return {"available": True, "points": points, "hinge": [points.get("condyle_right"), points.get("condyle_left")],
-                "paths": paths, "basis": "мыщелки пациента + резцовое ведение по сканам челюстей"}
+                "paths": paths, "axes": axes, "ct_axes": ct_axes(axes),
+                "basis": "мыщелки пациента + резцовое ведение по сканам челюстей"}
 
     def articulation_motion(self, mid: str) -> dict:
         """Отдать кадры одного движения для визуального проигрывания."""
@@ -1002,10 +1026,12 @@ class Session:
         return {"id": mid, "name": rec.name, "frames": rec.transforms[ids].round(6).tolist(),
                 "duration_s": round(rec.duration, 2) if rec.timed else None}
 
-    def ct_surface(self) -> bytes:
-        """Зубы по плотности — для 3D до сегментации."""
+    def ct_surface(self, part: str = "teeth") -> bytes:
+        """Поверхность зубов или кости по плотности, всегда в координатах КТ."""
         self._require_ct()
-        mesh = self.case.surfaces(step=2)["ct_teeth"]
+        if part not in ("teeth", "bone"):
+            raise ValueError("неизвестная поверхность КТ")
+        mesh = self.case.surfaces(step=2)["ct_" + part]
         return mesh_bytes(mesh.vertices, mesh.faces)
 
     # --- ориентиры и плоскости ----------------------------------------------
