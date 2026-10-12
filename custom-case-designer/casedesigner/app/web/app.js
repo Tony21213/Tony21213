@@ -530,7 +530,8 @@ function drawArticulationGuides() {
   if (left) viewer.setMarker('art:condyle_left', left, '#6ba8ff');
   if (p.incisal) viewer.setMarker('art:incisal', p.incisal, '#f5d76e');
   if (right && left) viewer.setPath('art:hinge', [right, left], '#ffffff');
-  if (space === 'ct' || !g?.available || (state.articulationCondyles?.available && !state.articulationCondyles.applied)) return;
+  if ((space === 'ct' && state.articulationCondyles?.bite === 'scan') || !g?.available
+      || (state.articulationCondyles?.available && !state.articulationCondyles.applied)) return;
   const colors = { condyle_right: '#ff6b6b', condyle_left: '#6ba8ff', incisal: '#f5d76e' };
   for (const path of g.paths || []) for (const key of Object.keys(colors))
     viewer.setPath(`art:path:${path.id}:${key}`, path[key], colors[key]);

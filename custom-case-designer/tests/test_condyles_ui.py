@@ -23,7 +23,7 @@ const state = {step: 'articulation', biteView: {on: true}, articulationGuides: {
   points: {right: {ct: [-49,10,0], view: [-49,20,30]}}}};
 const viewer = {objects: new Map(), renderer: {domElement: {}}, markers: {},
   setMesh(k, m) {this.objects.set(k, m)}, setVisible() {},
-  setMarker(k, p) {this.markers[k] = p}, setPath() {},
+  setMarker(k, p) {this.markers[k] = p}, paths: [], setPath(k) {this.paths.push(k)},
   remove(k) {this.objects.delete(k)}, pick(k) {picked = k; return [-48,11,2]},
 };
 const requests = [];
@@ -58,6 +58,20 @@ const post = async (url, body) => {requests.push(body); return state.articulatio
   state.biteView.on = false;
   await nudgeCondyle('ArrowUp');
   assert.equal(requests.at(-1).space, 'ct');
+  state.articulationGuides.available = true;
+  state.articulationGuides.paths = [{id:'test', condyle_right:[], condyle_left:[], incisal:[]}];
+  state.articulationCondyles.applied = true;
+  state.articulationCondyles.bite = 'ct';
+  drawArticulationGuides();
+  assert(viewer.paths.includes('art:path:test:condyle_right'));
+  viewer.paths = [];
+  state.articulationCondyles.bite = 'scan';
+  drawArticulationGuides();
+  assert(!viewer.paths.includes('art:path:test:condyle_right'));
+  state.condyleEditing = null;
+  state.articulationCondyles = {available:false};
+  drawArticulationGuides();
+  assert(viewer.paths.includes('art:path:test:condyle_right'));
 })().catch(error => {console.error(error); process.exitCode = 1});
 """
     result = subprocess.run([node, "-"], input=script, capture_output=True, text=True, timeout=20)
