@@ -32,6 +32,13 @@ MOUNTINGS = {"average": "средний артикулятор", "ct": "по К�
              "aesthetic": "по эстетической плоскости"}
 
 
+def _plane_name(key: str) -> str:
+    """Название плоскости монтажа (эстетическая — свой монтаж, mount_aesthetic)."""
+    from .mount_planes import PLANES
+
+    return "эстетическая плоскость" if key == "aesthetic" else PLANES.get(key, {"name": key})["name"]
+
+
 @dataclass
 class Mesh:
     vertices: np.ndarray
@@ -57,6 +64,7 @@ class JawCase:
         self.designs: dict = {}  # номер зуба → Mesh (моделировки из сцены exocad: масштаб дуги)
         self.anatomy: mo.Anatomy | None = None
         self.mounting: str | None = None
+        self.plane = "occlusal"  # плоскость монтажа (casedesigner/mount_planes.py) — у монтажа по КТ
         self.settings = kin.Settings()
         self.lower_fix = np.eye(4)  # посадка прикуса: «нижний скан → посаженный»
         self.movements: dict[str, Movement] = {}
@@ -68,12 +76,13 @@ class JawCase:
 
     # --- отмена -------------------------------------------------------------
     def _snapshot(self) -> dict:
-        return {"anatomy": copy.deepcopy(self.anatomy), "mounting": self.mounting,
+        return {"anatomy": copy.deepcopy(self.anatomy), "mounting": self.mounting, "plane": self.plane,
                 "settings": self.settings.copy(), "lower_fix": self.lower_fix.copy(),
                 "movements": dict(self.movements), "notes": list(self.notes)}
 
     def _restore(self, snap: dict):
         self.anatomy, self.mounting = snap["anatomy"], snap["mounting"]
+        self.plane = snap.get("plane", "occlusal")
         self.settings, self.lower_fix = snap["settings"], snap["lower_fix"]
         self.movements, self.notes = snap["movements"], snap["notes"]
         self._occlusion = None
@@ -152,7 +161,7 @@ class JawCase:
 
     # --- монтаж и суставы ---------------------------------------------------
     def mount(self, method: str = "auto", icd: float = mo.ICD_MM, condyles: dict | None = None,
-              ct_condyles: dict | None = None) -> dict:
+              ct_condyles: dict | None = None, plane: str = "occlusal", landmarks: dict | None = None) -> dict:
         """Смонтировать модели: average, ct (кость в кейсе), motion (записи движения) или auto.
 
         auto: по КТ, если есть кость нижней челюсти или заданы мыщелки; иначе по записи, если она
@@ -162,7 +171,11 @@ class JawCase:
         condyles — шарнирные точки {"right", "left"} в координатах кейса (как сканы: в прикусе сканов точки
         едут с нижней челюстью), ct_condyles — те же точки в соотношении КТ (для бугорка по черепу кейса).
         Без них мыщелки ищутся по кости нижней челюсти (casedesigner/condyles.py — приоритет точек).
+        plane — плоскость монтажа (casedesigner/mount_planes.py: occlusal, frankfurt, axis_orbital, camper, hip) по
+        ориентирам landmarks (мм КТ); выбирается только при монтаже по КТ, от неё же считаются углы ССП.
         """
+        from . import mount_planes as mp
+
         from . import exocad_webview as ew
 
         self._require(anatomy=False)
@@ -171,6 +184,10 @@ class JawCase:
                       else "motion" if self._recorded() else "average")
         if method not in ("average", "ct", "motion"):
             raise ValueError(f"монтаж: {', '.join(MOUNTINGS)}")
+        if plane not in mp.PLANES:
+            raise ValueError(f"нет такой плоскости монтажа: {plane}")
+        if plane != mp.DEFAULT and method != "ct":
+            raise ValueError("плоскость монтажа выбирается только для монтажа по КТ")
         self._edit(f"монтаж: {MOUNTINGS[method]}")
         notes = []
         if method == "motion":
@@ -187,7 +204,8 @@ class JawCase:
             anatomy, settings, eminence, notes = ew.mount(self.upper.vertices, self.lower_vertices,
                                                           self.mandible if ct else None, self.skull if ct else None,
                                                           condyles=condyles if ct else None,
-                                                          eminence_condyles=ct_condyles if ct else None)
+                                                          eminence_condyles=ct_condyles if ct else None,
+                                                          plane=plane, landmarks=landmarks)
             self.anatomy = anatomy
             base = self.settings.copy()
             for key, value in vars(settings).items():
@@ -198,6 +216,7 @@ class JawCase:
                 base.frame = None  # углы — от горизонтали нового монтажа; углы записи — от своей
             self.settings = base
         self.mounting = method
+        self.plane = plane
         self.notes = notes
         return self.state()
 
@@ -212,6 +231,7 @@ class JawCase:
                                   f"эстетическая плоскость (крен {aesthetic.roll_deg:+.1f}°); "
                                   f"суставы — от прежней горизонтали", self.anatomy.hinge_rms_mm)
         self.mounting = "aesthetic"
+        self.plane = "aesthetic"
         return self.state()
 
     def set_settings(self, **values) -> dict:
@@ -360,6 +380,7 @@ class JawCase:
             "designs": sorted(self.designs),
             "mounting": None if a is None else {
                 "method": self.mounting, "name": MOUNTINGS.get(self.mounting, self.mounting), "source": a.source,
+                "plane": {"key": self.plane, "name": _plane_name(self.plane)},
                 "points": {k: [round(float(c), 2) for c in apply(a.frame, p[None])[0]] for k, p in a.points.items()},
                 "intercondylar_mm": round(float(np.linalg.norm(a.points["condyle_right"] - a.points["condyle_left"])),
                                           1)},
@@ -376,7 +397,8 @@ class JawCase:
 
     def save(self, path: str):
         """Кейс в один файл: сетки, монтаж, настройки, посадка прикуса, движения (без истории отмен)."""
-        arrays, meta = {}, {"version": 1, "mounting": self.mounting, "notes": self.notes, "meshes": {},
+        arrays, meta = {}, {"version": 1, "mounting": self.mounting, "plane": self.plane, "notes": self.notes,
+                            "meshes": {},
                             "designs": sorted(self.designs), "movements": []}
         for key, m in (("upper", self.upper), ("lower", self.lower), ("mandible", self.mandible),
                        ("skull", self.skull), *((f"design_{t}", m) for t, m in self.designs.items())):
@@ -417,6 +439,7 @@ class JawCase:
                 jc.anatomy = mo.Anatomy(z["anatomy_frame"], {k: np.array(v) for k, v in a["points"].items()},
                                         a["source"], a["hinge_rms_mm"])
             jc.mounting, jc.notes = meta["mounting"], meta["notes"]
+            jc.plane = meta.get("plane", "occlusal")  # кейсы до выбора плоскости — окклюзионная
             sv = dict(meta["settings"])
             jc.settings = kin.Settings(**{k: v for k, v in sv.items() if k != "sources"}, sources=sv["sources"],
                                        frame=z["settings_frame"] if "settings_frame" in z else None)
