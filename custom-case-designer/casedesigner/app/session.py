@@ -1001,12 +1001,16 @@ class Session:
                   if k in ("condyle_right", "condyle_left", "incisal")}
         paths = []
         for movement in self.jaw.movements.values():
-            T = movement.recording.transforms
+            T = np.asarray(movement.recording.transforms, float)  # кадры N×4×4
+
+            def track(point):  # путь точки по кадрам: N×3
+                return (np.einsum("nij,j->ni", T[:, :3, :3], np.asarray(point, float)) + T[:, :3, 3]).round(3).tolist()
+
             paths.append({"id": movement.id, "name": movement.recording.name,
                           "source": "запись движения" if movement.recorded else "виртуальный артикулятор",
-                          "condyle_right": apply(T, a.points["condyle_right"]).round(3).tolist(),
-                          "condyle_left": apply(T, a.points["condyle_left"]).round(3).tolist(),
-                          "incisal": apply(T, a.points["incisal"]).round(3).tolist()})
+                          "condyle_right": track(a.points["condyle_right"]),
+                          "condyle_left": track(a.points["condyle_left"]),
+                          "incisal": track(a.points["incisal"])})
         return {"available": True, "points": points, "hinge": [points.get("condyle_right"), points.get("condyle_left")],
                 "paths": paths, "axes": axes, "ct_axes": ct_axes(axes),
                 "basis": "мыщелки пациента + резцовое ведение по сканам челюстей"}

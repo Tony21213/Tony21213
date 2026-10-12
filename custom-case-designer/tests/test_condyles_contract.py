@@ -365,6 +365,24 @@ def test_http_ct_point_stays_on_ct_with_scan_bite(session):
         server.shutdown()
 
 
+def test_guides_paths_with_built_movements(session):
+    """Линии основы динамики при построенных движениях: путь каждой точки — по всем кадрам (N×3)."""
+    from casedesigner import motion as mo
+
+    session.jaw.anatomy = mo.Anatomy(np.eye(4), {"condyle_right": CO_R, "condyle_left": CO_L,
+                                                 "incisal": np.array([0.0, -50.0, -30.0])}, "тест")
+    session._articulation_ready = True
+    frames = np.stack([np.eye(4), rigid(np.eye(3), [0.0, 1.0, 0.0]), rigid(np.eye(3), [0.0, 2.0, -1.0])])
+    session.jaw.movements = {"m": SimpleNamespace(id="m", recorded=False,
+                                                  recording=SimpleNamespace(name="Протрузия", transforms=frames))}
+    guides = session.articulation_guides()
+    assert guides["available"] and len(guides["paths"]) == 1
+    path = guides["paths"][0]
+    assert np.allclose(path["condyle_right"], [CO_R, CO_R + (0, 1, 0), CO_R + (0, 2, -1)])
+    assert np.asarray(path["incisal"]).shape == (3, 3)
+    json.dumps(guides)
+
+
 def test_old_case_without_landmark_sources(tmp_path, jaw_ct):
     session = Session(memory_path=str(tmp_path / "memory.jsonl"))
     session.case = jaw_ct
