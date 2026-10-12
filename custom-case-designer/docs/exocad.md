@@ -213,9 +213,8 @@ exocad по умолчанию показывает модели снизу, п�
 ~2.5 мм за 12 мм пути), у SAM 2P — закрытые `*_contour.sdfa`. В XML —
 `ArticulatorMainParts/CondylarInserts` (`ArticulatorMesh`: `Id`, `Filename`,
 `ColorDiffuse`, `Side`) и выбор по умолчанию `CurrentCondylarInsertColorLeft/Right`.
-Двоичный OFF exocad: `OFF BINARY
-`, int32 числа вершин/граней/рёбер, float32
-вершины, на грань — int16 число вершин и int32 индексы.
+Двоичный OFF exocad: `OFF BINARY\n`, int32 числа вершин/граней/рёбер,
+float32 вершины, на грань — int16 число вершин и int32 индексы.
 
 Наш артикулятор (`write_articulator(..., inserts=…)`, `export(..., condylar_paths=…)`)
 пишет индивидуальные вставки: путь центра мыщелка по КТ (`guidance.condylar_path`,
