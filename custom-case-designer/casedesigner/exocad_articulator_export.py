@@ -87,17 +87,24 @@ def articulator_values(anatomy: mo.Anatomy, settings: kin.Settings) -> dict:
     return out
 
 
-def antagonist_type(exocad_app: str | None = None) -> tuple[str, str]:
-    """Тип антагониста для копии проекта: наш, если он добавлен в конфигурацию exocad
-    (tools/exocad_articulator_type.py), иначе SAM 2P (перевод из регистратора тот же) — и пояснение."""
+def antagonist_type(exocad_app: str | None = None) -> tuple[str, str, str]:
+    """Тип антагониста для копии проекта, пояснение и имя папки артикулятора.
+
+    Наш тип — если он добавлен в конфигурацию exocad (tools/exocad_articulator_type.py); папка — та, на которую
+    он там указывает (после установки под прежним названием это «Custom Case Designer»): exocad выбирает её
+    сразу, папку выгрузки остаётся скопировать в library\\articulator под тем же именем. Иначе — SAM 2P (перевод
+    из регистратора тот же) и папка ef.ARTICULATOR_NAME, которую выбирают в диалоге вручную."""
     app = exocad_app or ef.find_exocad()
     mapping = os.path.join(app, "config", "articulatormappings.xml") if app else None
     if mapping and os.path.isfile(mapping):
         with open(mapping, encoding="utf-8", errors="replace") as f:
-            if CUSTOM_TYPE in f.read():
-                return CUSTOM_TYPE, f"тип антагониста — «{ef.ARTICULATOR_NAME}»"
+            text = f.read()
+        m = re.search(rf"<Type>{CUSTOM_TYPE}</Type>\s*<FolderName>([^<]+)</FolderName>", text)
+        if m or CUSTOM_TYPE in text:
+            folder = m.group(1).strip() if m else ef.ARTICULATOR_NAME
+            return CUSTOM_TYPE, f"тип антагониста — наш артикулятор (папка «{folder}»)", folder
     return SAM_TYPE, (f"тип антагониста — SAM 2P (наш тип в DentalDB не добавлен): в диалоге «Вирт. артикулятор» "
-                      f"выберите «{ef.ARTICULATOR_NAME}»")
+                      f"выберите «{ef.ARTICULATOR_NAME}»"), ef.ARTICULATOR_NAME
 
 
 def _project_file(project_dir: str) -> str:
@@ -148,7 +155,7 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
     if os.path.exists(folder) and os.listdir(folder):
         raise FileExistsError("папка для копии проекта уже существует и не пуста — выберите другую")
     os.makedirs(folder, exist_ok=True)
-    antagonist, type_note = antagonist_type(exocad_app)
+    antagonist, type_note, art_name = antagonist_type(exocad_app)
     notes = copy_project(project_dir, folder, stem, antagonist) + [type_note]
     written = {"проект": f"{stem}.dentalProject"}
 
@@ -185,14 +192,14 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
     icd = round(float(np.linalg.norm(fb.condyles["right"] - fb.condyles["left"])), 1)
     values = {**articulator_values(a, case.settings), "TiltFrontplate": 40}
     incisal_art = apply(to_art, np.asarray(a.points["incisal"], float)[None])[0]
-    art_dir = os.path.join(sub, "articulator", ef.ARTICULATOR_NAME)
+    art_dir = os.path.join(sub, "articulator", art_name)
     art_files = ef.write_articulator(art_dir, icd, values, inserts=case.condylar_paths,
                                      plane_height=round(float(incisal_art[2]), 2))
     if not case.condylar_paths:
         notes.append("путей мыщелков по КТ нет — вставки ССП в артикуляторе стандартные")
     if case.mounting not in ("ct", "aesthetic"):
         notes.append("монтаж не по мыщелкам КТ — шарнир артикулятора стоит не на мыщелках пациента")
-    summary = {"files": written, "antagonist": antagonist, "notes": notes,
+    summary = {"files": written, "antagonist": antagonist, "articulator_folder": art_name, "notes": notes,
                "icd_mm": icd, "articulator": values, "off_axis_mm": fb.off_axis_mm,
                "plane_height_mm": round(float(incisal_art[2]), 2),
                "condyles_articulator": {s: apply(to_art, fb.condyles[s][None])[0].round(3).tolist() for s in SIDES},

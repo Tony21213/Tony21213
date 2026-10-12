@@ -75,7 +75,8 @@ def project(tmp_path):
 def exocad_app(tmp_path, custom: bool):
     app = tmp_path / ("app-custom" if custom else "app")
     (app / "config").mkdir(parents=True)
-    body = "<Mappings><Antagonists>" + ("<Antagonist><Type>ArticulatorCustomCaseDesigner</Type></Antagonist>"
+    body = "<Mappings><Antagonists>" + ("<Antagonist><Type>ArticulatorCustomCaseDesigner</Type>"
+                                        "<FolderName>Custom Case Designer</FolderName></Antagonist>"
                                         if custom else "") + "</Antagonists></Mappings>"
     (app / "config" / "articulatormappings.xml").write_text(body, encoding="utf-8")
     return str(app)
@@ -108,7 +109,9 @@ def test_export_writes_exocad_project_copy_in_articulator_coordinates(case, proj
     mid = (np.array(res["condyles_articulator"]["right"]) + np.array(res["condyles_articulator"]["left"])) / 2
     assert np.abs(mid - [30, -80, 60]).max() < 1e-3
     # плоскость гипсовки — горизонталь на высоте резцовой точки; папка артикулятора с вставками
-    art = out / xa.SUBFOLDER / "articulator" / ef.ARTICULATOR_NAME
+    # папка — под тем именем, на которое наш тип указывает в конфигурации exocad (установка под прежним названием)
+    assert res["articulator_folder"] == "Custom Case Designer"
+    art = out / xa.SUBFOLDER / "articulator" / "Custom Case Designer"
     root = ET.parse(art / "articulatorparameters.xml").getroot()
     plane = float(root.findtext("ArticulationPlaneIncisalNeedle/z")) + float(root.findtext("ArticulatorPosition/z"))
     assert plane == pytest.approx(apply(to_art, case.anatomy.points["incisal"][None])[0, 2], abs=0.01)
@@ -138,6 +141,7 @@ def test_antagonist_falls_back_to_sam_2p(case, project, register, tmp_path):
     res = xa.export(case, str(project), str(tmp_path / "copy"), register=register,
                     exocad_app=exocad_app(tmp_path, custom=False))
     assert res["antagonist"] == xa.SAM_TYPE and any("SAM 2P" in n for n in res["notes"])
+    assert res["articulator_folder"] == ef.ARTICULATOR_NAME
     assert any("не по мыщелкам КТ" in n for n in res["notes"])  # средний артикулятор — с предупреждением
     text = (tmp_path / "copy" / "copy.dentalProject").read_text(encoding="utf-8-sig")
     assert "<AntagonistType>ArticulatorSendling</AntagonistType>" in text
