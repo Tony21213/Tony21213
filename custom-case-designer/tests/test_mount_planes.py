@@ -1,0 +1,141 @@
+"""Контракт выбора плоскости монтажа (casedesigner/mount_planes.py, docs/handoff.md).
+
+Система кейса в тестах — анатомическая: x вправо пациента, y вперёд, z вверх; окклюзионная плоскость z ≈ −30
+горизонтальна, мыщелки — в (±50, 0, 0). Тесты с xfail(strict=True) — задачи ведомого.
+"""
+
+import inspect
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from casedesigner import exocad_webview as ew
+from casedesigner import mount_planes as mp
+from casedesigner.jawcase import JawCase, Mesh
+from casedesigner.register import apply
+
+from test_exocad_webview import arch_ribbon
+from test_motion import temporal_bone
+
+CO = {"right": np.array([50.0, 0.0, 0.0]), "left": np.array([-50.0, 0.0, 0.0])}
+ALPHA = {"right": 40.0, "left": 30.0}  # бугорки: ССП к окклюзионной плоскости
+
+
+def scans():
+    upper = arch_ribbon(-29.9)
+    top, base = arch_ribbon(-30.0), arch_ribbon(-38.0)
+    lower = (np.vstack([top[0], base[0]]), np.vstack([top[1], base[1] + len(top[0])]))
+    return upper, lower
+
+
+def skull():
+    bones = [temporal_bone(ALPHA[s], x=(CO[s][0] - 8, CO[s][0] + 8)) for s in ("right", "left")]
+    return SimpleNamespace(vertices=np.vstack([b[0] for b in bones]),
+                           faces=np.vstack([bones[0][1], bones[1][1] + len(bones[0][0])]))
+
+
+def landmarks(pitch_deg=10.0):
+    """Ориентиры черепа: франкфуртская передом выше окклюзионной на pitch_deg; Кемпера ей параллельна."""
+    t = np.tan(np.radians(pitch_deg))
+
+    def fh(x, y):
+        return [x, y, 5.0 + (y + 10.0) * t]
+
+    return {"Po_R": fh(60, -10), "Po_L": fh(-60, -10), "Or_R": fh(33, 70), "Or_L": fh(-33, 70),
+            "Tr_R": [65, -5, -10.0], "Tr_L": [-65, -5, -10.0], "Al_R": [15, 95, -10.0], "Al_L": [-15, 95, -10.0],
+            "HN_R": [20, 30, -25.0], "HN_L": [-20, 30, -25.0], "IP": [0, 85, -25.0]}
+
+
+def mount(plane="occlusal", condyles=CO, lm=None, bone=True):
+    upper, lower = scans()
+    return ew.mount(upper[0], lower[0], None, skull() if bone else None, condyles=condyles,
+                    plane=plane, landmarks=landmarks() if lm is None else lm)
+
+
+def test_occlusal_is_default_and_unchanged():
+    upper, lower = scans()
+    a0, s0, _e, _n = ew.mount(upper[0], lower[0], None, skull(), condyles=CO)
+    a1, s1, _e, notes = mount("occlusal")
+    assert np.allclose(a0.frame, a1.frame) and not notes
+    assert np.allclose(a1.frame[2, :3], [0, 0, 1], atol=1e-3)  # горизонталь — окклюзионная
+    for side in ("right", "left"):
+        assert s1.get("sagittal", side) == pytest.approx(ALPHA[side], abs=0.7)
+
+
+def test_frankfurt_mount_and_angles_from_plane():
+    """Франкфуртская передом выше окклюзионной на 10°: путь мыщелка к ней круче на те же 10°."""
+    a, s, _e, notes = mount("frankfurt")
+    lm = landmarks()
+    po, orb = np.array(lm["Po_R"]), np.array(lm["Or_R"])
+    assert apply(a.frame, po[None])[0][2] == pytest.approx(apply(a.frame, orb[None])[0][2], abs=1e-6)  # горизонталь
+    assert apply(a.frame, ((CO["right"] + CO["left"]) / 2)[None])[0] == pytest.approx([0, 0, 0], abs=1e-9)
+    for side in ("right", "left"):
+        assert s.get("sagittal", side) == pytest.approx(ALPHA[side] + 10.0, abs=0.7)
+    assert any("передом вверх на 10.0°" in n for n in notes)
+    assert "франкфуртская" in a.source
+
+
+def test_axis_orbital_hinge_through_both_condyles():
+    """Мыщелки на разной высоте: в оси-орбитальной системе оба на оси x (шарнир артикулятора проходит через них)."""
+    tilted = {"right": np.array([50.0, 1.0, 3.0]), "left": np.array([-50.0, -1.0, -3.0])}
+    occl, *_ = mount("occlusal", condyles=tilted, bone=False)
+    axis, *_ = mount("axis_orbital", condyles=tilted, bone=False)
+    half = np.linalg.norm(tilted["right"] - tilted["left"]) / 2
+    assert apply(axis.frame, tilted["right"][None])[0] == pytest.approx([half, 0, 0], abs=1e-9)
+    assert apply(axis.frame, tilted["left"][None])[0] == pytest.approx([-half, 0, 0], abs=1e-9)
+    assert np.hypot(*apply(occl.frame, tilted["right"][None])[0][1:]) == pytest.approx(np.hypot(1, 3), abs=0.05)
+    # орбиталь — в горизонтальной плоскости шарнира
+    lm = landmarks()
+    orb = (np.array(lm["Or_R"]) + np.array(lm["Or_L"])) / 2
+    assert apply(axis.frame, orb[None])[0][2] == pytest.approx(0, abs=1e-6)
+
+
+def test_camper_and_hip_build_from_their_points():
+    camper, *_ = mount("camper", bone=False)
+    assert np.allclose(camper.frame[2, :3], [0, 0, 1], atol=1e-6)  # точки Кемпера лежат в z = −10
+    hip, *_ = mount("hip", bone=False)
+    assert hip.frame[2, :3] @ np.array([0, 0, 1.0]) > 0.99
+
+
+def test_missing_points_and_availability():
+    info = mp.available({"Or_L": [-33, 70, 0]}, CO)
+    assert set(info) == set(mp.PLANES) and info["occlusal"]["available"]
+    assert info["axis_orbital"]["available"]  # мыщелки — шарнир, орбиталь — хотя бы одна
+    assert not info["frankfurt"]["available"] and "Порион правый" in info["frankfurt"]["missing"]
+    assert not mp.available({}, CO)["axis_orbital"]["available"]
+    with pytest.raises(ValueError, match="Козелок"):
+        mount("camper", lm={}, bone=False)
+    with pytest.raises(ValueError, match="нет такой плоскости"):
+        mount("bonwill", bone=False)
+
+
+def test_jawcase_plane_in_state_undo_and_file(tmp_path):
+    upper, lower = scans()
+    jc = JawCase()
+    jc.set_scans(Mesh(*upper, "верх"), Mesh(*lower, "низ"))
+    jc.skull = Mesh(skull().vertices, skull().faces, "череп")
+    with pytest.raises(ValueError, match="только для монтажа по КТ"):
+        jc.mount("average", plane="frankfurt", landmarks=landmarks())
+    jc.mount("ct", condyles=CO, ct_condyles=CO)
+    state = jc.mount("ct", condyles=CO, ct_condyles=CO, plane="frankfurt", landmarks=landmarks())
+    assert state["mounting"]["plane"] == {"key": "frankfurt", "name": mp.PLANES["frankfurt"]["name"]}
+    assert jc.settings.get("sagittal", "right") == pytest.approx(ALPHA["right"] + 10.0, abs=0.7)
+    path = str(tmp_path / "case.npz")
+    jc.save(path)
+    assert JawCase.load(path).plane == "frankfurt"
+    jc.undo()
+    assert jc.plane == "occlusal" and jc.state()["mounting"]["plane"]["key"] == "occlusal"
+
+
+# --- задачи ведомого ------------------------------------------------------------------------------------
+
+@pytest.mark.xfail(strict=True, reason="ведомый: выбор плоскости в сессии, API и шаге «Артикулятор»")
+def test_session_and_api_contract():
+    from casedesigner.app import server
+    from casedesigner.app.session import Session
+
+    assert "plane" in inspect.signature(Session.articulation_mount).parameters
+    assert set(Session.articulation_planes(Session()).keys()) >= {"planes", "current"}
+    src = inspect.getsource(server)
+    assert '"planes"' in src

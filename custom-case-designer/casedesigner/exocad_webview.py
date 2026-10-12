@@ -379,16 +379,20 @@ def load(path: str) -> Scene:
 
 # --- динамика по сцене ---
 
-def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=None, eminence_condyles=None) -> tuple:
+def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=None, eminence_condyles=None,
+          plane: str = "occlusal", landmarks: dict | None = None) -> tuple:
     """Монтаж по сканам и, если есть, КТ: (Anatomy, Settings, сведения о бугорках, примечания).
 
-    Горизонталь — окклюзионная плоскость, резцовая точка — на нижних резцах.
+    Горизонталь — плоскость монтажа plane (casedesigner/mount_planes.py; по умолчанию окклюзионная по сканам,
+    иначе по ориентирам landmarks в мм КТ), резцовая точка — на нижних резцах.
     Мыщелки — condyles ({"right", "left"}: шарнирные точки в координатах сканов, как lower_vertices; см.
     casedesigner/condyles.py), иначе по кости нижней челюсти (mandible: объект с vertices), иначе средний
     артикулятор. ССП — по суставному бугорку черепа (skull: vertices и faces) у точек eminence_condyles — в
-    координатах черепа, то есть в соотношении КТ (без них — у шарнирных точек); угол Беннетта — по Ханау;
-    чего нет — значения по умолчанию.
+    координатах черепа, то есть в соотношении КТ (без них — у шарнирных точек), от плоскости монтажа; угол
+    Беннетта — по Ханау; чего нет — значения по умолчанию.
     """
+    from . import mount_planes as mp
+
     upper_vertices, lower_vertices = np.asarray(upper_vertices, float), np.asarray(lower_vertices, float)
     up, anterior = mo.arch_axes(lower_vertices, mo.occlusal_up(upper_vertices, lower_vertices))
     right = np.cross(anterior, up)
@@ -402,11 +406,18 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=No
         where = "КТ: мыщелки по нижней челюсти"
     if len(co) == 2:
         hinge = (co["Co_R"] + co["Co_L"]) / 2
-        R = np.array([right, anterior, up])
+        R = mp.rotation(plane, up, anterior, landmarks, {"right": co["Co_R"], "left": co["Co_L"]})
+        horizontal = "окклюзионная плоскость" if plane == mp.DEFAULT else mp.PLANES[plane]["name"].lower()
         anatomy = mo.Anatomy(rigid(R, -R @ hinge),
                              {"incisal": incisal, "condyle_right": co["Co_R"], "condyle_left": co["Co_L"]},
-                             f"{where}; горизонталь — окклюзионная плоскость")
+                             f"{where}; горизонталь — {horizontal}")
+        if plane != mp.DEFAULT:
+            tilt = mp.relative_angles(R, up, anterior)
+            notes.append(f"плоскость монтажа к окклюзионной: передом {'вверх' if tilt['pitch_deg'] >= 0 else 'вниз'} "
+                         f"на {abs(tilt['pitch_deg']):.1f}°, крен {tilt['roll_deg']:+.1f}°")
     else:
+        if plane != mp.DEFAULT:
+            raise ValueError("плоскость монтажа выбирается при монтаже по мыщелкам — их нет")
         anatomy = mo.anatomy_average(lower_vertices, upper_vertices, incisal=incisal)
         if mandible is not None:
             notes.append("мыщелки на кости нижней челюсти не найдены — средний артикулятор")
