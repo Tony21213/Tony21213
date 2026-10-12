@@ -53,8 +53,7 @@ PLANES = {
 }
 # Срединные точки для срединно-сагиттальной плоскости.
 MIDLINE = ("N", "S", "ANS", "PNS", "Ba", "IP")
-CORONOID_BAND_MM = 15.0  # мыщелок и венечный отросток — в верхних 15 мм ветви
-NOTCH_GAP_MM = 4.0  # между ними вырезка нижней челюсти: пустой промежуток вперёд-назад шире 4 мм
+CONDYLE_POSTERIOR_SHARE = 0.22  # головка — в задней части ветви; впереди остаётся венечный отросток
 
 
 def _point(landmarks: dict, keys) -> np.ndarray | None:
@@ -128,10 +127,11 @@ def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.
 
     up — вверх, left — к левой стороне пациента; по умолчанию оси DICOM (LPS).
     Для сцен, где оси повёрнуты как угодно (exocad), их задают по зубам.
-    Если задано anterior (вперёд), венечный отросток отбрасывается: в верхних
-    CORONOID_BAND_MM ветви (полоса сужается, пока не найдётся) точки делятся по вырезке нижней челюсти на два
-    скопления, и мыщелок — заднее. Без этого при наклонённой вертикали
-    (по окклюзионной плоскости) самой высокой бывает верхушка венечного отростка.
+    Если задано anterior (вперёд, к резцам), венечный отросток отбрасывается по
+    положению: верхушка ищется только в задней части каждой ветви. Это не зависит от глубины
+    вырезки: спроецированная сетка остаётся сплошной и по «пустому промежутку» отростки не
+    разделяются. Без ограничения при наклонённой окклюзионной вертикали самой высокой часто оказывается
+    верхушка венечного отростка.
     """
     v = np.asarray(mandible_vertices, float)
     up = np.asarray(up, float) / np.linalg.norm(up)
@@ -145,17 +145,16 @@ def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.
             continue
         part, hp = v[side], h[side]
         if anterior is not None:
-            # Полоса сужается, пока вырезка не разделит отростки: у неглубокой вырезки широкая полоса
-            # захватывает её дно, и пустого промежутка между отростками в ней нет.
-            for depth in np.arange(CORONOID_BAND_MM, 2.9, -1.0):
-                band = hp >= hp.max() - depth
-                a = part[band] @ np.asarray(anterior, float)
-                order = np.sort(a)
-                gaps = np.diff(order)
-                if len(gaps) and gaps.max() > NOTCH_GAP_MM:  # вырезка: заднее скопление — мыщелок
-                    cut = order[np.argmax(gaps)]
-                    part, hp = part[band][a <= cut], hp[band][a <= cut]
-                    break
+            forward = np.asarray(anterior, float).copy()
+            forward -= (forward @ up) * up
+            forward -= (forward @ left) * left
+            if np.linalg.norm(forward) > 1e-6:
+                forward /= np.linalg.norm(forward)
+                a = part @ forward
+                cut = a.min() + CONDYLE_POSTERIOR_SHARE * np.ptp(a)
+                posterior = a <= cut
+                if posterior.sum() >= 50:
+                    part, hp = part[posterior], hp[posterior]
         out[key] = part[hp >= hp.max() - 1.5].mean(axis=0)  # верхушка головки, 1.5 мм
     return out
 

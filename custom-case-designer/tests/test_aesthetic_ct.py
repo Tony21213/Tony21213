@@ -67,6 +67,36 @@ def test_condyle_is_the_posterior_process_even_below_the_coronoid():
         assert co[key][1] < -14 and co[key][2] > -1.6, key  # задний отросток, его верх
 
 
+def test_condyle_is_posterior_with_tilted_occlusal_vertical():
+    """В окклюзионной системе венечный отросток может быть на 20 мм «выше» мыщелка.
+
+    Вырезка при этом заполнена вершинами сетки, поэтому искать между отростками пустой
+    промежуток нельзя: головка определяется как задний верхний отросток.
+    """
+    rng = np.random.default_rng(7)
+    up = np.array([0.0, -0.5, np.sqrt(0.75)])
+    anterior = np.array([0.0, -up[2], up[1]])
+    left = np.array([-1.0, 0.0, 0.0])
+
+    def world(lat, forward, height):
+        return np.outer(lat, left) + np.outer(forward, anterior) + np.outer(height, up)
+
+    parts = []
+    for side in (-1, 1):
+        ramus = world(rng.normal(side * 50, 2, 5000), rng.uniform(-55, 55, 5000),
+                      rng.uniform(-45, 5, 5000))
+        condyle = world(rng.normal(side * 50, 3, 1000), rng.uniform(-53, -42, 1000),
+                        rng.uniform(5, 19, 1000))
+        coronoid = world(rng.normal(side * 50, 1.5, 1000), rng.uniform(-29, -18, 1000),
+                         rng.uniform(4, 37, 1000))
+        parts += [ramus, condyle, coronoid]
+
+    co = suggest_condyles(np.vstack(parts), up=up, left=left, anterior=anterior)
+    for key in ("Co_R", "Co_L"):
+        assert co[key] @ anterior < -41, key
+        assert co[key] @ up > 17, key
+
+
 def test_movements_in_facebow_file(tmp_path):
     marks = np.array([[0, 0, 0], [25, 0, 30.5], [-25, 0, 30.5]], float)
     reg = ef.Register(trimesh.creation.box((60, 10, 60)), marks)
