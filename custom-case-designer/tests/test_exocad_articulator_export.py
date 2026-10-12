@@ -179,6 +179,27 @@ def test_case_from_session_moves_lower_with_bite(case):
     assert np.allclose(got.lower.vertices, apply(bite, case.lower.vertices))
     assert np.allclose(got.bones["lower"].vertices, apply(bite, mandible.vertices))
     assert got.condylar_paths is None and got.mounting == "ct"  # нет черепа — вставки стандартные
+    assert got.movements == []  # движений не строили — и открывания нет
+
+
+def test_case_from_session_adds_opening_on_patient_axis(case):
+    """К построенным движениям — открывание вокруг оси через оба мыщелка, даже если она наклонена к горизонтали."""
+    s = kin.Settings()
+    jaw = SimpleNamespace(anatomy=case.anatomy, lower_fix=np.eye(4), settings=s, mounting="ct",
+                          movements={"p": SimpleNamespace(recording=kin.protrusion(case.anatomy, s), recorded=False)})
+    item = {"role": "jaw", "path": None, "reg": SimpleNamespace(transform=np.eye(4)),
+            "scan": SimpleNamespace(vertices=case.upper.vertices, faces=case.upper.faces)}
+    session = SimpleNamespace(jaw=jaw, bite_motion=None, scans={}, structures={}, landmarks={}, suggested=set(),
+                              landmark_sources={}, _jaw_items=lambda: (item, item))
+    names = [name for name, _T, _fps in xa.case_from_session(session).movements]
+    assert [ef.movement_type(n) for n in names] == ["opening", "protrusion"]
+    opening = xa.case_from_session(session).movements[0][1]
+    hinge = opening[len(opening) // 4]  # начало открывания — чистый поворот на шарнирной оси
+    assert np.degrees(np.arccos((np.trace(hinge[:3, :3]) - 1) / 2)) > 2
+    for p in CONDYLES.values():  # мыщелки фантома на разной высоте — оба стоят на месте
+        assert np.abs(apply(hinge, p[None])[0] - p).max() < 1e-6
+    jaw.movements["p"].recorded = True  # записанные движения не дополняем
+    assert len(xa.case_from_session(session).movements) == 1
 
 
 # --- задачи ведомого ------------------------------------------------------------------------------------

@@ -269,9 +269,14 @@ def case_from_session(session) -> ArticulatorCase:
             except ValueError:
                 paths = None
                 break
+    recs = [m.recording for m in jaw.movements.values()]
+    if recs and not any(m.recorded for m in jaw.movements.values()) \
+            and not any(ef.movement_type(r.name) == "opening" for r in recs):
+        # Открывание — поворот вокруг настоящей оси мыщелков: у пациента она бывает наклонена к горизонтали монтажа,
+        # а шарнир артикулятора exocad всегда горизонтален, так что этот наклон передаёт только файл движений.
+        recs.insert(0, kin.opening(jaw.anatomy, jaw.settings))
     movements = []
-    for m in jaw.movements.values():
-        rec = m.recording
+    for rec in recs:
         fps = (len(rec.transforms) - 1) / rec.duration if getattr(rec, "timed", False) and rec.duration else 60.0
         movements.append((rec.name, np.asarray(rec.transforms, float), float(fps)))
     return ArticulatorCase(upper, lower, jaw.anatomy, jaw.settings.copy(), bites, bones, paths, movements,
