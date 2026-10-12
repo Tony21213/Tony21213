@@ -346,8 +346,8 @@ def condylar_insert(path, tilt_deg: float, head_radius: float = CONDYLAR_HEAD_MM
     """Индивидуальная вставка ССП: сетка в системе дорожки мыщелка (x — вбок, y — вперёд по дорожке, z — вверх,
     начало — центр головки в покое), как вставки exocad (у Harman OSH «плоская» — на высоте радиуса головки,
     «анатомическая» — изогнута). Сетка — одна открытая поверхность, крыша, по которой скользит головка, нормалями
-    вниз, к головке: так устроены вставки Harman OSH и KaVo PROTARevo 5B. Замкнутое тело exocad 3.3 при
-    «Расчёт движения артикулятора» рисует копиями по кольцу через начало координат и головку (кейс 3).
+    вниз, к головке: так устроены вставки Harman OSH и KaVo PROTARevo 5B. Без парной вставки Беннетта
+    (bennett_insert) exocad 3.3 при «Расчёт движения артикулятора» рисует вставку копиями по кольцу (кейс 3).
 
     path — путь центра головки мыщелка пациента (N×2: вперёд, вверх; мм, система монтажа — guidance.condylar_path),
     tilt_deg — ССП дорожки в артикуляторе (TiltCondylarGuide). Путь поворачивается в систему дорожки; его
@@ -470,9 +470,9 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
                                    ("ImmediateSideshiftRight", None, 0, 3), ("HeightIncisalNeedleOffset", 0, -10, 10),
                                    ("RotationFrontplateYLeft", 0, 0, 60), ("RotationFrontplateYRight", 0, 0, 60),
                                    ("TiltFrontplate", None, 0, 89),
-                                   # Скрытый параметр exocad (группа CollapseRotationAxis, подписи нет): при любом
-                                   # ненулевом значении — и при NaN по умолчанию, если его нет в XML, — exocad рисует
-                                   # лишние копии дорожек и вставок в 70–170 мм над шарниром; головки он не двигает.
+                                   # Скрытый параметр exocad (группа CollapseRotationAxis, подписи нет): головки не
+                                   # двигает; без вставок Беннетта при ненулевом значении exocad рисовал лишние копии
+                                   # дорожек и вставок над шарниром. Пишем явный ноль (по умолчанию в exocad — NaN).
                                    ("RotationAxisRight", 0, 0, 6), ("RotationAxisLeft", 0, 0, 6)):
         _param(root, kind, values[kind] if value is None else value, low, high)
     ET.indent(root, "\t")
