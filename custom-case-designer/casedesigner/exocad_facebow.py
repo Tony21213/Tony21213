@@ -306,11 +306,12 @@ def write_off(path: str, mesh: trimesh.Trimesh):
         out.writelines(f"3 {a} {b} {c}\n" for a, b, c in f)
 
 
-def _guide(side: int) -> trimesh.Trimesh:
-    """Дорожка мыщелка в его системе: паз над головкой, вперёд (+y) на 15 мм, наружу — стенка Беннетта."""
-    roof = trimesh.creation.box((10, 22, 2), trimesh.transformations.translation_matrix((0, 4, 5)))
-    wall = trimesh.creation.box((2, 22, 10), trimesh.transformations.translation_matrix((-side * 5, 4, 0)))
-    return trimesh.util.concatenate([roof, wall])
+def _guide_stub() -> trimesh.Trimesh:
+    """Заглушка condylar_guide_*.off: тетраэдр 0.05 мм в центре головки. Файл есть в папке каждого артикулятора
+    exocad, но рисует его exocad не там, где головку и вставку: на кейсе 3 наша дорожка «паз со стенкой» висела в
+    70–150 мм над шарниром. Дорожку у нас показывает вставка ССП, так что заглушка не видна, где бы её ни поставили."""
+    return trimesh.Trimesh(np.array([[0, 0, 0], [0.05, 0, 0], [0, 0.05, 0], [0, 0, 0.05]]),
+                           [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], process=False)
 
 
 CONDYLAR_HEAD_MM = 4.0  # радиус головки мыщелка артикулятора (condylar_head.off)
@@ -452,7 +453,7 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
     files = {"articulatorparameters.xml": b'<?xml version="1.0"?>\n' + ET.tostring(root, encoding="utf-8")}
     meshes = {
         "condylar_head.off": trimesh.creation.icosphere(subdivisions=3, radius=4.0),
-        "condylar_guide_left.off": _guide(-1), "condylar_guide_right.off": _guide(1),
+        "condylar_guide_left.off": _guide_stub(), "condylar_guide_right.off": _guide_stub(),
         "incisal_needle.off": trimesh.creation.cylinder(radius=1.5, height=40,
                                                         transform=trimesh.transformations.translation_matrix((0, 0, 20))),
         "incisal_plate_left.off": trimesh.creation.box((12, 16, 2), trimesh.transformations.translation_matrix((6, 0, -1))),

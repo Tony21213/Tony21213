@@ -119,6 +119,9 @@ def test_own_articulator_folder(tmp_path):
             assert len(mesh.faces) > 0, name
     head = trimesh.load_mesh(str(tmp_path / "art" / "condylar_head.off"))
     assert np.abs(np.linalg.norm(head.vertices, axis=1) - 4.0).max() < 0.01  # головка — сфера в начале координат
+    for side in ("left", "right"):  # дорожки exocad рисует не у головки — у нас это невидимые заглушки
+        guide = trimesh.load_mesh(str(tmp_path / "art" / f"condylar_guide_{side}.off"), process=False)
+        assert np.ptp(guide.vertices, axis=0).max() < 0.1
 
 
 def _roof(mesh, y):
