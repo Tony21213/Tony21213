@@ -15,6 +15,7 @@ import numpy as np
 import trimesh
 
 from .. import articulators as arts
+from .. import condyles as cond
 from . import errorlog
 from .. import exocad_project
 from .. import model_store
@@ -194,6 +195,8 @@ class Session:
         self._sections = {}
         self.landmarks: dict[str, np.ndarray] = {}
         self.suggested: set[str] = set()  # предложены программой и ещё не подтверждены врачом
+        self.landmark_sources: dict[str, str] = {}  # откуда точка: condyles.SOURCES и др. (сохраняется с кейсом)
+        self._mounted_condyles = None  # точки мыщелков, с которыми сделан текущий монтаж (condyles.state: applied)
         self.articulators_path = os.path.join(os.path.dirname(self.memory.path), "articulators.json")
         self.settings_path = os.path.join(os.path.dirname(self.memory.path), "settings.json")
         self.settings = self._load_settings()
@@ -267,7 +270,8 @@ class Session:
             self.window = ((lo + hi) / 2, max(hi - lo, 1.0) * 2.5)
             self.structures, self._sections = {}, {}
             self.bite_view, self.bite_motion, self._bite_meshes = False, None, {}
-            self.landmarks, self.suggested = {}, set()
+            self.landmarks, self.suggested, self.landmark_sources = {}, set(), {}
+            self._mounted_condyles = None
             for item in self.scans.values():
                 item.update(reg=None, auto=None, transform=None, guided=False, lower_bite=None)
         return self.ct_info()
@@ -279,7 +283,8 @@ class Session:
             self.case_path, self.guide_teeth = None, {}
             self.structures, self._sections = {}, {}
             self.bite_view, self.bite_motion, self._bite_meshes = False, None, {}
-            self.landmarks, self.suggested = {}, set()
+            self.landmarks, self.suggested, self.landmark_sources = {}, set(), {}
+            self._mounted_condyles = None
             for item in self.scans.values():
                 item.update(reg=None, auto=None, transform=None, guided=False, lower_bite=None)
 
@@ -824,10 +829,123 @@ class Session:
         return self.jaw.state()
 
     def articulation_mount(self, method: str = "auto") -> dict:
-        """Смонтировать модели для предварительного просмотра."""
+        """Смонтировать модели для предварительного просмотра.
+
+        Мыщелки — точки кейса Co_R, Co_L (condyles.py: подтверждённые врачом выше автоматических; недостающие
+        предлагаются по нижней челюсти). Шарнир — в прикусе монтажа (в прикусе сканов точки едут с нижней
+        челюстью), бугорок — в соотношении КТ. Точки не готовы: auto монтирует без КТ, ct — ошибка."""
         if not self._articulation_ready:
             self._prepare_jawcase()
-        return self.jaw.mount(method)
+        hinge, ct_points, why = self._mount_condyles()
+        if hinge is None and method in ("auto", "ct"):
+            if method == "ct":
+                raise ValueError(f"монтаж по КТ невозможен: {why}")
+            method = "motion" if self.jaw._recorded() else "average"
+        result = self.jaw.mount(method, condyles=hinge, ct_condyles=ct_points)
+        self._mounted_condyles = None if hinge is None else self._condyle_signature()
+        return result
+
+    # --- мыщелки в шаге «Артикулятор» (контракт — casedesigner/condyles.py, docs/handoff.md) --------------
+    def _condyle_points(self) -> dict:
+        return cond.resolve(self.landmarks, self.suggested, self.landmark_sources)
+
+    def _condyle_signature(self):
+        """Точки мыщелков как неизменяемое значение: монтаж сделан с ними или нет."""
+        return tuple(None if p.point is None else tuple(np.round(p.point, 4))
+                     for p in self._condyle_points().values())
+
+    def _condyle_checks(self, points) -> list:
+        mandible = self.structures.get("mandible")
+        # TODO(ведомый): система монтажа для проверки асимметрии — в мм КТ (поворот jaw.anatomy.frame;
+        # в прикусе сканов — с поправкой на bite_motion).
+        return cond.checks(points, None if mandible is None else np.asarray(mandible.vertices), None)
+
+    def _suggest_missing_condyles(self):
+        """Недостающие точки — предложение по нижней челюсти (как «Предложить» в ориентирах); подтверждённые
+        врачом и найденные нейросетью не трогаются."""
+        mandible = self.structures.get("mandible")
+        if mandible is None or all(k in self.landmarks for k in cond.SIDES.values()):
+            return
+        found = lmk.suggest_condyles(np.asarray(mandible.vertices), up=(0.0, 0.0, 1.0), left=(1.0, 0.0, 0.0),
+                                     anterior=(0.0, -1.0, 0.0))  # LPS: вверх +z, влево +x, вперёд −y
+        with self.lock:
+            for key, point in found.items():
+                if key not in self.landmarks:
+                    self.landmarks[key] = np.asarray(point, float)
+                    self.suggested.add(key)
+                    self.landmark_sources[key] = cond.SOURCE_MANDIBLE
+
+    def _mount_condyles(self):
+        """(шарнирные точки в координатах монтажа, точки в соотношении КТ, причина) или (None, None, причина)."""
+        if self.case is None:
+            return None, None, "нет КТ"
+        self._suggest_missing_condyles()
+        points = self._condyle_points()
+        found = self._condyle_checks(points)
+        if not cond.ready(points, found):
+            missing = [s for s, p in points.items() if p.point is None]
+            errors = [c.text for c in found if c.level == "error"]
+            why = "; ".join(([f"нет точки: {', '.join(missing)}"] if missing else []) + errors)
+            return None, None, why or "точки мыщелков не готовы"
+        hinge = {side: cond.to_view(p.point, self.bite_motion) for side, p in points.items()}
+        return hinge, {side: p.point.copy() for side, p in points.items()}, ""
+
+    def articulation_condyles(self) -> dict:
+        """Состояние точек мыщелков для шага «Артикулятор» (condyles.state)."""
+        points = self._condyle_points()
+        found = self._condyle_checks(points)
+        applied = (self.jaw.anatomy is not None and self._mounted_condyles is not None
+                   and self._mounted_condyles == self._condyle_signature())
+        return cond.state(points, found, available=self.case is not None, bite_motion=self.bite_motion,
+                          applied=applied, mandible="mandible" in self.structures, skull="skull" in self.structures)
+
+    @staticmethod
+    def _sides(side: str) -> list[str]:
+        if side == "both":
+            return list(cond.SIDES)
+        if side not in cond.SIDES:
+            raise ValueError(f"сторона мыщелка: right, left или both, а не {side}")
+        return [side]
+
+    def set_condyle(self, side: str, point, space: str = "ct") -> dict:
+        """Поставить точку мыщелка вручную (источник «врач», подтверждена). space: ct — мм КТ (как на срезах),
+        view — координаты окна «Артикулятор» (в прикусе сканов точка переводится к нижней челюсти как на КТ)."""
+        self._require_ct()
+        if side not in cond.SIDES:
+            raise ValueError(f"сторона мыщелка: right или left, а не {side}")
+        p = np.asarray(point, float).reshape(3)
+        if space == "view":
+            p = cond.from_view(p, self.bite_motion)
+        elif space != "ct":
+            raise ValueError("система точки: ct или view")
+        key = cond.SIDES[side]
+        with self.lock:
+            self.landmarks[key] = p
+            self.suggested.discard(key)
+            self.landmark_sources[key] = cond.SOURCE_USER
+        return self.articulation_condyles()
+
+    def confirm_condyle(self, side: str = "both") -> dict:
+        """Подтвердить предложенную точку без сдвига: дальше её не меняет автоматика."""
+        for s in self._sides(side):
+            key = cond.SIDES[s]
+            if key not in self.landmarks:
+                raise ValueError(f"нет точки мыщелка: {s}")
+            with self.lock:
+                self.suggested.discard(key)
+        return self.articulation_condyles()
+
+    def reset_condyle(self, side: str = "both") -> dict:
+        """Сбросить точку к автоматической: предложение по нижней челюсти (нейросеть ALI-CBCT заново не
+        запускается); без сегментации нижней челюсти точки не будет."""
+        for s in self._sides(side):
+            key = cond.SIDES[s]
+            with self.lock:
+                self.landmarks.pop(key, None)
+                self.suggested.discard(key)
+                self.landmark_sources.pop(key, None)
+        self._suggest_missing_condyles()
+        return self.articulation_condyles()
 
     def articulation_generate(self, travel: float = 6.0) -> dict:
         """Построить виртуальные движения для просмотра до экспорта."""
@@ -911,8 +1029,10 @@ class Session:
         with self.lock:
             if point is None:
                 self.landmarks.pop(key, None)
+                self.landmark_sources.pop(key, None)
             else:
                 self.landmarks[key] = np.asarray(point, float)
+                self.landmark_sources[key] = cond.SOURCE_USER
             self.suggested.discard(key)
         return self.landmarks_info()
 
@@ -956,6 +1076,7 @@ class Session:
                 if f.point is not None and key in lmk.BY_KEY and (key not in self.landmarks or key in self.suggested):
                     self.landmarks[key] = np.asarray(f.point, float)
                     self.suggested.add(key)
+                    self.landmark_sources[key] = cond.SOURCE_ALI
         info = self.landmarks_info()
         info["auto"] = {k: {"found": f.point is not None, "note": f.note} for k, f in found.items()}
         return info
@@ -977,6 +1098,7 @@ class Session:
                 if key not in self.landmarks or key in self.suggested:
                     self.landmarks[key] = np.asarray(point, float)
                     self.suggested.add(key)
+                    self.landmark_sources[key] = cond.SOURCE_MANDIBLE if key in cond.SIDES.values() else "segmentation"
         return self.landmarks_info()
 
     def reference(self, kind: str) -> tuple[np.ndarray, str]:
@@ -1129,6 +1251,7 @@ class Session:
         meta = {"version": 1, "ct_path": self.ct_path, "ct_series": getattr(self, "ct_series_id", None),
                 "landmarks": {k: np.asarray(v, float).tolist() for k, v in self.landmarks.items()},
                 "suggested": sorted(self.suggested),
+                "landmark_sources": {k: v for k, v in self.landmark_sources.items() if k in self.landmarks},
                 "window": list(self.window), "scans": [], "structures": [],
                 "guide": []}
         for i, (sid, item) in enumerate(self.scans.items()):
@@ -1191,6 +1314,8 @@ class Session:
         with self.lock:
             self.landmarks = {k: np.asarray(v, float) for k, v in meta.get("landmarks", {}).items() if k in lmk.BY_KEY}
             self.suggested = set(meta.get("suggested", [])) & set(self.landmarks)
+            self.landmark_sources = {k: v for k, v in meta.get("landmark_sources", {}).items() if k in self.landmarks}
+            self._mounted_condyles = None
         if self.guide_teeth and self.case is not None:
             self.case.use_teeth(self.guide_teeth)
         for i, sm in enumerate(meta["scans"]):

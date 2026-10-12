@@ -379,26 +379,33 @@ def load(path: str) -> Scene:
 
 # --- динамика по сцене ---
 
-def mount(upper_vertices, lower_vertices, mandible=None, skull=None) -> tuple:
+def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=None, eminence_condyles=None) -> tuple:
     """Монтаж по сканам и, если есть, КТ: (Anatomy, Settings, сведения о бугорках, примечания).
 
     Горизонталь — окклюзионная плоскость, резцовая точка — на нижних резцах.
-    Мыщелки — по кости нижней челюсти (mandible: объект с vertices), иначе
-    средний артикулятор; ССП — по суставному бугорку черепа (skull: vertices и
-    faces), угол Беннетта — по Ханау; чего нет — значения по умолчанию.
+    Мыщелки — condyles ({"right", "left"}: шарнирные точки в координатах сканов, как lower_vertices; см.
+    casedesigner/condyles.py), иначе по кости нижней челюсти (mandible: объект с vertices), иначе средний
+    артикулятор. ССП — по суставному бугорку черепа (skull: vertices и faces) у точек eminence_condyles — в
+    координатах черепа, то есть в соотношении КТ (без них — у шарнирных точек); угол Беннетта — по Ханау;
+    чего нет — значения по умолчанию.
     """
     upper_vertices, lower_vertices = np.asarray(upper_vertices, float), np.asarray(lower_vertices, float)
     up, anterior = mo.arch_axes(lower_vertices, mo.occlusal_up(upper_vertices, lower_vertices))
     right = np.cross(anterior, up)
     incisal = mo._incisal(lower_vertices, anterior, up, mo.INCISAL_TILT_DEG)
     notes, settings = [], kin.Settings()
-    co = suggest_condyles(mandible.vertices, up=up, left=-right, anterior=anterior) if mandible is not None else {}
+    if condyles is not None:
+        co = {"Co_R": np.asarray(condyles["right"], float), "Co_L": np.asarray(condyles["left"], float)}
+        where = "КТ: мыщелки — точки Co_R, Co_L кейса"
+    else:
+        co = suggest_condyles(mandible.vertices, up=up, left=-right, anterior=anterior) if mandible is not None else {}
+        where = "КТ: мыщелки по нижней челюсти"
     if len(co) == 2:
         hinge = (co["Co_R"] + co["Co_L"]) / 2
         R = np.array([right, anterior, up])
         anatomy = mo.Anatomy(rigid(R, -R @ hinge),
                              {"incisal": incisal, "condyle_right": co["Co_R"], "condyle_left": co["Co_L"]},
-                             "КТ: мыщелки по нижней челюсти; горизонталь — окклюзионная плоскость")
+                             f"{where}; горизонталь — окклюзионная плоскость")
     else:
         anatomy = mo.anatomy_average(lower_vertices, upper_vertices, incisal=incisal)
         if mandible is not None:
@@ -406,9 +413,9 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None) -> tuple:
     eminence = {}
     if skull is not None and len(co) == 2:
         for side in ("right", "left"):
+            at = anatomy.points[f"condyle_{side}"] if eminence_condyles is None else eminence_condyles[side]
             try:
-                info = condylar_path(*eminence_profile(skull.vertices, skull.faces, anatomy.frame,
-                                                       anatomy.points[f"condyle_{side}"]))
+                info = condylar_path(*eminence_profile(skull.vertices, skull.faces, anatomy.frame, at))
             except ValueError as e:
                 notes.append(f"{'правый' if side == 'right' else 'левый'} бугорок: {e}")
                 continue

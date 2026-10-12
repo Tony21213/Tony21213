@@ -151,18 +151,24 @@ class JawCase:
         return self._occlusion
 
     # --- монтаж и суставы ---------------------------------------------------
-    def mount(self, method: str = "auto", icd: float = mo.ICD_MM) -> dict:
+    def mount(self, method: str = "auto", icd: float = mo.ICD_MM, condyles: dict | None = None,
+              ct_condyles: dict | None = None) -> dict:
         """Смонтировать модели: average, ct (кость в кейсе), motion (записи движения) или auto.
 
-        auto: по КТ, если есть кость нижней челюсти; иначе по записи, если она
+        auto: по КТ, если есть кость нижней челюсти или заданы мыщелки; иначе по записи, если она
         прочитана; иначе средний артикулятор. Настройки суставов берутся тем же
         способом (бугорок по КТ, запись), чего нет — остаются прежними.
+
+        condyles — шарнирные точки {"right", "left"} в координатах кейса (как сканы: в прикусе сканов точки
+        едут с нижней челюстью), ct_condyles — те же точки в соотношении КТ (для бугорка по черепу кейса).
+        Без них мыщелки ищутся по кости нижней челюсти (casedesigner/condyles.py — приоритет точек).
         """
         from . import exocad_webview as ew
 
         self._require(anatomy=False)
         if method == "auto":
-            method = "ct" if self.mandible is not None else "motion" if self._recorded() else "average"
+            method = ("ct" if self.mandible is not None or condyles is not None
+                      else "motion" if self._recorded() else "average")
         if method not in ("average", "ct", "motion"):
             raise ValueError(f"монтаж: {', '.join(MOUNTINGS)}")
         self._edit(f"монтаж: {MOUNTINGS[method]}")
@@ -175,11 +181,13 @@ class JawCase:
             analysis = mo.analyze_case(case, self.anatomy)
             self.settings = kin.settings_from_analysis(analysis, self.settings, self.anatomy.frame)
         else:
-            if method == "ct" and self.mandible is None:
+            if method == "ct" and self.mandible is None and condyles is None:
                 raise ValueError("кости нижней челюсти в кейсе нет — монтаж по КТ невозможен")
+            ct = method == "ct"
             anatomy, settings, eminence, notes = ew.mount(self.upper.vertices, self.lower_vertices,
-                                                          self.mandible if method == "ct" else None,
-                                                          self.skull if method == "ct" else None)
+                                                          self.mandible if ct else None, self.skull if ct else None,
+                                                          condyles=condyles if ct else None,
+                                                          eminence_condyles=ct_condyles if ct else None)
             self.anatomy = anatomy
             base = self.settings.copy()
             for key, value in vars(settings).items():

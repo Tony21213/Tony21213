@@ -1,0 +1,233 @@
+"""Контракт ручной проверки и поправки мыщелков в шаге «Артикулятор» (casedesigner/condyles.py, docs/handoff.md).
+
+Тесты с xfail(strict=True) — задачи ведомого: после реализации они проходят, и пометку нужно снять.
+"""
+
+import json
+import time
+import urllib.request
+
+import numpy as np
+import pytest
+import SimpleITK as sitk
+import trimesh
+
+import phantom
+from casedesigner import condyles as cond
+from casedesigner.app.server import serve
+from casedesigner.app.session import Session
+from casedesigner.jawcase import JawCase, Mesh
+from casedesigner.register import apply, axis_angle, rigid
+
+# Мыщелки в мм КТ (LPS: x — влево пациента, y — назад, z — вверх): правый — с меньшим x.
+CO_R, CO_L = np.array([-49.0, 10.0, 0.0]), np.array([49.0, 10.0, 0.0])
+STATE_KEYS = {"available", "bite", "points", "icd_mm", "checks", "ready", "confirmed", "applied", "segmentation"}
+POINT_KEYS = {"key", "ct", "view", "source", "source_label", "confirmed"}
+
+
+def bite_motion():
+    """Нижняя челюсть с КТ в прикус сканов: поворот 3° вокруг оси сустава и сдвиг на 1 мм."""
+    R = axis_angle(np.array([1.0, 0.0, 0.0]), np.radians(3.0))
+    hinge = (CO_R + CO_L) / 2
+    return rigid(np.eye(3), [0.0, -1.0, 0.0]) @ rigid(R, hinge - R @ hinge)
+
+
+def mandible_mesh():
+    """Синтетическая нижняя челюсть: тело и две ветви с головками мыщелков в CO_R, CO_L (верхушки)."""
+    parts = [trimesh.creation.box((110, 20, 10), trimesh.transformations.translation_matrix((0, -40, -45)))]
+    for co in (CO_R, CO_L):
+        parts.append(trimesh.creation.box((8, 10, 40), trimesh.transformations.translation_matrix(co + (0, 0, -24))))
+        parts.append(trimesh.creation.icosphere(subdivisions=3, radius=5.0).apply_translation(co + (0, 0, -5)))
+    return trimesh.util.concatenate(parts)
+
+
+@pytest.fixture
+def session(jaw_ct, tmp_path):
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s.case = jaw_ct  # точки ставятся только при открытом КТ
+    return s
+
+
+# --- ядро: приоритет, координаты, проверки, состояние --------------------------------------------------
+
+def test_priority_user_confirmed_over_automatic():
+    landmarks = {"Co_R": CO_R, "Co_L": CO_L}
+    points = cond.resolve(landmarks, suggested={"Co_R"}, sources={"Co_R": cond.SOURCE_ALI, "Co_L": cond.SOURCE_USER})
+    assert points["right"].source == cond.SOURCE_ALI and not points["right"].confirmed
+    assert points["left"].source == cond.SOURCE_USER and points["left"].confirmed
+    # точки прежних кейсов без записи об источнике: предложенная — по нижней челюсти, остальные — врач
+    old = cond.resolve(landmarks, suggested={"Co_L"}, sources={})
+    assert old["right"].source == cond.SOURCE_USER and old["left"].source == cond.SOURCE_MANDIBLE
+    empty = cond.resolve({}, set(), {})
+    assert empty["right"].point is None and empty["right"].source is None
+
+
+def test_points_follow_lower_jaw_into_scan_bite():
+    M = bite_motion()
+    view = cond.to_view(CO_R, M)
+    assert np.allclose(view, apply(M, CO_R[None])[0])
+    assert np.allclose(cond.from_view(view, M), CO_R)
+    assert np.allclose(cond.to_view(CO_R, None), CO_R) and np.allclose(cond.from_view(CO_R, None), CO_R)
+
+
+def test_icd_and_sides_checks():
+    def run(r, l):
+        pts = cond.resolve({"Co_R": r, "Co_L": l}, set(), {})
+        found = {c.id: c for c in cond.checks(pts)}
+        return pts, found
+
+    pts, found = run(CO_R, CO_L)
+    assert found["icd"].level == "ok" and found["sides"].level == "ok" and cond.ready(pts, list(found.values()))
+    _, found = run(CO_R + (20, 0, 0), CO_L)  # межмыщелковое 78 мм — необычно
+    assert found["icd"].level == "warn"
+    pts, found = run(CO_R + (60, 0, 0), CO_L)  # 38 мм — точки не на мыщелках
+    assert found["icd"].level == "error" and not cond.ready(pts, list(found.values()))
+    pts, found = run(CO_L, CO_R)  # стороны перепутаны
+    assert found["sides"].level == "error" and not cond.ready(pts, list(found.values()))
+    pts, found = run(CO_R, None)
+    assert found["icd"].level == "unknown" and not cond.ready(pts, list(found.values()))
+
+
+def test_state_is_json_contract():
+    pts = cond.resolve({"Co_R": CO_R, "Co_L": CO_L}, {"Co_R"}, {"Co_R": cond.SOURCE_MANDIBLE})
+    st = cond.state(pts, cond.checks(pts), available=True, bite_motion=bite_motion(), applied=False,
+                    mandible=True, skull=False)
+    json.dumps(st)
+    assert set(st) == STATE_KEYS and set(st["points"]) == {"right", "left"}
+    assert all(set(p) == POINT_KEYS for p in st["points"].values())
+    assert st["bite"] == "scan" and st["ready"] and not st["confirmed"] and not st["applied"]
+    assert np.allclose(st["points"]["right"]["ct"], CO_R)
+    assert np.allclose(st["points"]["right"]["view"], cond.to_view(CO_R, bite_motion()), atol=1e-3)
+    assert {c["level"] for c in st["checks"]} <= set(cond.LEVELS)
+
+
+# --- сессия: поставить, подтвердить, сбросить; приоритет над автоматикой; применение к монтажу ---------
+
+def test_session_set_confirm_reset(session):
+    st = session.articulation_condyles()
+    assert st["available"] and st["points"]["right"]["ct"] is None and not st["segmentation"]["mandible"]
+    session.structures["mandible"] = mandible_mesh()
+    st = session.reset_condyle("both")  # предложение по нижней челюсти
+    for side, co in (("right", CO_R), ("left", CO_L)):
+        p = st["points"][side]
+        assert p["source"] == cond.SOURCE_MANDIBLE and not p["confirmed"]
+        assert np.linalg.norm(np.asarray(p["ct"]) - co) < 1.0
+    session.bite_motion = bite_motion()
+    moved = cond.to_view(CO_R + (0, 0, -1.0), session.bite_motion)
+    st = session.set_condyle("right", moved.tolist(), space="view")  # поставлено в окне «Артикулятор»
+    assert np.allclose(st["points"]["right"]["ct"], CO_R + (0, 0, -1.0), atol=1e-3)
+    assert st["points"]["right"]["source"] == cond.SOURCE_USER and st["points"]["right"]["confirmed"]
+    left = st["points"]["left"]["ct"]
+    st = session.confirm_condyle("left")
+    assert st["points"]["left"]["confirmed"] and st["points"]["left"]["ct"] == left  # подтверждение не сдвигает
+    session.suggest_landmarks()  # автоматика не трогает точки врача
+    assert np.allclose(session.landmarks["Co_R"], CO_R + (0, 0, -1.0))
+    st = session.reset_condyle("right")
+    assert st["points"]["right"]["source"] == cond.SOURCE_MANDIBLE and not st["points"]["right"]["confirmed"]
+    with pytest.raises(ValueError):
+        session.set_condyle("middle", CO_R.tolist())
+
+
+def test_session_mount_points_follow_bite(session):
+    session.landmarks.update({"Co_R": CO_R, "Co_L": CO_L})
+    hinge, ct_points, why = session._mount_condyles()
+    assert why == "" and np.allclose(hinge["right"], CO_R) and np.allclose(ct_points["left"], CO_L)
+    session.bite_motion = bite_motion()  # прикус сканов: шарнир едет с нижней челюстью, бугорок — по КТ
+    hinge, ct_points, _ = session._mount_condyles()
+    assert np.allclose(hinge["left"], cond.to_view(CO_L, session.bite_motion)) and np.allclose(ct_points["left"], CO_L)
+    session.landmarks.pop("Co_L")  # нет сегментации — второй точке неоткуда взяться: монтаж не по КТ
+    hinge, ct_points, why = session._mount_condyles()
+    assert hinge is None and ct_points is None and "left" in why
+
+
+def test_mount_uses_given_condyles_without_mandible():
+    up_v, up_f = phantom.make_scan("upper", resolution=0.6)
+    lo_v, lo_f = phantom.make_scan("lower", resolution=0.6)
+    case = JawCase()
+    case.set_scans(Mesh(up_v, up_f, "верх"), Mesh(lo_v, lo_f, "низ"))
+    right, left = np.array([-48.0, -70.0, 22.0]), np.array([50.0, -71.0, 24.0])
+    case.mount("auto", condyles={"right": right, "left": left})  # кости нет, точки есть — монтаж по КТ
+    assert case.mounting == "ct"
+    assert np.allclose(case.anatomy.points["condyle_right"], right) and np.allclose(case.anatomy.points["condyle_left"], left)
+    origin = apply(case.anatomy.frame, ((right + left) / 2)[None])[0]
+    assert np.allclose(origin, 0, atol=1e-9)  # начало системы монтажа — середина шарнирной оси
+
+
+def test_case_file_keeps_sources(tmp_path):
+    vol = phantom.make_volume()
+    img = sitk.GetImageFromArray(vol.data)
+    img.SetSpacing(vol.spacing.tolist())
+    img.SetOrigin(vol.origin.tolist())
+    img.SetDirection(vol.direction.ravel().tolist())
+    sitk.WriteImage(img, str(tmp_path / "ct.nii.gz"))
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s.load_ct(str(tmp_path / "ct.nii.gz"))
+    s.set_condyle("right", CO_R.tolist())
+    s.landmarks["Co_L"], s.suggested, s.landmark_sources["Co_L"] = CO_L, {"Co_L"}, cond.SOURCE_ALI
+    path = s.save_case(str(tmp_path / "кейс"))["path"]
+    t = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    t.open_case(path)
+    st = t.articulation_condyles()
+    assert st["points"]["right"]["source"] == cond.SOURCE_USER and st["points"]["right"]["confirmed"]
+    assert st["points"]["left"]["source"] == cond.SOURCE_ALI and not st["points"]["left"]["confirmed"]
+    assert np.allclose(st["points"]["left"]["ct"], CO_L) and not st["applied"]
+
+
+def test_server_routes():
+    calls = []
+
+    class Fake:
+        def articulation_condyles(self):
+            calls.append(("state",))
+            return {"ok": 1}
+
+        def set_condyle(self, side, point, space):
+            calls.append(("set", side, point, space))
+            return {"ok": 2}
+
+        def confirm_condyle(self, side):
+            calls.append(("confirm", side))
+            return {"ok": 3}
+
+        def reset_condyle(self, side):
+            calls.append(("reset", side))
+            return {"ok": 4}
+
+    srv = serve(Fake())
+    base = f"http://127.0.0.1:{srv.server_address[1]}/api/articulation/condyles"
+
+    def call(path="", body=None):
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(base + path, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req) as r:
+            return json.loads(r.read())
+
+    try:
+        assert call() == {"ok": 1}
+        assert call("", {"side": "right", "point": [1, 2, 3], "space": "view"}) == {"ok": 2}
+        assert call("/confirm", {"side": "left"}) == {"ok": 3}
+        assert call("/reset", {}) == {"ok": 4}
+    finally:
+        srv.shutdown()
+        time.sleep(0.01)
+    assert calls == [("state",), ("set", "right", [1, 2, 3], "view"), ("confirm", "left"), ("reset", "both")]
+
+
+# --- задачи ведомого ------------------------------------------------------------------------------------
+
+@pytest.mark.xfail(strict=True, reason="ведомый: проверка «точка на сетке нижней челюсти»")
+def test_point_off_mandible_is_flagged():
+    mesh = np.asarray(mandible_mesh().vertices)
+    pts = cond.resolve({"Co_R": CO_R, "Co_L": CO_L + (0, 0, 7.0)}, set(), {})
+    found = {c.id: c for c in cond.checks(pts, mesh)}
+    assert found["on_mandible_right"].level == "ok"
+    assert found["on_mandible_left"].level == "error" and found["on_mandible_left"].value > cond.ON_MANDIBLE_ERROR_MM
+
+
+@pytest.mark.xfail(strict=True, reason="ведомый: проверка асимметрии в системе монтажа")
+def test_asymmetry_is_flagged():
+    frame = np.eye(4)
+    frame[:3, :3] = [[-1, 0, 0], [0, -1, 0], [0, 0, 1]]  # мм КТ (LPS) → вправо, вперёд, вверх
+    pts = cond.resolve({"Co_R": CO_R + (0, 0, 7.0), "Co_L": CO_L}, set(), {})
+    found = {c.id: c for c in cond.checks(pts, None, frame)}
+    assert found["asymmetry"].level == "warn" and found["asymmetry"].value == pytest.approx(7.0, abs=0.1)

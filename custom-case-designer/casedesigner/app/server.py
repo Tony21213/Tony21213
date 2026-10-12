@@ -204,6 +204,16 @@ def make_handler(session: Session, jobs: Jobs):
                 return self.job("Анализ контактов и движений", lambda progress: s.articulation_report())
             if p == ["articulation", "guides"]:
                 return self.json(s.articulation_guides())
+            # мыщелки (контракт — casedesigner/condyles.py, docs/handoff.md): состояние, поставить, подтвердить, сбросить
+            if p == ["articulation", "condyles"]:
+                if method == "POST":
+                    b = self.body()
+                    return self.json(s.set_condyle(b["side"], b["point"], b.get("space", "ct")))
+                return self.json(s.articulation_condyles())
+            if p == ["articulation", "condyles", "confirm"] and method == "POST":
+                return self.json(s.confirm_condyle(self.body().get("side", "both")))
+            if p == ["articulation", "condyles", "reset"] and method == "POST":
+                return self.json(s.reset_condyle(self.body().get("side", "both")))
             if len(p) == 3 and p[:2] == ["articulation", "motion"]:
                 return self.json(s.articulation_motion(p[2]))
             if p == ["segment"] and method == "POST":
