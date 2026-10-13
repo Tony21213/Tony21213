@@ -23,7 +23,12 @@
     где верхнего зуба нет (препарированный зуб, край скана);
   * от прикуса сканера — не дальше MAX_SHIFT_MM в плоскости и MAX_TURN_DEG:
     исправляются ошибки скана, а не ищется другой прикус. Все допуски
-    отсчитываются от прикуса сканера;
+    отсчитываются от прикуса сканера; смыкание вокруг шарнирной оси — центр
+    жевательной поверхности поднимается не больше MAX_CLOSE_MM;
+  * без опоры не исправляется: нужно не меньше MIN_SUPPORT точек нижних зубов
+    ближе SIGNED_REACH_MM к верхним (иначе ограничений от зубов нет и челюсть
+    «уезжает» — архив, кейсы 4 и 5: 63 мм без контактов); не сомкнулись в
+    пределах поправки или поправка больше MAX_CORRECTION_MM — отказ с причиной;
   * челюсть, вставшая бугром на бугор, «постукивается»: раскрывается на
     TAP_OPEN_MM, сдвигается на TAP_SHIFT_MM в четыре стороны и оседает
     снова; берётся самое сомкнутое положение.
@@ -66,6 +71,9 @@ FINE_STEPS = 80  # мелких
 STOP_MM = 2e-4  # шаг смыкания меньше — челюсть стоит
 STOP_STEPS = 4
 MAX_SHIFT_MM = 0.3  # от прикуса сканера — не дальше (в плоскости)
+MAX_CLOSE_MM = 1.0  # сомкнуть вокруг шарнира от прикуса сканера (центр зубов вверх) — не больше
+MAX_CORRECTION_MM = 1.5  # поправка по резцам и молярам больше — не ошибка скана, а другой прикус: отказ
+MIN_SUPPORT = 50  # точек нижних зубов ближе SIGNED_REACH_MM к верхним — меньше: исправлять не по чему
 MAX_OPEN_MM = 3.0  # раскрыть, чтобы убрать проникновение, — не больше
 MAX_TURN_DEG = 1.0
 CONDYLE_MM = 0.3  # мыщелки — не дальше от исходного места (вниз, вперёд-назад, в стороны)
@@ -209,6 +217,10 @@ def settle(upper: "_Upper", points, start, up, condyles, condyle_mm, max_shift, 
             A_ub += [np.c_[np.zeros((3, 3)), inplane, np.zeros((3, 3)), -inplane],
                      np.c_[np.zeros((3, 3)), -inplane, np.zeros((3, 3)), inplane]]
             b_ub += [max_shift - inplane @ shift, max_shift + inplane @ shift]
+        # смыкание вокруг шарнира: центр зубов поднимается от прикуса сканера не больше MAX_CLOSE_MM — без
+        # контактов вращение вокруг оси ничем не держится, и челюсть «уезжала» (архив, кейсы 4 и 5)
+        A_ub.append(np.r_[np.zeros(3), up, np.zeros(3), -up][None])
+        b_ub.append([MAX_CLOSE_MM - float(up @ shift)])
         lim = np.radians(max_turn_deg)
         A_ub += [np.c_[tilt, np.zeros((2, 3)), -tilt, np.zeros((2, 3))],
                  np.c_[-tilt, np.zeros((2, 3)), tilt, np.zeros((2, 3))]]
@@ -298,6 +310,10 @@ def correct_bite(upper_vertices, upper_faces, lower_vertices, condyles=None, max
         raise ValueError(f"сканы не в прикусе: нижние зубы дальше {REACH_MM:g} мм от верхних — "
                          "используйте поиск прикуса без скана прикуса")
     upper.orient(near)
+    support = int(np.isfinite(upper.signed(near)[0]).sum())
+    if support < MIN_SUPPORT:
+        raise ValueError(f"нет опоры: ближе {SIGNED_REACH_MM:g} мм к верхним зубам — {support} точек нижних "
+                         f"(нужно {MIN_SUPPORT}); исправлять прикус не по чему — проверьте сканы и скан прикуса")
     anat = _anatomy(lower, upper.points, condyles)
     up = anat.frame[:3, :3][2]  # к верхним зубам
     pts = _sample(near, MAX_POINTS)
@@ -313,6 +329,13 @@ def correct_bite(upper_vertices, upper_faces, lower_vertices, condyles=None, max
         T = T2
     T = _refine(upper, near, T, up, co, condyles, max_shift_mm, max_turn_deg)
     rep = _report(upper, near, T, anat, np.eye(4), "прикус сканера")
+    moved = max(rep["incisal_mm"], rep["molar_right_mm"], rep["molar_left_mm"])
+    if rep["after"]["points"] == 0:
+        raise ValueError(f"в пределах поправки (смыкание до {MAX_CLOSE_MM:g} мм, сдвиг до {max_shift_mm:g} мм) зубы "
+                         "не сомкнулись — это не ошибка скана прикуса; проверьте сканы")
+    if moved > MAX_CORRECTION_MM:
+        raise ValueError(f"поправка {moved:.2f} мм больше предела {MAX_CORRECTION_MM:g} мм — это уже другой прикус, "
+                         "а не ошибка скана; проверьте сканы")
     rep["steps"] = steps
     rep["condyles"] = "КТ" if condyles is not None else "треугольник Бонвилля"
     rep["notes"] = _notes(rep)

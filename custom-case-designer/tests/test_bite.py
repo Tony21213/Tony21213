@@ -83,3 +83,22 @@ def test_correct_bite_stays_near_scanner_bite(jaws):
     assert res.report["incisal_mm"] < 0.1 and res.report["turn_deg"] < 0.2
     with pytest.raises(ValueError, match="не в прикусе"):
         bite.correct_bite(upper, faces, lower_true + [0, 0, -10.0])
+
+
+def test_no_contact_support_refused(jaws):
+    """Архив, кейсы 4 и 5: зубы ближе 3 мм, но ни одной точки ближе 2 мм — челюсть «уезжала» на 63 мм без
+    контактов и возвращалась как успех. Теперь — отказ: исправлять прикус не по чему."""
+    upper, faces, lower_true = jaws
+    with pytest.raises(ValueError, match="опоры"):
+        bite.correct_bite(upper, faces, lower_true + [0, 0, -2.9])  # ближе 2 мм — 10 точек
+
+
+def test_correction_limited_to_scanner_errors(jaws):
+    """Прикус раскрыт на ~1,5 мм по резцам — больше ошибки сканера: зубы в пределе поправки не смыкаются —
+    отказ, а не другой прикус. Смыкание вокруг шарнира — не больше MAX_CLOSE_MM от прикуса сканера."""
+    upper, faces, lower_true = jaws
+    condyles = (np.array([50.0, -80.0, 30.0]), np.array([-50.0, -80.0, 30.0]))
+    lower = apply(hinge_turn(lower_true, -0.9), lower_true)
+    assert np.linalg.norm(lower - lower_true, axis=1).max() > 1.0  # раскрыт больше предела
+    with pytest.raises(ValueError, match="предел"):
+        bite.correct_bite(upper, faces, lower, condyles=condyles)
