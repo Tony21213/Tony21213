@@ -1,6 +1,6 @@
 """Точки мыщелков Co_R и Co_L в шаге «Артикулятор»: приоритет, система координат, проверки, состояние.
 
-Контракт (подробно — docs/handoff.md, «Ручная проверка и поправка мыщелков»):
+Контракт (подробно — docs/handoff/archive/condyle-adjustment.md):
 
 * **Хранение.** Точки — ориентиры ``Co_R`` / ``Co_L`` сессии (``Session.landmarks``): миллиметры пациента КТ
   (DICOM LPS: x — влево, y — назад, z — вверх), нижняя челюсть — как на снимке. Это та же точка, что
@@ -221,7 +221,7 @@ def ready(points: dict[str, CondylePoint], found: list[Check]) -> bool:
 
 def state(points: dict[str, CondylePoint], found: list[Check], *, available: bool, bite_motion=None,
           applied: bool = False, mandible: bool = False, skull: bool = False) -> dict:
-    """Состояние для интерфейса — только JSON-типы (контракт в docs/handoff.md)."""
+    """Состояние для интерфейса — только JSON-типы (контракт — docs/handoff/archive/condyle-adjustment.md)."""
 
     def one(p: CondylePoint) -> dict:
         has = p.point is not None

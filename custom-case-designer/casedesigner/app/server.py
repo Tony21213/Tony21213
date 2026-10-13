@@ -204,7 +204,7 @@ def make_handler(session: Session, jobs: Jobs):
                 return self.job("Анализ контактов и движений", lambda progress: s.articulation_report())
             if p == ["articulation", "guides"]:
                 return self.json(s.articulation_guides())
-            # мыщелки (контракт — casedesigner/condyles.py, docs/handoff.md): состояние, поставить, подтвердить, сбросить
+            # мыщелки (контракт — casedesigner/condyles.py, docs/handoff/archive/condyle-adjustment.md): состояние, поставить, подтвердить, сбросить
             if p == ["articulation", "condyles"]:
                 if method == "POST":
                     b = self.body()

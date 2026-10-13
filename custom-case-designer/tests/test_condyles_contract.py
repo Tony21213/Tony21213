@@ -1,4 +1,4 @@
-"""Контракт ручной проверки и поправки мыщелков в шаге «Артикулятор» (casedesigner/condyles.py, docs/handoff.md).
+"""Контракт ручной проверки и поправки мыщелков в шаге «Артикулятор» (casedesigner/condyles.py, docs/handoff/archive/condyle-adjustment.md).
 
 Тесты с xfail(strict=True) — задачи ведомого: после реализации они проходят, и пометку нужно снять.
 """

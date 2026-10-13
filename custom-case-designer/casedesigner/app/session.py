@@ -845,7 +845,7 @@ class Session:
         self._mounted_condyles = None if hinge is None else self._condyle_signature()
         return result
 
-    # --- мыщелки в шаге «Артикулятор» (контракт — casedesigner/condyles.py, docs/handoff.md) --------------
+    # --- мыщелки в шаге «Артикулятор» (контракт — casedesigner/condyles.py, docs/handoff/archive/condyle-adjustment.md) --------------
     def _condyle_points(self) -> dict:
         return cond.resolve(self.landmarks, self.suggested, self.landmark_sources)
 
