@@ -52,6 +52,10 @@
 Исполнитель: Codex · Ветка: follower/export-checks · Коммит: этот коммит (история файла).
 Сделано: 1–3 — пока нет: доска требует подключения после разделения файлов ведущим;
 прямой запрет владельца менять session.py, server.py и app.js сохранён.
+Для независимой подготовки пункта 3 добавлены CSS-классы `.exocad-export-readiness`,
+`.exocad-export-summary`, `.exocad-export-role`, `.exocad-export-copy`,
+`.exocad-export-path` и `.exocad-export-actions` в `app/web/style.css`; их разметка
+ещё не подключена.
 4 — частично: новый test_exocad_export_variants проверяет полную выгрузку без костей,
 без черепа (стандартные вставки и заметка), перенос кости НЧ вместе со сканом при
 неединичных регистрации, bite_motion и lower_fix, отказ без проекта до создания папки.
@@ -62,10 +66,12 @@ HTTP-цепочка и готовность/применённость мыще�
 6 — нет: реальный кейс через новый интерфейс и exe не проверялись; подключения ещё нет,
 поэтому сборку с неработающей кнопкой не выпускал. exocad не запускался и не изменялся.
 Отклонения от контракта: нет; ядро выгрузки и занятые файлы не менялись, xfail API не снят.
-Изменены: tests/test_exocad_export_variants.py (новый), docs/exocad.md, этот файл.
+Изменены: tests/test_exocad_export_variants.py (новый), docs/exocad.md,
+app/web/style.css, этот файл.
 Проверки на общей базе 08bbc2d: test_exocad_articulator_export + test_exocad_export_variants +
-test_exocad_views + test_mount_planes — 23 passed, 2 xfailed (подключение Session/API и UI плоскости),
-68 предупреждений scikit-image, 14,15 с.
+test_exocad_export_http + test_exocad_views + test_mount_planes — 23 passed, 4 xfailed
+(Session/API и интерфейсные контракты, ожидающие подключения), 68 предупреждений scikit-image,
+11,64 с. `git diff --check` — чисто.
 git diff --check — чисто; полный набор не запускался, производственный код не менялся.
 Карте: независимая проверка вариантов экспорта и инструкция готовы; кнопка ещё не реализована.
 Вопросы ведущему: после разделения передать названия модулей шага «Экспорт» и коммит основы;
