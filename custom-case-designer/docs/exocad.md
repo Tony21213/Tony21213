@@ -123,9 +123,17 @@ big-endian). `condylar_head.off` — сфера головки мыщелка с
 ненулевом значении exocad рисовал лишние серые копии дорожек и вставок в
 70–170 мм над шарниром (exocad 3.3, кейс 3). Наш артикулятор пишет его явным
 нулём. Других параметров положения головки или оси по сторонам в 149 XML
-установленных exocad нет (`docs/handoff/archive/exocad-axis-params.md`). Декорации
-`CondyleLeft/RightDecorations` exocad ставит в системе головки, повёрнутой на
-угол ССП.
+установленных exocad нет (`docs/handoff/archive/exocad-axis-params.md`).
+`RotationPointShift` (у библиотек 0 / 1.2 / 2.5 / −4) шарнир тоже не двигает:
+варианты −8, 0 и +8 мм в покое и при открытии на 10 мм дают одинаковую картину
+(опыт 4, 13.10, сравнение снимков по пикселям). Настройка приложения
+`ArticulatorDeveloperTools` в 3.3 принимается, но видимых инструментов в
+артикуляторе не добавляет; один из ключей `JawMovementVisualizeEstimatedRotationAxis`
+и `ArticulatorVisualizeMovementregisterToArticulatorTransformationMatrix` (список
+настроек — от 3.2) exocad 3.3 не читает: `settings.xml` с ним не загружается.
+Декорации `CondyleLeft/RightDecorations` exocad ставит в системе головки,
+повёрнутой на угол ССП; `UpperPart/LowerPartDecorations` — в системе с началом в
+середине шарнира (x вправо пациента, y вперёд, z вверх), не в координатах сканов.
 
 **Система координат** у каждого артикулятора своя: у Artex монтажная
 плоскость горизонтальна (z = 49), у SAM 2P и GAMMA её точки лежат в плоскости

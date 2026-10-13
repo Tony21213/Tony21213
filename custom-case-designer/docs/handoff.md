@@ -13,7 +13,7 @@
 | Опись параметров артикуляторов exocad для «кривой» оси | Codex | `follower/pc-checks` | — | принято (`bb6841b`): параметров по сторонам нет | `docs/handoff/archive/exocad-axis-params.md` |
 | Порог предупреждения о перекосе дуги по реальным КЛКТ | Codex | `follower/pc-checks` | — | принято (`424a79e`): 0,3 / 0,4 мм — рабочие, ложные тревоги не проверены | `docs/handoff/archive/quality-threshold.md` |
 | Проверка исправления прикуса на архиве (Б.3) | Codex | `follower/pc-checks` | — | принято (`ba6c208`): дефект — уход без контактов (кейсы 4, 5), чинит ведущий в каркасе «Исправить прикус» | `docs/handoff/archive/bite-archive-check.md` |
-| «Кривая» ось в exocad: опыты и реализация | Claude | `lead/exocad-crooked-axis` | `casedesigner/exocad_facebow.py` | опыты 1–2 отрицательные; ждёт: опыт 3 (вопрос exocad/дилеру) и выбор пути А или Б владельцем | запись «ГЛАВНОЕ» в `docs/ideas.md` (12.10) |
+| «Кривая» ось в exocad: опыты и реализация | Claude | `lead/exocad-crooked-axis` | `casedesigner/exocad_facebow.py` | опыты 1, 2, 4 отрицательные (RotationAxis, RotationPointShift, опись); пробная выгрузка пути А — у владельца в exocad; ждёт: опыт 3 и выбор А или Б | запись «ГЛАВНОЕ» в `docs/ideas.md` (12.10) |
 | Разделение `session.py`, `server.py`, `app.js` по шагам | Claude | `lead/split-steps` | `app/session.py`, `app/server.py`, `app/web/app.js` | в работе | — |
 | Выгрузка «Для exocad с артикулятором» — интерфейс | Codex | — | шаг «Экспорт» (после разделения) | каркас готов, очередь интерфейса №1 | `docs/handoff/exocad-articulator-export.md` |
 | Плоскость монтажа — интерфейс и настройка | Codex | — | шаг «Артикулятор», настройки (после разделения) | каркас готов, очередь интерфейса №2 | `docs/handoff/mount-plane.md` |
