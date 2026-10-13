@@ -121,19 +121,83 @@ def plane_angles(landmarks: dict) -> dict:
 
 # --- предложения по сегментации -------------------------------------------------
 
+HEAD_MIN_FACES = 40  # кусок сетки меньше — шум сегментации, а не отросток
+HEAD_SEARCH_MM = 40.0  # на сколько ниже верха ветви искать вырезку
+HEAD_STEP_MM = 0.5
+
+
+def _axes(up, left, anterior):
+    up = np.asarray(up, float) / np.linalg.norm(up)
+    left = np.asarray(left, float) - (np.asarray(left, float) @ up) * up
+    left /= np.linalg.norm(left)
+    forward = np.cross(left, up) if anterior is None else np.asarray(anterior, float).copy()
+    forward -= (forward @ up) * up
+    forward -= (forward @ left) * left
+    return up, left, forward / np.linalg.norm(forward)
+
+
+def condylar_heads(mandible_vertices: np.ndarray, mandible_faces: np.ndarray, up=(0.0, 0.0, 1.0),
+                   left=(1.0, 0.0, 0.0), anterior=None) -> dict:
+    """Головки мыщелков, отрезанные от нижней челюсти: мыщелковые отростки выше вырезки.
+
+    Срез опускается от верха каждой ветви: пока выше среза сетка распадается на два куска (связность граней
+    в 3D), передний — венечный отросток, задний — мыщелковый; ниже вырезки они сливаются. Ответ по сторонам
+    («Co_R», «Co_L»): ``top`` — верхушка головки (Co; средняя верхних 1.5 мм), ``vertices`` — индексы вершин
+    мыщелкового отростка выше вырезки, ``notch_mm`` — вырезка ниже верха ветви. Венечный отросток выше
+    головки (бывает при наклоне ветви) этим не путается. Если отростки не разделились — стороны нет
+    (тогда suggest_condyles берёт заднюю долю ветви). Оси — как у suggest_condyles; anterior по умолчанию
+    — left × up (вперёд в правой тройке пациента)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    v, f = np.asarray(mandible_vertices, float), np.asarray(mandible_faces)
+    up, left, forward = _axes(up, left, anterior)
+    lat, h, a = v @ left, v @ up, v @ forward
+    mid = np.median(lat)
+    out = {}
+    for key, side in (("Co_R", lat < mid - 15), ("Co_L", lat > mid + 15)):
+        fs = f[side[f].all(axis=1)]
+        if len(fs) < 2 * HEAD_MIN_FACES:
+            continue
+        top = h[side].max()
+        best = notch = None
+        for cut in np.arange(top - 1.0, top - HEAD_SEARCH_MM, -HEAD_STEP_MM):
+            above = fs[(h[fs] >= cut).all(axis=1)]
+            if len(above) == 0:
+                continue
+            e = np.r_[above[:, [0, 1]], above[:, [1, 2]], above[:, [2, 0]]]
+            graph = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(len(v), len(v)))
+            _, label = connected_components(graph, directed=False)
+            face_label = label[above[:, 0]]
+            ids, counts = np.unique(face_label, return_counts=True)
+            big = ids[counts >= HEAD_MIN_FACES]
+            if len(big) >= 2:
+                pieces = [np.unique(above[face_label == i]) for i in big]
+                best, notch = min(pieces, key=lambda p: a[p].mean()), cut  # задний — мыщелковый
+            elif best is not None and len(big) == 1:
+                break  # отростки слились — дальше ветвь
+        if best is None:
+            continue
+        hp = h[best]
+        out[key] = {"top": v[best][hp >= hp.max() - 1.5].mean(axis=0), "vertices": best,
+                    "notch_mm": float(top - notch)}
+    return out
+
+
 def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.0, 0.0, 0.0),
-                     anterior=None) -> dict:
-    """Верхушки мыщелков: самые верхние точки нижней челюсти справа и слева от середины.
+                     anterior=None, faces=None) -> dict:
+    """Верхушки мыщелков справа и слева от середины нижней челюсти.
 
     up — вверх, left — к левой стороне пациента; по умолчанию оси DICOM (LPS).
     Для сцен, где оси повёрнуты как угодно (exocad), их задают по зубам.
-    Если задано anterior (вперёд, к резцам), венечный отросток отбрасывается по
-    положению: верхушка ищется только в задней части каждой ветви. Это не зависит от глубины
-    вырезки: спроецированная сетка остаётся сплошной и по «пустому промежутку» отростки не
-    разделяются. Без ограничения при наклонённой окклюзионной вертикали самой высокой часто оказывается
-    верхушка венечного отростка.
+    С гранями сетки (faces) — верхушка головки, отрезанной от челюсти (condylar_heads): венечный отросток
+    отделяется по связности сетки. Без граней или если отростки не разделились: при anterior (вперёд, к
+    резцам) венечный отросток отбрасывается по положению — верхушка ищется только в задней части ветви
+    (спроецированная сетка остаётся сплошной, по «пустому промежутку» отростки не разделяются); без
+    ограничения при наклонённой окклюзионной вертикали самой высокой часто оказывается верхушка венечного.
     """
     v = np.asarray(mandible_vertices, float)
+    heads = {} if faces is None else condylar_heads(v, faces, up, left, anterior)
     up = np.asarray(up, float) / np.linalg.norm(up)
     left = np.asarray(left, float) - (np.asarray(left, float) @ up) * up
     left /= np.linalg.norm(left)
@@ -141,6 +205,9 @@ def suggest_condyles(mandible_vertices: np.ndarray, up=(0.0, 0.0, 1.0), left=(1.
     mid = np.median(lat)
     out = {}
     for key, side in (("Co_R", lat < mid - 15), ("Co_L", lat > mid + 15)):
+        if key in heads:
+            out[key] = heads[key]["top"]
+            continue
         if side.sum() < 50:
             continue
         part, hp = v[side], h[side]

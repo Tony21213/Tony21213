@@ -34,6 +34,12 @@ PROFILE_REACH_MM = (-6.0, 22.0)  # по y от мыщелка: от задней
 PROFILE_WINDOW_MM = (-16.0, 10.0)  # по z от мыщелка: ниже — шиловидный отросток и прочее, выше — свод
 PATH_LENGTH_MM = 12.0
 CHORD_MM = 5.0  # как в motion: ССП — по хорде на первых 5 мм пути
+SAGITTAL_PLAUSIBLE_DEG = (5.0, 75.0)  # вне — профиль снят не с сустава (кейс 4: −70° при точке не на головке)
+
+
+def plausible_sagittal(deg: float) -> bool:
+    """ССП по КТ правдоподобен: иначе в артикулятор, вставки и движения он не идёт (остаётся стандартный)."""
+    return SAGITTAL_PLAUSIBLE_DEG[0] <= float(deg) <= SAGITTAL_PLAUSIBLE_DEG[1]
 
 
 def hanau_bennett(sagittal_deg: float) -> float:
@@ -41,16 +47,58 @@ def hanau_bennett(sagittal_deg: float) -> float:
     return sagittal_deg / 8 + 12
 
 
+SLOPE_BAND_MM = 6.0  # скат и ямка — в полосе ±6 мм вбок от мыщелка
+SLOPE_MIN_FACES = 20
+
+
+def articular_surface(vertices: np.ndarray, faces: np.ndarray, frame: np.ndarray, condyle: np.ndarray):
+    """Скат: суставная ямка и задний скат бугорка над мыщелком — грани черепа, отделённые от остальной кости.
+
+    Участок растёт по соседним граням (общее ребро) от крыши ямки — нижней грани черепа над Co — в полосе
+    SLOPE_BAND_MM вбок от мыщелка и в окне профиля (PROFILE_REACH_MM, PROFILE_WINDOW_MM). Кости, не
+    связанные с ямкой в этой полосе (дуга, шиловидный отросток, кусок соседней кости или нижней челюсти,
+    попавший в сегментацию черепа), в участок не входят — и в профиль, ССП, вставки и движения тоже.
+    Возвращает индексы граней faces или None, если над мыщелком кости нет."""
+    import trimesh
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    v, f = apply(frame, np.asarray(vertices, float)), np.asarray(faces)
+    c = apply(frame, np.asarray(condyle, float)[None])[0]
+    cen = v[f].mean(axis=1) - c
+    band = np.flatnonzero((np.abs(cen[:, 0]) <= SLOPE_BAND_MM)
+                          & (cen[:, 1] >= PROFILE_REACH_MM[0] - 2) & (cen[:, 1] <= PROFILE_REACH_MM[1] + 2)
+                          & (cen[:, 2] >= PROFILE_WINDOW_MM[0]) & (cen[:, 2] <= PROFILE_WINDOW_MM[1]))
+    if len(band) < SLOPE_MIN_FACES:
+        return None
+    roof = band[(np.abs(cen[band, 1]) <= 3) & (cen[band, 2] >= -1.0)]
+    if len(roof) == 0:
+        return None
+    seed = roof[np.argmin(cen[roof, 2])]  # крыша ямки — нижняя кость над верхушкой мыщелка
+    sub = trimesh.Trimesh(v, f[band], process=False)
+    pairs = sub.face_adjacency
+    graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(band), len(band)))
+    _, label = connected_components(graph, directed=False)
+    patch = band[label == label[np.flatnonzero(band == seed)[0]]]
+    return patch if len(patch) >= SLOPE_MIN_FACES else None
+
+
 def eminence_profile(vertices: np.ndarray, faces: np.ndarray, frame: np.ndarray, condyle: np.ndarray):
     """Профиль суставной поверхности в сагиттальном сечении через мыщелок.
 
     vertices/faces — кость без нижней челюсти (череп из сегментации), в мм КТ;
     frame — анатомическая система (landmarks.reference_frame); condyle — Co в мм КТ.
+    Сечение — только ската (articular_surface): посторонняя кость под ямкой и бугорком не попадает в
+    профиль; если скат не выделился — по всему черепу, как раньше.
     Возвращает y и z относительно мыщелка (мм, анатомическая система); где кости нет — NaN.
     """
     import trimesh
 
-    mesh = trimesh.Trimesh(apply(frame, vertices), np.asarray(faces), process=False)
+    faces = np.asarray(faces)
+    patch = articular_surface(vertices, faces, frame, condyle)
+    if patch is not None:
+        faces = faces[patch]
+    mesh = trimesh.Trimesh(apply(frame, vertices), faces, process=False)
     c = apply(frame, np.asarray(condyle, float)[None])[0]
     segments = trimesh.intersections.mesh_plane(mesh, plane_normal=[1.0, 0, 0], plane_origin=c)
     y = np.arange(PROFILE_REACH_MM[0], PROFILE_REACH_MM[1] + 1e-9, PROFILE_STEP_MM)

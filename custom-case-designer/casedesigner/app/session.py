@@ -867,14 +867,26 @@ class Session:
         return cond.checks(points,
                            None if mandible is None else cond.cached_surface(mandible), frame)
 
+    def _mandible_condyles(self, heads_only: bool = False) -> dict:
+        """Мыщелки по сетке нижней челюсти (мм КТ, LPS: вверх +z, влево +x, вперёд −y): верхушки головок,
+        отрезанных от челюсти (landmarks.condylar_heads); heads_only=False — где не разделились, задняя доля
+        ветви (suggest_condyles)."""
+        mandible = self.structures.get("mandible")
+        if mandible is None:
+            return {}
+        v, f = np.asarray(mandible.vertices), getattr(mandible, "faces", None)
+        axes = {"up": (0.0, 0.0, 1.0), "left": (1.0, 0.0, 0.0), "anterior": (0.0, -1.0, 0.0)}
+        if heads_only:
+            return {} if f is None else {k: h["top"] for k, h in lmk.condylar_heads(v, f, **axes).items()}
+        return lmk.suggest_condyles(v, faces=f, **axes)
+
     def _suggest_missing_condyles(self):
         """Недостающие точки — предложение по нижней челюсти (как «Предложить» в ориентирах); подтверждённые
         врачом и найденные нейросетью не трогаются."""
         mandible = self.structures.get("mandible")
         if mandible is None or all(k in self.landmarks for k in cond.SIDES.values()):
             return
-        found = lmk.suggest_condyles(np.asarray(mandible.vertices), up=(0.0, 0.0, 1.0), left=(1.0, 0.0, 0.0),
-                                     anterior=(0.0, -1.0, 0.0))  # LPS: вверх +z, влево +x, вперёд −y
+        found = self._mandible_condyles()
         with self.lock:
             for key, point in found.items():
                 if key not in self.landmarks:
@@ -1097,21 +1109,27 @@ class Session:
             raise ValueError("нет моделей ориентиров: скачайте их в программе")
         self._landmark_cancel = threading.Event()
         found = al.find(self.vol, models, keys, progress, cancel=self._landmark_cancel)
+        heads = (self._mandible_condyles(heads_only=True)
+                 if any(k in found for k in cond.SIDES.values()) else {})
+        notes = {}
         with self.lock:
             for key, f in found.items():
                 if f.point is not None and key in lmk.BY_KEY and (key not in self.landmarks or key in self.suggested):
-                    self.landmarks[key] = np.asarray(f.point, float)
+                    point, source = np.asarray(f.point, float), cond.SOURCE_ALI
+                    if key in cond.SIDES.values():  # сверка с головкой, отрезанной от нижней челюсти
+                        point, source, notes[key] = cond.prefer_head(point, heads.get(key))
+                    self.landmarks[key] = point
                     self.suggested.add(key)
-                    self.landmark_sources[key] = cond.SOURCE_ALI
+                    self.landmark_sources[key] = source
         info = self.landmarks_info()
-        info["auto"] = {k: {"found": f.point is not None, "note": f.note} for k, f in found.items()}
+        info["auto"] = {k: {"found": f.point is not None, "note": notes.get(k) or f.note} for k, f in found.items()}
         return info
 
     def suggest_landmarks(self) -> dict:
         """Предложить мыщелки и порионы по сегментации (не трогая поставленные врачом)."""
         found = {}
         if "mandible" in self.structures:
-            found.update(lmk.suggest_condyles(self.structures["mandible"].vertices))
+            found.update(self._mandible_condyles())  # головки — без венечного отростка
         mid_x = float(np.median(self.structures["mandible"].vertices[:, 0])) if "mandible" in self.structures else 0.0
         for side, key in (("right", "Po_R"), ("left", "Po_L")):
             canal = self.structures.get(f"auditory_canal_{side}")
