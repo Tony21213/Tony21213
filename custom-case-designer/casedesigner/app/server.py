@@ -18,7 +18,7 @@ from . import errorlog
 from .session import Session
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-USER_ERRORS = (ValueError, FileNotFoundError, KeyError, RuntimeError)
+USER_ERRORS = (ValueError, FileNotFoundError, FileExistsError, KeyError, RuntimeError)
 
 
 class Jobs:
@@ -241,6 +241,12 @@ def make_handler(session: Session, jobs: Jobs):
                 return self.job("Экспорт", lambda progress: s.export(b["out_dir"], b.get("bite", "scan"),
                                                                       b.get("frame", "exocad"), b.get("include"),
                                                                       b.get("reference")))
+            if p == ["export", "exocad-articulator"] and method == "POST":
+                b = self.body()
+                project, out_dir = b.get("project"), b.get("out")
+                s.validate_exocad_articulator(project, out_dir)
+                return self.job("Экспорт для exocad с артикулятором",
+                                lambda progress: s.export_exocad_articulator(project, out_dir, progress))
             self.json({"error": f"нет такого запроса: {method} /api/{'/'.join(p)}"}, 404)
 
     return Handler

@@ -18,6 +18,7 @@ const TRANSLUCENT = { mandible: 0.42, maxilla: 0.42, skull: 0.3, maxillary_sinus
 const state = {
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
   modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
+  exocadProjectPath: null, exocadArticulatorResult: null,
   models: null, download: null, downloadError: null, articulation: null, articulationAnalysis: null,
   articulationContacts: [], articulationGuides: null, articulationCondyles: null,
   condyleEditing: null, // right / left: точка ставится на кости в 3D и двигается стрелками
@@ -221,6 +222,10 @@ function hide(text) {
     const f = /^[^\s\\/]*\.\w{1,8}(?=\s|$)/.exec(tail);
     return f ? `…${tail.slice(f[0].length)}` : '…'; // без расширения не понять, где кончается путь
   });
+}
+
+function html(text) {
+  return String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
 async function toggleIncognito() {
@@ -836,6 +841,30 @@ async function doExport() {
   });
 }
 
+async function chooseExocadProject() {
+  const paths = await choose('ctdir', 'Папка проекта exocad');
+  if (!paths) return;
+  state.exocadProjectPath = paths[0];
+  state.exocadArticulatorResult = null;
+  render();
+}
+
+async function doExportExocadArticulator() {
+  if (!state.exocadProjectPath) return toast('Выберите папку проекта exocad');
+  const c = state.articulationCondyles;
+  if (!c?.available || !c.ready || !c.applied) return toast('Сначала подготовьте и примените монтаж по мыщелкам');
+  await busy('Выгрузка для exocad с артикулятором', async (progress) => {
+    state.exocadArticulatorResult = await run('export/exocad-articulator',
+      { project: state.exocadProjectPath, out: null }, progress);
+  });
+}
+
+async function prepareExport() {
+  try { state.articulationCondyles = await get('articulation/condyles'); }
+  catch (e) { toast(e.message); }
+  render();
+}
+
 // ---------- кейс: сохранить и открыть ----------
 async function saveCase(as = false) {
   if (!state.ct && !state.scans.length) return toast('Нечего сохранять: откройте КТ или добавьте сканы');
@@ -1015,10 +1044,40 @@ function renderExport() {
       <div class="path" ${state.incognito ? '' : `title="${res.out_dir}"`}>${hide(res.out_dir)}</div>
       <button class="btn ghost wide sm" style="margin-top:8px" data-a="openout">${icons.folder}Открыть папку</button>
       ${(res.notes || []).map((n) => `<div class="warning">${icons.warn}<span>${hide(n)}</span></div>`).join('')}</div>` : '';
+  const c = state.articulationCondyles;
+  const condylesReady = !!c?.available && !!c.ready && !!c.applied;
+  const movementCount = state.articulation?.movements?.length || 0;
+  const readiness = (kind, text) => `<div class="exocad-export-readiness ${kind}"><i></i><span>${html(text)}</span></div>`;
+  const projectStatus = state.exocadProjectPath ? 'Папка проекта выбрана.' : 'Выберите папку проекта exocad.';
+  const condyleStatus = !c?.available ? 'Откройте КТ, чтобы расставить мыщелки.'
+    : !c.ready ? `Точки мыщелков не готовы: ${condyleReason(c)}.`
+      : !c.applied ? 'Выполните монтаж моделей по точкам мыщелков.' : 'Мыщелки готовы, монтаж применён.';
+  const motionStatus = movementCount ? `Движения подготовлены: ${movementCount}.`
+    : 'Движения ещё не построены. Выгрузка будет без траекторий.';
+  const exportResult = state.exocadArticulatorResult;
+  const exportRoles = Object.entries(exportResult?.files || {}).map(([role, files]) => {
+    const count = Array.isArray(files) ? files.length : Number.isFinite(files) ? files : 1;
+    const title = role === 'эстетический вид' ? 'Вид Smile Design' : role;
+    return `<div class="exocad-export-role"><b>${html(title)}</b><span>${count} ${plural(count, 'файл', 'файла', 'файлов')}</span></div>`;
+  }).join('');
+  const exportNotes = (exportResult?.notes || []).map((n) => `<div class="warning">${icons.warn}<span>${html(hide(n))}</span></div>`).join('');
+  const exocadResult = exportResult ? `<div class="exocad-export-summary">${exportRoles}</div>
+    <div class="exocad-export-copy">Скопируйте папку артикулятора из <b>KStomCaseDesigner/articulator</b>
+      в <b>library/articulator</b> exocad. Файлы программы exocad приложение не меняет.</div>${exportNotes}` : '';
+  const exocadExport = `<div class="card exocad-export"><div class="card-head">${icons.export}<h3>Для exocad с артикулятором</h3></div>
+    <p class="muted small">Создаёт копию проекта с моделями, движениями, костями и настройками артикулятора.
+      При эстетическом монтаже добавляется роль «Вид Smile Design».</p>
+    ${readiness(state.exocadProjectPath ? 'ok' : '', projectStatus)}
+    ${readiness(condylesReady ? 'ok' : 'warn', condyleStatus)}
+    ${readiness(movementCount ? 'ok' : '', motionStatus)}
+    ${state.exocadProjectPath ? '<button class="btn ghost wide sm" data-a="exocad-project">Выбрать другой проект…</button>'
+      : '<button class="btn wide" data-a="exocad-project">Выбрать папку проекта…</button>'}
+    <button class="btn primary wide" style="margin-top:6px" data-a="exocad-articulator" ${state.exocadProjectPath && condylesReady ? '' : 'disabled'}>
+      ${icons.export}Создать копию для exocad</button>${exocadResult}</div>`;
   return `<h2>Экспорт</h2><p class="lead">STL всех видимых объектов в единой системе координат и case.json с матрицами.</p>
     <div class="label">Система координат</div>${frames}
     <button class="btn primary wide" data-a="export" ${ready ? '' : 'disabled'}>${icons.export}Экспортировать в папку…</button>
-    ${ready ? '' : `<p class="muted small">${state.ct ? 'Сегментируйте КТ или совместите сканы.' : 'Добавьте сканы.'}</p>`}${result}`;
+    ${ready ? '' : `<p class="muted small">${state.ct ? 'Сегментируйте КТ или совместите сканы.' : 'Добавьте сканы.'}</p>`}${result}${exocadExport}`;
 }
 
 const CONDYLE_SIDES = {
@@ -1163,7 +1222,7 @@ document.addEventListener('click', async (e) => {
     state.step = d.step;
     endCondyleEdit();
     slices.forEach((v) => v.draw());
-    return d.step === 'articulation' ? prepareArticulation() : render();
+    return d.step === 'articulation' ? prepareArticulation() : d.step === 'export' ? prepareExport() : render();
   }
   if (d.condyleConfirm) return updateCondyles('/confirm', { side: d.condyleConfirm });
   if (d.condyleReset) return updateCondyles('/reset', { side: d.condyleReset });
@@ -1219,6 +1278,7 @@ document.addEventListener('click', async (e) => {
     return render();
   }
   const action = { ct: () => openCt('ct'), ctdir: () => openCt('ctdir'), scan: addScans, segment, export: doExport,
+    'exocad-project': chooseExocadProject, 'exocad-articulator': doExportExocadArticulator,
     getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog,
     openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog, incognito: toggleIncognito,
     scansonly: () => { state.step = 'scans'; render(); } }[d.a];

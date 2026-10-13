@@ -1196,6 +1196,57 @@ class Session:
         return {"out_dir": out_dir, "files": sorted(report["files"]), "notes": report["notes"],
                 "bite": report["ct_bite_vs_scans"], "frame": report["frame"]}
 
+    def validate_exocad_articulator(self, project_dir: str, out_dir: str | None = None) -> tuple[str, str]:
+        """Проверить исходный проект, путь назначения, монтаж по готовым мыщелкам и обе челюсти.
+
+        Возвращает целевую папку и имя копии; вызывается до постановки фоновой задачи, чтобы ошибки
+        пользовательского ввода и готовности пришли HTTP 400, а не скрылись внутри ответа job.
+        """
+        from .. import exocad_articulator_export as xa
+
+        errorlog.private(project_dir, "проект exocad")
+        errorlog.private(out_dir, "папка выгрузки exocad")
+        if not isinstance(project_dir, str) or not project_dir.strip():
+            raise ValueError("выберите папку проекта exocad")
+        if out_dir is not None and (not isinstance(out_dir, str) or not out_dir.strip()):
+            raise ValueError("папка выгрузки должна быть путём или null")
+
+        condyles = self.articulation_condyles()
+        if not condyles["available"]:
+            raise ValueError("для выгрузки с артикулятором откройте КТ")
+        if not condyles["ready"]:
+            problems = [c["text"] for c in condyles["checks"] if c["level"] == "error"]
+            missing = [s for s, p in condyles["points"].items() if p["ct"] is None]
+            detail = "; ".join(([f"нет точки мыщелка: {', '.join(missing)}"] if missing else []) + problems)
+            raise ValueError("точки мыщелков не готовы" + (f": {detail}" if detail else ""))
+        if not condyles["applied"]:
+            raise ValueError("выполните монтаж моделей по точкам мыщелков")
+        if self.jaw.anatomy is None:
+            raise ValueError("сначала смонтируйте модели в шаге «Артикулятор»")
+        upper, lower = self._jaw_items()
+        if upper is None or lower is None or upper.get("reg") is None or lower.get("reg") is None:
+            raise ValueError("нужны совмещённые сканы обеих челюстей")
+
+        folder, stem = xa.target(project_dir, out_dir)
+        if os.path.exists(folder) and (not os.path.isdir(folder) or os.listdir(folder)):
+            raise FileExistsError("папка для копии проекта уже существует и не пуста — выберите другую")
+        return folder, stem
+
+    def export_exocad_articulator(self, project_dir: str, out_dir: str | None = None, progress=None) -> dict:
+        """Выгрузить копию проекта exocad после проверки готовых и применённых точек мыщелков."""
+        from .. import exocad_articulator_export as xa
+
+        self.validate_exocad_articulator(project_dir, out_dir)
+        if progress:
+            progress(0.1, "Собираю сканы, кости и движения")
+        case = xa.case_from_session(self)
+        if progress:
+            progress(0.35, "Создаю копию проекта exocad")
+        result = xa.export(case, project_dir, out_dir)
+        if progress:
+            progress(1.0, "Выгрузка готова")
+        return result
+
     def open_export_folder(self):
         """Показать папку последнего экспорта в проводнике (только её — путь не приходит снаружи)."""
         folder = getattr(self, "last_export", None)

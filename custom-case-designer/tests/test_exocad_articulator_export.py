@@ -149,6 +149,21 @@ def test_antagonist_falls_back_to_sam_2p(case, project, register, tmp_path):
     assert "<AntagonistType>ArticulatorSendling</AntagonistType>" in text
 
 
+def test_export_without_bones_or_skull_uses_standard_inserts(case, project, register, tmp_path):
+    case.bones = {}
+    case.condylar_paths = None
+    out = tmp_path / "without-bones"
+    result = xa.export(case, str(project), str(out), register=register,
+                       exocad_app=exocad_app(tmp_path, custom=True))
+
+    assert "кости-каркасы" not in result["files"]
+    assert any("вставки ССП в артикуляторе стандартные" in note for note in result["notes"])
+    values = ET.parse(out / xa.SUBFOLDER / "articulator" / "Custom Case Designer" /
+                      "articulatorparameters.xml").getroot()
+    assert values.findtext("CurrentCondylarInsertColorRight") is None
+    assert values.findtext("CurrentBennettInsertColorLeft") is None
+
+
 def test_aesthetic_axes_give_smile_design_view(case, project, register, tmp_path):
     """Есть эстетическая система — в копии проекта набор изображений: «Вид Smile Design» по эстетическому «вперёд»."""
     app = exocad_app(tmp_path, custom=True)
@@ -229,7 +244,6 @@ def test_case_from_session_adds_opening_on_patient_axis(case):
 
 # --- задачи ведомого ------------------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="ведомый: метод сессии и маршрут API выгрузки")
 def test_session_and_api_contract():
     import inspect
 
@@ -238,4 +252,87 @@ def test_session_and_api_contract():
 
     sig = inspect.signature(Session.export_exocad_articulator)
     assert list(sig.parameters)[1:3] == ["project_dir", "out_dir"]
-    assert "exocad_articulator" in inspect.getsource(server)
+    assert '"exocad-articulator"' in inspect.getsource(server)
+
+
+def _http_export(server, body):
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{server.server_address[1]}/api/export/exocad-articulator",
+        data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        raw = error.read()
+        try:
+            body = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            body = raw.decode("utf-8", errors="replace")
+        return error.code, body
+
+
+def _export_session(ready=True, applied=True):
+    from casedesigner.app.session import Session
+
+    session = Session.__new__(Session)
+    session.articulation_condyles = lambda: {
+        "available": True, "ready": ready, "applied": applied,
+        "points": {"right": {"ct": [1, 2, 3]}, "left": {"ct": [4, 5, 6]}}, "checks": []}
+    session.jaw = SimpleNamespace(anatomy=object())
+    session._jaw_items = lambda: ({"reg": object()}, {"reg": object()})
+    return session
+
+
+def test_http_export_creates_project_copy_with_aesthetic_role(case, project, register, tmp_path, monkeypatch):
+    import time
+
+    from casedesigner.app.server import serve
+
+    app = exocad_app(tmp_path, custom=True)
+    monkeypatch.setattr(ef, "find_exocad", lambda: app)
+    monkeypatch.setattr(ef, "load_register", lambda _path: register)
+    case.aesthetic = np.eye(3)
+    monkeypatch.setattr(xa, "case_from_session", lambda _session: case)
+    server = serve(_export_session())
+    try:
+        status, answer = _http_export(server, {"project": str(project), "out": None})
+        assert status == 200 and set(answer) == {"job"}
+        for _ in range(200):
+            with __import__("urllib.request").request.urlopen(
+                    f"http://127.0.0.1:{server.server_address[1]}/api/jobs/{answer['job']}") as response:
+                job = json.loads(response.read())
+            if job["status"] == "done":
+                break
+            assert job["status"] != "error", job["error"]
+            time.sleep(0.02)
+        else:
+            raise AssertionError("фоновая выгрузка не завершилась")
+
+        copied = project.parent / (project.name + xa.COPY_SUFFIX)
+        assert job["result"]["files"]["эстетический вид"] == ["case-001-KStom.treatmentImages",
+                                                                    "case-001-KStom-smile.jpg"]
+        assert (copied / "case-001-KStom.dentalProject").is_file()
+        assert (copied / "case-001-KStom.jawmotion").is_file()
+        assert (copied / "KStomCaseDesigner" / "articulator.json").is_file()
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(("body", "ready", "applied", "message"), [
+    ({}, True, True, "выберите папку проекта"),
+    ({"project": "project"}, False, False, "точки мыщелков не готовы"),
+    ({"project": "project"}, True, False, "выполните монтаж моделей"),
+])
+def test_http_export_validation_errors_are_400(body, ready, applied, message):
+    from casedesigner.app.server import serve
+
+    server = serve(_export_session(ready, applied))
+    try:
+        status, answer = _http_export(server, body)
+        assert status == 400
+        assert message in answer["error"]
+    finally:
+        server.shutdown()

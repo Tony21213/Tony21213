@@ -365,3 +365,22 @@ button.badge:hover { color: var(--text); }
 .keys span { color: var(--muted); }
 .help-btn { width: 28px; padding: 0; justify-content: center; }
 .incognito-btn.on { background: var(--accent-soft); color: var(--accent-2); }
+
+/* выгрузка копии проекта exocad с артикулятором */
+.exocad-export-readiness {
+  display: flex; align-items: flex-start; gap: 8px; margin: 7px 0; padding: 7px 8px;
+  border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--bg-2); color: var(--muted);
+  font-size: 11.5px;
+}
+.exocad-export-readiness > i { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; flex: none; background: var(--faint); }
+.exocad-export-readiness.ok { color: var(--ok); background: var(--ok-soft); border-color: rgba(62, 207, 142, .22); }
+.exocad-export-readiness.ok > i { background: var(--ok); }
+.exocad-export-readiness.warn { color: #f3d79a; background: var(--warn-soft); border-color: rgba(245, 184, 75, .25); }
+.exocad-export-readiness.warn > i { background: var(--warn); }
+.exocad-export-readiness span { min-width: 0; }
+.exocad-export-summary { display: grid; gap: 5px; margin-top: 10px; }
+.exocad-export-role { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 5px 7px; background: var(--bg-2); border-radius: var(--radius-s); }
+.exocad-export-role b { flex: 1; min-width: 0; font-weight: 500; }
+.exocad-export-role span { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.exocad-export-copy { margin: 9px 0 0; padding: 7px 8px; border-left: 2px solid var(--accent); background: var(--accent-soft); color: var(--muted); font-size: 11.5px; }
+.exocad-export-copy b { color: var(--text); font-weight: 500; }
