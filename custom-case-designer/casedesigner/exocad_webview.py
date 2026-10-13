@@ -32,7 +32,8 @@ import numpy as np
 from . import kinematics as kin
 from . import motion as mo
 from .arch_teeth import ArchLine, contacts_by_tooth
-from .guidance import CONDYLE_RADIUS_MM, condylar_path, eminence_profile, hanau_bennett
+from .guidance import (CONDYLE_RADIUS_MM, SAGITTAL_PLAUSIBLE_DEG, condylar_path, eminence_profile, hanau_bennett,
+                       plausible_sagittal)
 from .landmarks import suggest_condyles
 from .register import apply, rigid
 
@@ -405,7 +406,8 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=No
         co = {"Co_R": np.asarray(condyles["right"], float), "Co_L": np.asarray(condyles["left"], float)}
         where = "КТ: мыщелки — точки Co_R, Co_L кейса"
     else:
-        co = suggest_condyles(mandible.vertices, up=up, left=-right, anterior=anterior) if mandible is not None else {}
+        co = (suggest_condyles(mandible.vertices, up=up, left=-right, anterior=anterior,
+                               faces=getattr(mandible, "faces", None)) if mandible is not None else {})
         where = "КТ: мыщелки по нижней челюсти"
     tops = {"right": co["Co_R"], "left": co["Co_L"]} if len(co) == 2 else {}
     if tops:
@@ -439,6 +441,11 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=No
                 info = condylar_path(*eminence_profile(skull.vertices, skull.faces, anatomy.frame, at))
             except ValueError as e:
                 notes.append(f"{'правый' if side == 'right' else 'левый'} бугорок: {e}")
+                continue
+            if not plausible_sagittal(info["sagittal_deg"]):
+                lo, hi = SAGITTAL_PLAUSIBLE_DEG
+                notes.append(f"{'правый' if side == 'right' else 'левый'} бугорок: ССП {info['sagittal_deg']:.0f}° вне "
+                             f"{lo:g}–{hi:g}° — не применён, стандартный; проверьте мыщелок и сегментацию сустава")
                 continue
             eminence[side] = {k: v for k, v in info.items() if k != "path"}
             setattr(settings, f"sagittal_{side}_deg", info["sagittal_deg"])

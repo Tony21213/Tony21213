@@ -277,10 +277,14 @@ def case_from_session(session) -> ArticulatorCase:
             try:
                 y, z = guidance.eminence_profile(np.asarray(skull.vertices), np.asarray(skull.faces),
                                                  jaw.anatomy.frame, p.point)
-                paths[side] = guidance.condylar_path(y, z)["path"]
+                info = guidance.condylar_path(y, z)
             except ValueError:
                 paths = None
                 break
+            if not guidance.plausible_sagittal(info["sagittal_deg"]):  # профиль не с сустава — вставки стандартные
+                paths = None
+                break
+            paths[side] = info["path"]
     recs = [m.recording for m in jaw.movements.values()]
     if recs and not any(m.recorded for m in jaw.movements.values()) \
             and not any(ef.movement_type(r.name) == "opening" for r in recs):
