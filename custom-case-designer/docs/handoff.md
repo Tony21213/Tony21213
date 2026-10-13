@@ -10,20 +10,23 @@
 
 | Задача | Исполнитель | Ветка | Занятые файлы | Состояние | Передача |
 |---|---|---|---|---|---|
-| Опись параметров артикуляторов exocad для «кривой» оси | Codex | `follower/pc-checks` | — | принято (`bb6841b`): параметров по сторонам нет | `docs/handoff/archive/exocad-axis-params.md` |
-| Порог предупреждения о перекосе дуги по реальным КЛКТ | Codex | `follower/pc-checks` | — | принято (`424a79e`): 0,3 / 0,4 мм — рабочие, ложные тревоги не проверены | `docs/handoff/archive/quality-threshold.md` |
-| Проверка исправления прикуса на архиве (Б.3) | Codex | `follower/pc-checks` | — | принято (`ba6c208`): дефект — уход без контактов (кейсы 4, 5), чинит ведущий в каркасе «Исправить прикус» | `docs/handoff/archive/bite-archive-check.md` |
-| «Кривая» ось в exocad: шарнир точно + эстетические виды | Claude | `lead/exocad-aesthetic-views` | `mount_planes.py`, `jawcase.py`, `exocad_webview.py`, `exocad_views.py`, `exocad_articulator_export.py` | решено (13.10, проверено в exocad на кейсе 3): плоскость «эстетическая через мыщелки» + «Вид Smile Design» из `.treatmentImages`; остаток к эстетике 0,9° | запись «ГЛАВНОЕ» в `docs/ideas.md`, `docs/exocad.md` | запись «ГЛАВНОЕ» в `docs/ideas.md` (12.10) |
-| Разделение `session.py`, `server.py`, `app.js` по шагам | Claude | `lead/split-steps` | `app/session.py`, `app/server.py`, `app/web/app.js` | в работе | — |
-| Выгрузка «Для exocad с артикулятором» — интерфейс | Codex | — | шаг «Экспорт» (после разделения) | каркас готов, очередь интерфейса №1 | `docs/handoff/exocad-articulator-export.md` |
-| Плоскость монтажа — интерфейс и настройка | Codex | — | шаг «Артикулятор», настройки (после разделения) | каркас готов, очередь интерфейса №2 | `docs/handoff/mount-plane.md` |
+| 1. Выгрузка «Для exocad с артикулятором» — интерфейс | Codex | `follower/exocad-export-ui` | `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css`, `docs/exocad.md` (раздел выгрузки) | **к работе — первая** | `docs/handoff/exocad-articulator-export.md` |
+| 2. Плоскость монтажа — интерфейс и настройка (7 плоскостей, по умолчанию — «эстетическая через мыщелки») | Codex | `follower/mount-plane-ui` | те же, после №1 | очередь Codex №2 | `docs/handoff/mount-plane.md` |
+| 3. Сустав отдельно: показ головок и скатов, заметка замены точки ALI | Codex | `follower/tmj-segments-ui` | те же, после №2 | очередь Codex №3 | `docs/handoff/tmj-segments.md` |
+| 4. Проверка на архиве КТ: головки против ALI, скаты, ССП | Codex | — (на ПК, вне репозитория) | только `docs/handoff/tmj-archive-check.md` | можно параллельно с №1 | `docs/handoff/tmj-archive-check.md` |
+| «Кривая» ось в exocad: шарнир точно + эстетические виды | Claude | `lead/exocad-aesthetic-views` | — | принято в общую ветку (`829fbb1`): «эстетическая через мыщелки» + «Вид Smile Design» из `.treatmentImages`; остаток к эстетике 0,9° (кейс 3) | `docs/exocad.md`, «Эстетический вид» |
+| Сустав отдельно: головки и скаты (ядро) | Claude | `lead/tmj-segments` | `landmarks.py`, `guidance.py`, `condyles.py`, `exocad_webview.py` | каркас готов (идея владельца): головки по связности сетки, ALI > 4 мм → головка, скаты, ССП 5–75° | `docs/handoff/tmj-segments.md` |
+| Каркас «Исправить прикус» (отказ без контактной опоры, предел поправки) | Claude | `lead/bite-correction` | `bite.py` | следующая у ведущего | `docs/handoff/archive/bite-archive-check.md` (дефект) |
+| Разделение `session.py`, `server.py`, `app.js` по шагам | Claude | `lead/split-steps` | — | отложено до приёмки №1–3 (одни файлы) | — |
+| Опись параметров exocad; порог перекоса; прикус на архиве | Codex | `follower/pc-checks` | — | принято (`bb6841b`, `424a79e`, `ba6c208`) | `docs/handoff/archive/` |
 | Ручная проверка и поправка мыщелков | Codex, Claude | — | — | принято (`bc0476b`) | `docs/handoff/archive/condyle-adjustment.md` |
 
-Очередь интерфейса (Codex, по одной): выгрузка для exocad → плоскость монтажа → кнопка
-«Исправить прикус» (каркас — у ведущего, шаг «Сканы»).
+Очередь Codex (интерфейс — по одной, одни файлы): №1 выгрузка для exocad → №2 плоскость монтажа → №3
+суставы; №4 (проверка на архиве) — параллельно, файлы не пересекаются. Каждая — своя ветка от последнего
+коммита общей ветки, перед началом — `git fetch`.
 
-Очередь ведущего: «кривая» ось (опыты → реализация) → разделение файлов интерфейса по шагам →
-каркас «Исправить прикус» (с отказом без контактной опоры и пределом поправки) → разбор входящих и чистка карты → ядро суставного пути в 3D.
+Очередь ведущего: каркас «Исправить прикус» → приёмка №1–4 → разделение файлов интерфейса по шагам →
+разбор входящих и чистка карты → ядро суставного пути в 3D.
 
 Вопросы владельцу: публикация моделей (`models-v1`, `landmarks-v1` — на GitHub их нет, скачивание из
 программы не работает; для `landmarks-v1` таблица хешей в `model_store.py` должна совпасть с
