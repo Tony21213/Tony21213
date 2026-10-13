@@ -14,7 +14,7 @@ from casedesigner import exocad_webview as ew
 from casedesigner.guidance import CONDYLE_RADIUS_MM
 from casedesigner import mount_planes as mp
 from casedesigner.jawcase import JawCase, Mesh
-from casedesigner.register import apply
+from casedesigner.register import apply, axis_angle
 
 from test_exocad_webview import arch_ribbon
 from test_motion import temporal_bone
@@ -145,14 +145,72 @@ def test_jawcase_plane_in_state_undo_and_file(tmp_path):
     assert jc.plane == "occlusal" and jc.state()["mounting"]["plane"]["key"] == "occlusal"
 
 
+def face_cloud(roll_deg=3.0, n=1500, seed=0):
+    """«Лицевой скелет», зеркально симметричный относительно плоскости, повёрнутой на roll_deg вокруг оси «вперёд»."""
+    rng = np.random.default_rng(seed)
+    half = np.c_[rng.uniform(5, 60, n), rng.uniform(-20, 100, n), rng.uniform(-40, 40, n)]
+    sym = np.vstack([half, half * [-1, 1, 1]]) + [0.0, 0.0, 10.0]
+    R = axis_angle(np.array([0, 1.0, 0]), np.radians(roll_deg))
+    return sym @ R.T
+
+
+def test_aesthetic_plane_from_face_symmetry():
+    """Лицо симметрично плоскости с креном 3° к окклюзионной: модели — по ней; ССП — от базовой горизонтали."""
+    upper, lower = scans()
+    jc = JawCase()
+    jc.set_scans(Mesh(*upper, "верх"), Mesh(*lower, "низ"))
+    jc.skull = Mesh(skull().vertices, skull().faces, "череп")
+    st = jc.mount("ct", condyles=CO, ct_condyles=CO, plane="aesthetic", face_points=face_cloud(3.0))
+    x = jc.anatomy.frame[0, :3]
+    assert abs(np.degrees(np.arcsin(x[2]))) == pytest.approx(3.0, abs=0.3)  # «вправо» с креном лица
+    assert st["mounting"]["plane"]["key"] == "aesthetic" and any("эстетическая" in n for n in st["notes"])
+    assert jc.settings.frame is not None  # углы — от базовой (окклюзионной) горизонтали
+    for side in ("right", "left"):
+        assert jc.settings.get("sagittal", side) == pytest.approx(ALPHA[side], abs=0.7)
+    # с точками франкфуртской базовая — она
+    jc.mount("ct", condyles=CO, ct_condyles=CO, plane="aesthetic", landmarks=landmarks(), face_points=face_cloud(3.0))
+    assert "франкфуртская" in jc.anatomy.source
+    assert jc.settings.get("sagittal", "right") == pytest.approx(ALPHA["right"] + 10.0, abs=0.7)
+    with pytest.raises(ValueError, match="кости лица"):
+        JawCase.mount(_bare(), "ct", condyles=CO, plane="aesthetic")
+
+
+def _bare():
+    upper, lower = scans()
+    jc = JawCase()
+    jc.set_scans(Mesh(*upper, "верх"), Mesh(*lower, "низ"))
+    return jc
+
+
+def test_default_plane_resolves_with_fallback():
+    """Плоскость по умолчанию (настройка программы): нет точек — следующая по цепочке, в конце окклюзионная."""
+    lm = landmarks()
+    assert mp.resolve(None, {}, CO) == ("occlusal", None)
+    assert mp.resolve("frankfurt", lm, CO) == ("frankfurt", None)
+    kind, note = mp.resolve("axis_orbital", {}, CO)
+    assert kind == "occlusal" and "Оси-орбитальная" in note and "Франкфуртская" in note
+    assert mp.resolve("aesthetic", lm, CO, face=True) == ("aesthetic", None)
+    kind, note = mp.resolve("aesthetic", lm, CO, face=False)
+    assert kind == "frankfurt" and "кости лица" in note
+    assert mp.base_for_aesthetic(lm, CO) == "frankfurt" and mp.base_for_aesthetic({}, CO) == "occlusal"
+    with pytest.raises(ValueError, match="нет такой плоскости"):
+        mp.resolve("bonwill", lm, CO)
+
+
 # --- задачи ведомого ------------------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="ведомый: выбор плоскости в сессии, API и шаге «Артикулятор»")
-def test_session_and_api_contract():
+@pytest.mark.xfail(strict=True, reason="ведомый: выбор плоскости в сессии, API, настройках и шаге «Артикулятор»")
+def test_session_and_api_contract(tmp_path):
     from casedesigner.app import server
     from casedesigner.app.session import Session
 
     assert "plane" in inspect.signature(Session.articulation_mount).parameters
-    assert set(Session.articulation_planes(Session()).keys()) >= {"planes", "current"}
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    assert s.settings["mount_plane"] == "occlusal"  # плоскость по умолчанию — настройка программы
+    s.set_default_mount_plane("frankfurt")
+    assert Session(memory_path=str(tmp_path / "memory.jsonl")).settings["mount_plane"] == "frankfurt"
+    with pytest.raises(ValueError):
+        s.set_default_mount_plane("bonwill")
+    assert set(s.articulation_planes()) >= {"planes", "current", "default", "tilt"}
     src = inspect.getsource(server)
-    assert '"planes"' in src
+    assert '"planes"' in src and "mount_plane" in src

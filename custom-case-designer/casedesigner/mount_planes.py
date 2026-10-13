@@ -8,7 +8,14 @@
   дуги. Ось «вправо» — линия мыщелков, поэтому шарнир артикулятора проходит через оба мыщелка даже при их разной
   высоте; модели в артикуляторе при этом наклоняются вместе с осью пациента;
 * **Кемпера** — козелки и крылья носа (Tr_R, Tr_L, Al): мягкие ткани, примерно параллельна окклюзионной;
-* **HIP** — крыловидно-челюстные вырезки и резцовый сосочек (HN_R, HN_L, IP).
+* **HIP** — крыловидно-челюстные вырезки и резцовый сосочек (HN_R, HN_L, IP);
+* **эстетическая** — по лицу: крен, разворот и средняя линия — по симметрии лицевого скелета на КТ
+  (aesthetic.aesthetic_frame_ct; позже — по фото анфас), наклон вперёд-назад — от базовой функциональной плоскости
+  (франкфуртская, если есть её точки, иначе окклюзионная: base_for_aesthetic). Строится в JawCase.mount по костям
+  лица (череп), а не по ориентирам; углы суставов остаются от базовой горизонтали и пересчитываются к эстетической.
+
+Плоскость по умолчанию — настройка программы (resolve): если для неё нет точек (или костей лица), берётся
+следующая по цепочке FALLBACK, в конце — окклюзионная, с заметкой, почему.
 
 Ориентиры — landmarks, мм КТ. Порионы, орбитали, мыщелки ALI-CBCT находит сам, точки Кемпера и HIP ставит врач.
 Точки черепа неподвижны вместе с верхней челюстью, поэтому годятся и в координатах кейса; мыщелки — в прикусе монтажа
@@ -31,7 +38,11 @@ PLANES = {
     "axis_orbital": {"name": "Оси-орбитальная (мыщелки — орбиталь)", "points": (("Co_R",), ("Co_L",), ("Or_R", "Or_L"))},
     "camper": {"name": "Кемпера (козелок — крыло носа)", "points": (("Tr_R",), ("Tr_L",), ("Al_R", "Al_L"))},
     "hip": {"name": "HIP (вырезки — резцовый сосочек)", "points": (("HN_R",), ("HN_L",), ("IP",))},
+    "aesthetic": {"name": "Эстетическая (по лицу)", "points": (), "face": True},
 }
+# Если для плоскости по умолчанию нет точек: на что переходить (в конце всегда окклюзионная).
+FALLBACK = {"aesthetic": "frankfurt", "axis_orbital": "frankfurt", "camper": "frankfurt", "hip": "frankfurt",
+            "frankfurt": "occlusal"}
 
 
 def _check(kind: str):
@@ -53,9 +64,12 @@ def _points(kind: str, landmarks: dict, condyles: dict | None) -> list | None:
     return out
 
 
-def missing(kind: str, landmarks: dict | None, condyles: dict | None = None) -> list[str]:
-    """Названия недостающих ориентиров плоскости (для орбитали — если нет ни одной стороны)."""
+def missing(kind: str, landmarks: dict | None, condyles: dict | None = None, face: bool = False) -> list[str]:
+    """Названия недостающих ориентиров плоскости (для орбитали — если нет ни одной стороны); face — есть ли кости
+    лица (череп) для эстетической."""
     _check(kind)
+    if PLANES[kind].get("face"):
+        return [] if face else ["кости лица (сегментация черепа)"]
     have = set(landmarks or {}) | ({"Co_R", "Co_L"} if condyles is not None else set())
     out = []
     for keys in PLANES[kind]["points"]:
@@ -67,10 +81,29 @@ def missing(kind: str, landmarks: dict | None, condyles: dict | None = None) -> 
     return out
 
 
-def available(landmarks: dict | None, condyles: dict | None = None) -> dict:
+def available(landmarks: dict | None, condyles: dict | None = None, face: bool = False) -> dict:
     """Все плоскости: название, можно ли построить, чего не хватает."""
-    return {k: {"name": p["name"], "available": not missing(k, landmarks, condyles),
-                "missing": missing(k, landmarks, condyles)} for k, p in PLANES.items()}
+    return {k: {"name": p["name"], "available": not missing(k, landmarks, condyles, face),
+                "missing": missing(k, landmarks, condyles, face)} for k, p in PLANES.items()}
+
+
+def base_for_aesthetic(landmarks: dict | None, condyles: dict | None = None) -> str:
+    """Базовая функциональная плоскость эстетической (наклон вперёд-назад): франкфуртская, если есть точки."""
+    return "frankfurt" if not missing("frankfurt", landmarks, condyles) else DEFAULT
+
+
+def resolve(preferred: str | None, landmarks: dict | None, condyles: dict | None = None,
+            face: bool = False) -> tuple[str, str | None]:
+    """Плоскость монтажа для кейса по настройке preferred: она сама, если её можно построить, иначе следующая по
+    FALLBACK (в конце — окклюзионная). Возвращает (ключ, заметка — почему не preferred, или None)."""
+    kind = preferred or DEFAULT
+    _check(kind)
+    tried = []
+    while missing(kind, landmarks, condyles, face):
+        tried.append(f"{PLANES[kind]['name']} — нет: {', '.join(missing(kind, landmarks, condyles, face))}")
+        kind = FALLBACK.get(kind, DEFAULT)
+    note = None if not tried else "плоскость по умолчанию недоступна (" + "; ".join(tried) + f") — {PLANES[kind]['name']}"
+    return kind, note
 
 
 def rotation(kind: str, up, anterior, landmarks: dict | None = None, condyles: dict | None = None) -> np.ndarray:
@@ -79,6 +112,8 @@ def rotation(kind: str, up, anterior, landmarks: dict | None = None, condyles: d
     up, anterior — окклюзионные «вверх» и «вперёд» по сканам (mo.occlusal_up, mo.arch_axes); condyles — шарнирные
     точки {"right", "left"} в координатах кейса (в прикусе монтажа)."""
     _check(kind)
+    if PLANES[kind].get("face"):
+        raise ValueError("эстетическая плоскость строится по костям лица — монтаж через JawCase.mount(plane=...)")
     up, anterior = np.asarray(up, float), np.asarray(anterior, float)
     up /= np.linalg.norm(up)
     if kind == "occlusal":

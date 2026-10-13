@@ -161,7 +161,8 @@ class JawCase:
 
     # --- монтаж и суставы ---------------------------------------------------
     def mount(self, method: str = "auto", icd: float = mo.ICD_MM, condyles: dict | None = None,
-              ct_condyles: dict | None = None, plane: str = "occlusal", landmarks: dict | None = None) -> dict:
+              ct_condyles: dict | None = None, plane: str = "occlusal", landmarks: dict | None = None,
+              face_points=None) -> dict:
         """Смонтировать модели: average, ct (кость в кейсе), motion (записи движения) или auto.
 
         auto: по КТ, если есть кость нижней челюсти или заданы мыщелки; иначе по записи, если она
@@ -173,6 +174,9 @@ class JawCase:
         Без них мыщелки ищутся по кости нижней челюсти (casedesigner/condyles.py — приоритет точек).
         plane — плоскость монтажа (casedesigner/mount_planes.py: occlusal, frankfurt, axis_orbital, camper, hip) по
         ориентирам landmarks (мм КТ); выбирается только при монтаже по КТ, от неё же считаются углы ССП.
+        Эстетическая (plane="aesthetic") — монтаж по базовой плоскости (mount_planes.base_for_aesthetic), затем крен
+        и разворот по симметрии костей лица (face_points, по умолчанию череп кейса; aesthetic.aesthetic_frame_ct);
+        углы суставов остаются от базовой горизонтали (Settings.frame) и пересчитываются к эстетической.
         """
         from . import mount_planes as mp
 
@@ -201,11 +205,18 @@ class JawCase:
             if method == "ct" and self.mandible is None and condyles is None:
                 raise ValueError("кости нижней челюсти в кейсе нет — монтаж по КТ невозможен")
             ct = method == "ct"
+            aesthetic = plane == "aesthetic"
+            face = None
+            if aesthetic:
+                face = face_points if face_points is not None else (None if self.skull is None else self.skull.vertices)
+                if face is None:
+                    raise ValueError("для эстетической плоскости нужны кости лица (сегментация черепа)")
+            base_plane = mp.base_for_aesthetic(landmarks, condyles) if aesthetic else plane
             anatomy, settings, eminence, notes = ew.mount(self.upper.vertices, self.lower_vertices,
                                                           self.mandible if ct else None, self.skull if ct else None,
                                                           condyles=condyles if ct else None,
                                                           eminence_condyles=ct_condyles if ct else None,
-                                                          plane=plane, landmarks=landmarks)
+                                                          plane=base_plane, landmarks=landmarks)
             self.anatomy = anatomy
             base = self.settings.copy()
             for key, value in vars(settings).items():
@@ -215,6 +226,16 @@ class JawCase:
             if not any(v == "запись движения" for v in base.sources.values()):
                 base.frame = None  # углы — от горизонтали нового монтажа; углы записи — от своей
             self.settings = base
+            if aesthetic:
+                from . import aesthetic as ae
+
+                a = ae.aesthetic_frame_ct(self.anatomy.frame, np.asarray(face, float))
+                if self.settings.frame is None:
+                    self.settings.frame = self.anatomy.frame.copy()  # углы — от базовой функциональной горизонтали
+                self.anatomy = mo.Anatomy(np.asarray(a.frame, float), dict(self.anatomy.points),
+                                          f"{self.anatomy.source}; модели — по эстетической плоскости (по КТ, наклон "
+                                          f"— от {mp.PLANES[base_plane]['name'].lower()})", self.anatomy.hinge_rms_mm)
+                notes = list(notes) + list(a.notes)
         self.mounting = method
         self.plane = plane
         self.notes = notes
