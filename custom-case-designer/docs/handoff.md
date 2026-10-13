@@ -10,11 +10,11 @@
 
 | Задача | Исполнитель | Ветка | Занятые файлы | Состояние | Передача |
 |---|---|---|---|---|---|
-| Опись параметров артикуляторов exocad для «кривой» оси | Codex | `follower/exocad-axis-params` | — (только чтение файлов exocad) | в работе | `docs/handoff/exocad-axis-params.md` |
-| Порог предупреждения о перекосе дуги по реальным КЛКТ | Codex | `follower/skew-threshold` | `casedesigner/quality.py` и его тесты | в работе | `docs/handoff/skew-threshold.md` |
-| Проверка исправления прикуса на архиве (Б.3) | Codex | — (вне репозитория) | — | в работе | `docs/handoff/bite-archive-check.md` |
-| «Кривая» ось в exocad: опыты и реализация | Claude | `lead/exocad-crooked-axis` | `casedesigner/exocad_facebow.py` | опыт 1 — у владельца в exocad | запись «ГЛАВНОЕ» в `docs/ideas.md` (12.10) |
-| Разделение `session.py`, `server.py`, `app.js` по шагам | Claude | `lead/split-steps` | `app/session.py`, `app/server.py`, `app/web/app.js` | следующая у ведущего | — |
+| Опись параметров артикуляторов exocad для «кривой» оси | Codex | `follower/pc-checks` | — | принято (`bb6841b`): параметров по сторонам нет | `docs/handoff/archive/exocad-axis-params.md` |
+| Порог предупреждения о перекосе дуги по реальным КЛКТ | Codex | `follower/pc-checks` | — | принято (`424a79e`): 0,3 / 0,4 мм — рабочие, ложные тревоги не проверены | `docs/handoff/archive/quality-threshold.md` |
+| Проверка исправления прикуса на архиве (Б.3) | Codex | `follower/pc-checks` | — | принято (`ba6c208`): дефект — уход без контактов (кейсы 4, 5), чинит ведущий в каркасе «Исправить прикус» | `docs/handoff/archive/bite-archive-check.md` |
+| «Кривая» ось в exocad: опыты и реализация | Claude | `lead/exocad-crooked-axis` | `casedesigner/exocad_facebow.py` | опыты 1–2 отрицательные; ждёт: опыт 3 (вопрос exocad/дилеру) и выбор пути А или Б владельцем | запись «ГЛАВНОЕ» в `docs/ideas.md` (12.10) |
+| Разделение `session.py`, `server.py`, `app.js` по шагам | Claude | `lead/split-steps` | `app/session.py`, `app/server.py`, `app/web/app.js` | в работе | — |
 | Выгрузка «Для exocad с артикулятором» — интерфейс | Codex | — | шаг «Экспорт» (после разделения) | каркас готов, очередь интерфейса №1 | `docs/handoff/exocad-articulator-export.md` |
 | Плоскость монтажа — интерфейс и настройка | Codex | — | шаг «Артикулятор», настройки (после разделения) | каркас готов, очередь интерфейса №2 | `docs/handoff/mount-plane.md` |
 | Ручная проверка и поправка мыщелков | Codex, Claude | — | — | принято (`bc0476b`) | `docs/handoff/archive/condyle-adjustment.md` |
@@ -23,8 +23,8 @@
 «Исправить прикус» (каркас — у ведущего, шаг «Сканы»).
 
 Очередь ведущего: «кривая» ось (опыты → реализация) → разделение файлов интерфейса по шагам →
-каркас «Исправить прикус» → разбор входящих и чистка карты → ядро суставного пути в 3D.
+каркас «Исправить прикус» (с отказом без контактной опоры и пределом поправки) → разбор входящих и чистка карты → ядро суставного пути в 3D.
 
 Вопросы владельцу: публикация моделей (`models-v1`, `landmarks-v1` — на GitHub их нет, скачивание из
 программы не работает; для `landmarks-v1` таблица хешей в `model_store.py` должна совпасть с
-публикуемыми файлами).
+публикуемыми файлами); опыт 3 и выбор пути А или Б для «кривой» оси.
