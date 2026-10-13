@@ -16,6 +16,7 @@ import trimesh
 
 from .. import articulators as arts
 from .. import condyles as cond
+from .. import guidance as gd
 from . import errorlog
 from .. import exocad_project
 from .. import model_store
@@ -199,6 +200,9 @@ class Session:
         self.landmarks: dict[str, np.ndarray] = {}
         self.suggested: set[str] = set()  # предложены программой и ещё не подтверждены врачом
         self.landmark_sources: dict[str, str] = {}  # откуда точка: condyles.SOURCES и др. (сохраняется с кейсом)
+        self.landmark_notes: dict[str, str] = {}  # пояснения к автоматической замене ориентиров
+        self._joint_parts_cache_key = None
+        self._joint_parts_cache = None
         self._mounted_condyles = None  # точки мыщелков, с которыми сделан текущий монтаж (condyles.state: applied)
         self.articulators_path = os.path.join(os.path.dirname(self.memory.path), "articulators.json")
         self.settings_path = os.path.join(os.path.dirname(self.memory.path), "settings.json")
@@ -293,6 +297,8 @@ class Session:
             self.structures, self._sections = {}, {}
             self.bite_view, self.bite_motion, self._bite_meshes = False, None, {}
             self.landmarks, self.suggested, self.landmark_sources = {}, set(), {}
+            self.landmark_notes = {}
+            self._joint_parts_cache_key = self._joint_parts_cache = None
             self._mounted_condyles = None
             for item in self.scans.values():
                 item.update(reg=None, auto=None, transform=None, guided=False, lower_bite=None)
@@ -306,6 +312,8 @@ class Session:
             self.structures, self._sections = {}, {}
             self.bite_view, self.bite_motion, self._bite_meshes = False, None, {}
             self.landmarks, self.suggested, self.landmark_sources = {}, set(), {}
+            self.landmark_notes = {}
+            self._joint_parts_cache_key = self._joint_parts_cache = None
             self._mounted_condyles = None
             for item in self.scans.values():
                 item.update(reg=None, auto=None, transform=None, guided=False, lower_bite=None)
@@ -935,6 +943,62 @@ class Session:
                 "selected": selected or self.settings["mount_plane"],
                 "default": self.settings["mount_plane"], "tilt": tilt}
 
+    @staticmethod
+    def _compact_mesh(vertices, faces):
+        """Сократить сетку до используемых вершин; пустая поверхность — None."""
+        vertices = np.asarray(vertices, float).reshape(-1, 3)
+        faces = np.asarray(faces, int).reshape(-1, 3)
+        if not len(vertices) or not len(faces):
+            return None
+        used, inverse = np.unique(faces.ravel(), return_inverse=True)
+        if len(used) < 3:
+            return None
+        return trimesh.Trimesh(vertices=vertices[used], faces=inverse.reshape(-1, 3), process=False)
+
+    def articulation_joint_parts(self) -> dict:
+        """Головки мыщелков и суставные скаты для окна артикулятора.
+
+        Головки следуют за нижней челюстью в прикусе сканов; скаты остаются на черепе.
+        Все сетки возвращаются в координатах 3D-окна.
+        """
+        empty = {side: {"head": None, "slope": None} for side in cond.SIDES}
+        if not self._articulation_ready or self.jaw.anatomy is None:
+            return empty
+        mandible, skull = self.structures.get("mandible"), self.structures.get("skull")
+        points = self._condyle_points()
+        motion = np.eye(4) if self.bite_motion is None else np.asarray(self.bite_motion, float)
+        frame = np.asarray(self.jaw.anatomy.frame, float) @ motion
+        signature = (id(mandible), id(skull),
+                     tuple(None if points[s].point is None else tuple(np.round(points[s].point, 4))
+                           for s in cond.SIDES), motion.tobytes(), frame.tobytes())
+        if signature == self._joint_parts_cache_key:
+            return self._joint_parts_cache
+
+        parts = {side: {"head": None, "slope": None} for side in cond.SIDES}
+        if mandible is not None and getattr(mandible, "faces", None) is not None:
+            mv, mf = np.asarray(mandible.vertices), np.asarray(mandible.faces, int)
+            axes = {"up": (0.0, 0.0, 1.0), "left": (1.0, 0.0, 0.0),
+                    "anterior": (0.0, -1.0, 0.0)}
+            for key, head in lmk.condylar_heads(mv, mf, **axes).items():
+                side = "right" if key == "Co_R" else "left"
+                selected = np.isin(mf, head["vertices"]).all(axis=1)
+                mesh = self._compact_mesh(mv, mf[selected])
+                if mesh is not None and self.bite_view and self.bite_motion is not None:
+                    mesh.vertices = cond.to_view(mesh.vertices, self.bite_motion)
+                parts[side]["head"] = mesh
+
+        if skull is not None and getattr(skull, "faces", None) is not None:
+            sv, sf = np.asarray(skull.vertices), np.asarray(skull.faces, int)
+            for side in cond.SIDES:
+                point = points[side].point
+                if point is None:
+                    continue
+                patch = gd.articular_surface(sv, sf, frame, point)
+                if patch is not None:
+                    parts[side]["slope"] = self._compact_mesh(sv, sf[np.asarray(patch, int)])
+        self._joint_parts_cache_key, self._joint_parts_cache = signature, parts
+        return parts
+
     def articulation_mount(self, method: str = "auto", plane: str | None = None) -> dict:
         """Смонтировать модели для предварительного просмотра.
 
@@ -1034,8 +1098,11 @@ class Session:
         found = self._condyle_checks(points)
         applied = (self.jaw.anatomy is not None and self._mounted_condyles is not None
                    and self._mounted_condyles == self._condyle_signature())
-        return cond.state(points, found, available=self.case is not None, bite_motion=self.bite_motion,
-                          applied=applied, mandible="mandible" in self.structures, skull="skull" in self.structures)
+        result = cond.state(points, found, available=self.case is not None, bite_motion=self.bite_motion,
+                            applied=applied, mandible="mandible" in self.structures, skull="skull" in self.structures)
+        for side, key in cond.SIDES.items():
+            result["points"][side]["note"] = self.landmark_notes.get(key)
+        return result
 
     @staticmethod
     def _sides(side: str) -> list[str]:
@@ -1061,7 +1128,9 @@ class Session:
             self.landmarks[key] = p
             self.suggested.discard(key)
             self.landmark_sources[key] = cond.SOURCE_USER
+            self.landmark_notes.pop(key, None)
             self._mounted_condyles = None
+            self._joint_parts_cache_key = None
         return self.articulation_condyles()
 
     def confirm_condyle(self, side: str = "both") -> dict:
@@ -1084,7 +1153,9 @@ class Session:
                 self.landmarks.pop(key, None)
                 self.suggested.discard(key)
                 self.landmark_sources.pop(key, None)
+                self.landmark_notes.pop(key, None)
                 self._mounted_condyles = None
+                self._joint_parts_cache_key = None
         self._suggest_missing_condyles()
         return self.articulation_condyles()
 
@@ -1173,7 +1244,9 @@ class Session:
         return {
             "landmarks": [{"key": l.key, "name": l.name, "hint": l.hint,
                            "point": self.landmarks[l.key].round(2).tolist() if l.key in self.landmarks else None,
-                           "suggested": l.key in self.suggested} for l in lmk.LANDMARKS],
+                           "suggested": l.key in self.suggested,
+                           "source": self.landmark_sources.get(l.key),
+                           "note": self.landmark_notes.get(l.key)} for l in lmk.LANDMARKS],
             "planes": planes, "angles": lmk.plane_angles(self.landmarks),
             "articulators": [{"key": a.key, "name": a.name, "maker": a.maker, "plane": a.plane,
                               "calibrated": a.calibrated} for a in arts.load(self.articulators_path)],
@@ -1239,6 +1312,12 @@ class Session:
                     self.landmarks[key] = point
                     self.suggested.add(key)
                     self.landmark_sources[key] = source
+                    if key in cond.SIDES.values():
+                        if notes.get(key):
+                            self.landmark_notes[key] = notes[key]
+                        else:
+                            self.landmark_notes.pop(key, None)
+                    self._joint_parts_cache_key = None
         info = self.landmarks_info()
         info["auto"] = {k: {"found": f.point is not None, "note": notes.get(k) or f.note} for k, f in found.items()}
         return info
@@ -1466,6 +1545,7 @@ class Session:
                 "landmarks": {k: np.asarray(v, float).tolist() for k, v in self.landmarks.items()},
                 "suggested": sorted(self.suggested),
                 "landmark_sources": {k: v for k, v in self.landmark_sources.items() if k in self.landmarks},
+                "landmark_notes": {k: v for k, v in self.landmark_notes.items() if k in self.landmarks},
                 "window": list(self.window), "scans": [], "structures": [],
                 "guide": []}
         for i, (sid, item) in enumerate(self.scans.items()):
@@ -1531,6 +1611,8 @@ class Session:
             self.landmarks = {k: np.asarray(v, float) for k, v in meta.get("landmarks", {}).items() if k in lmk.BY_KEY}
             self.suggested = set(meta.get("suggested", [])) & set(self.landmarks)
             self.landmark_sources = {k: v for k, v in meta.get("landmark_sources", {}).items() if k in self.landmarks}
+            self.landmark_notes = {k: v for k, v in meta.get("landmark_notes", {}).items() if k in self.landmarks}
+            self._joint_parts_cache_key = self._joint_parts_cache = None
             self._mounted_condyles = None
         if self.guide_teeth and self.case is not None:
             self.case.use_teeth(self.guide_teeth)
