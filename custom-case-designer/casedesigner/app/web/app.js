@@ -20,6 +20,7 @@ const state = {
   modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
   models: null, download: null, downloadError: null, articulation: null, articulationAnalysis: null,
   articulationContacts: [], articulationGuides: null, articulationCondyles: null,
+  jointParts: null, jointsVisible: false, landmarks: [],
   condyleEditing: null, // right / left: точка ставится на кости в 3D и двигается стрелками
   opacity: {}, // объект → прозрачность, заданная кнопкой (иначе — по умолчанию)
   warnOpen: new Set(), // карточки сканов с раскрытым списком предупреждений
@@ -294,6 +295,7 @@ async function openCt(kind) {
   if (series === undefined) return;
   await busy('Открываю КТ', async () => {
     state.ct = await run('ct', { path: paths[0], series }, () => {});
+    state.landmarks = (await get('landmarks')).landmarks || [];
     app.window = state.ct.window;
     app.cursor = [...state.ct.focus];
     for (const s of state.scans) { s.transform = null; s.registered = false; s.accepted = false; viewer.setVisible(s.id, false); }
@@ -467,6 +469,11 @@ async function toggleBite() {
   await busy(r.on ? 'Прикус сканов' : 'Как на КТ', async () => {
     await reloadStructureMeshes();
     await refreshScans(true);
+    if (state.jointsVisible) {
+      for (const key of [...viewer.objects.keys()].filter((k) => String(k).startsWith('joint:'))) viewer.remove(key);
+      state.jointParts = await get('articulation/joint');
+      await drawJointParts();
+    }
     overlayVersion += 1;
     app.setCursor(app.cursor);
     if (state.step === 'articulation') drawArticulationGuides();
@@ -488,7 +495,10 @@ async function prepareArticulation() {
   try {
     state.articulationCondyles = await get('articulation/condyles');
     state.articulationGuides = await get('articulation/guides');
+    state.landmarks = (await get('landmarks')).landmarks || [];
+    state.jointParts = await get('articulation/joint');
     drawArticulationGuides();
+    await drawJointParts();
   } catch (e) { toast(e.message); }
   render();
 }
@@ -498,13 +508,40 @@ async function articulationAction(kind, body = {}, title = 'Артикулято
     state.articulation = await run(`articulation/${kind}`, body, progress);
     state.articulationCondyles = await get('articulation/condyles');
     state.articulationGuides = await get('articulation/guides');
+    state.jointParts = await get('articulation/joint');
     drawArticulationGuides();
+    await drawJointParts();
   });
 }
 
 function clearArticulationGuides() {
   for (const key of [...viewer.objects.keys()].filter((k) => String(k).startsWith('art:') || String(k).startsWith('lm:art:')))
     viewer.remove(key);
+}
+
+async function drawJointParts() {
+  const keys = [...viewer.objects.keys()].filter((k) => String(k).startsWith('joint:'));
+  if (!state.jointsVisible || !state.jointParts) {
+    keys.forEach((key) => viewer.setVisible(key, false));
+    return;
+  }
+  const requests = [];
+  for (const side of ['right', 'left']) for (const part of ['head', 'slope']) {
+    if (!state.jointParts[side]?.[part]) continue;
+    const key = `joint:${side}:${part}`;
+    if (viewer.objects.has(key)) { viewer.setVisible(key, true); continue; }
+    requests.push(mesh(`articulation/joint?side=${side}&part=${part}`).then((data) => {
+      if (state.jointsVisible) viewer.setMesh(key, data,
+        { color: part === 'head' ? '#48d597' : '#f4c34e', opacity: 0.94, order: 3 });
+    }).catch((e) => toast(e.message)));
+  }
+  await Promise.all(requests);
+}
+
+async function toggleJoints() {
+  state.jointsVisible = !state.jointsVisible;
+  render();
+  await drawJointParts();
 }
 
 function condyleSpace() {
@@ -540,7 +577,17 @@ function drawArticulationGuides() {
 async function updateCondyles(path = '', body = {}) {
   try {
     state.articulationCondyles = await post(`articulation/condyles${path}`, body);
+    for (const [side, key] of [['right', 'Co_R'], ['left', 'Co_L']]) {
+      const point = state.articulationCondyles.points?.[side];
+      const landmark = (state.landmarks || []).find((item) => item.key === key);
+      if (landmark && point) Object.assign(landmark, { point: point.ct, source: point.source, note: point.note });
+    }
     drawArticulationGuides();
+    if (state.jointsVisible) {
+      for (const key of [...viewer.objects.keys()].filter((k) => String(k).startsWith('joint:'))) viewer.remove(key);
+      state.jointParts = await get('articulation/joint');
+      await drawJointParts();
+    }
     render();
     return true;
   } catch (e) {
@@ -931,10 +978,12 @@ function renderCt() {
     <div class="kv"><span>Размер</span><b>${ct.shape.join(' × ')}</b><span>Воксель</span><b>${ct.spacing.map((v) => fmt(v, 2)).join(' × ')} мм</b>
     ${ct.device ? `<span>Аппарат</span><b>${ct.device}</b>` : ''}</div></div>`;
   const partsButton = '<button class="btn ghost wide sm" style="margin-top:6px" data-a="parts">Что сегментировать…</button>';
+  const jointNotes = (state.landmarks || []).filter((p) => ['Co_R', 'Co_L'].includes(p.key) && p.note)
+    .map((p) => `<div class="warning landmark-note"><i class="dot" style="background:${p.key === 'Co_R' ? '#ff6b6b' : '#6ba8ff'}"></i><span>${hide(p.name)}: ${hide(p.note)}</span></div>`).join('');
   if (!state.structures.length) {
     const ready = state.models?.ready && state.parts?.selected.length;
     const chosen = (state.parts?.parts || []).filter((p) => state.parts.selected.includes(p.id)).map((p) => p.title);
-    return `<h2>КТ</h2>${info}
+    return `<h2>КТ</h2>${info}${jointNotes}
       <button class="btn primary wide" data-a="segment" ${ready ? '' : 'disabled'}>${icons.play}Сегментировать</button>${partsButton}
       <p class="muted small">${!state.models?.ready ? 'Сначала скачайте модели сегментации.' : chosen.length ? `${chosen.join(', ')}.` : 'Не выбрано, что сегментировать.'}</p>${modelsCard()}`;
   }
@@ -949,7 +998,7 @@ function renderCt() {
       ${open ? items.map((s) => `<div class="item ${state.visible.has(s.key) ? '' : 'off'}" data-toggle="${s.key}">
         <span class="check ${state.visible.has(s.key) ? 'on' : ''}"></span><i class="dot" style="background:${s.color}"></i><span class="grow">${s.name}</span>${opacityButton([s.key], `data-opacity="${s.key}"`)}</div>`).join('') : ''}</div>`;
   }).join('');
-  return `<h2>КТ</h2>${info}<div class="label">Структуры — ${state.structures.length}; видимые попадут в экспорт</div>
+  return `<h2>КТ</h2>${info}${jointNotes}<div class="label">Структуры — ${state.structures.length}; видимые попадут в экспорт</div>
     <div class="card tree">${tree}</div>${partsButton}`;
 }
 
@@ -1044,6 +1093,7 @@ function renderCondylePanel(scansReady) {
       <div class="condyle-name"><i style="background:${meta.color}"></i><b>${meta.title}</b>
         <em class="${p.confirmed ? 'ok' : ''}">${p.confirmed ? 'подтверждён' : 'не подтверждён'}</em></div>
       <div class="condyle-source">${hide(source + verify)}</div>
+      ${p.note ? `<div class="condyle-note">${hide(p.note)}</div>` : ''}
       <div class="condyle-actions">
         <button class="btn sm" data-condyle-confirm="${side}" ${p.ct && !p.confirmed ? '' : 'disabled'}>${icons.check}Подтвердить</button>
         <button class="btn sm ${state.condyleEditing === side ? 'primary' : ''}" data-condyle-edit="${side}">${icons.target}Поправить</button>
@@ -1092,6 +1142,14 @@ function renderArticulation() {
   const settingsText = settings ? '<p class="muted small">ССП: ' + fmt(settings.sagittal_right_deg, 1) + '° / '
     + fmt(settings.sagittal_left_deg, 1) + '° · Беннетт: ' + fmt(settings.bennett_right_deg, 1) + '° / '
     + fmt(settings.bennett_left_deg, 1) + '°</p>' : '';
+  const jointAvailable = Object.values(state.jointParts || {}).some((parts) => parts.head || parts.slope);
+  const jointHint = !jointAvailable ? `<p class="muted small">${!state.articulationCondyles?.segmentation.mandible && !state.articulationCondyles?.segmentation.skull
+    ? 'Чтобы показать головки и скаты, сегментируйте нижнюю челюсть и череп.'
+    : !state.articulationCondyles?.segmentation.mandible ? 'Для головок нужна сегментация нижней челюсти.'
+      : !state.articulationCondyles?.segmentation.skull ? 'Для скатов нужна сегментация черепа.' : 'Не удалось выделить суставные поверхности.'}</p>` : '';
+  const jointsControl = `<label class="joint-toggle ${jointAvailable ? '' : 'disabled'}"><input type="checkbox" data-joints ${state.jointsVisible ? 'checked' : ''} ${jointAvailable ? '' : 'disabled'}><span>Суставы</span><small>головки зелёные · скаты жёлтые</small></label>${jointHint}`;
+  const mountNotes = (a.notes || []).filter((n) => n.includes('ССП') && n.includes('вне 5–75°'))
+    .map((n) => `<div class="warning mount-warning">${icons.warn}<span>${hide(n)}</span></div>`).join('');
   const analysisSummary = analysis && (analysis.notes?.join(' ') || (analysis.recordings?.length
     ? 'Проанализировано движений: ' + analysis.recordings.length : 'Анализ завершён.'));
   const contactText = state.articulationContacts.length ? state.articulationContacts.map((c) => {
@@ -1111,13 +1169,13 @@ function renderArticulation() {
     const mountingName = mounted ? `Монтаж: ${hide(a.mounting.name)}` : 'Монтаж ещё не выполнен';
     body = mountButtons
       + `<div class="card"><div class="card-head">${icons.align}<h3>${mountingName}</h3></div>`
-      + `<p class="muted small">${hide(a.mounting?.source || 'Положение моделей будет показано в 3D.')}</p>${basisText}${settingsText}`
+      + `<p class="muted small">${hide(a.mounting?.source || 'Положение моделей будет показано в 3D.')}</p>${basisText}${settingsText}${mountNotes}`
       + `<button class="btn ${mounted ? '' : 'primary'} wide" data-art-generate="1" ${mounted ? '' : 'disabled'}>${icons.play}Рассчитать движения</button>`
       + `<button class="btn wide" data-art-analysis="1" ${moves.length ? '' : 'disabled'}>${icons.heat}Проверить контакты и траектории</button></div>`
       + movementCards + analysisText;
   }
   return '<h2>Артикулятор</h2><p class="lead">Здесь выполняется предварительная гипсовка, проигрываются движения и проверяются контакты до экспорта в exocad.</p>'
-    + renderCondylePanel(ready) + body;
+    + jointsControl + renderCondylePanel(ready) + body;
 }
 
 const RENDER = { ct: renderCt, scans: renderScans, articulation: renderArticulation, export: renderExport };
@@ -1156,7 +1214,7 @@ function render() {
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) {
@@ -1169,6 +1227,7 @@ document.addEventListener('click', async (e) => {
   if (d.condyleReset) return updateCondyles('/reset', { side: d.condyleReset });
   if (d.condyleEdit) return editCondyle(d.condyleEdit);
   if ('condyleRemount' in d) return remountCondyles();
+  if ('joints' in d) return toggleJoints();
   if (d.artMount) return articulationAction('mount', { method: d.artMount }, 'Гипсовка моделей');
   if (d.artGenerate) return articulationAction('generate', { travel: 6.0 }, 'Расчёт движений');
   if (d.artAnalysis) return busy('Анализ контактов и движений', async (progress) => {
@@ -1258,6 +1317,7 @@ document.addEventListener('keydown', (e) => {
   state.biteView = s.bite_view;
   state.articulation = s.articulation;
   state.articulationGuides = s.articulation_guides;
+  state.landmarks = s.landmarks || [];
   state.caseInfo = s.case;
   state.recent = s.recent || [];
   state.incognito = !!s.incognito;

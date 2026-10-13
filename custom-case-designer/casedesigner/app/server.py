@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import errorlog
-from .session import Session
+from .session import Session, mesh_bytes
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 USER_ERRORS = (ValueError, FileNotFoundError, KeyError, RuntimeError)
@@ -204,6 +204,18 @@ def make_handler(session: Session, jobs: Jobs):
                 return self.job("Анализ контактов и движений", lambda progress: s.articulation_report())
             if p == ["articulation", "guides"]:
                 return self.json(s.articulation_guides())
+            if p == ["articulation", "joint"]:
+                parts = s.articulation_joint_parts()
+                side, part = q.get("side"), q.get("part")
+                if side is None and part is None:
+                    return self.json({s: {k: v is not None for k, v in sides.items()}
+                                      for s, sides in parts.items()})
+                if side not in ("right", "left") or part not in ("head", "slope"):
+                    raise ValueError("суставная поверхность: side=right|left, part=head|slope")
+                mesh = parts[side][part]
+                if mesh is None:
+                    raise ValueError("эта суставная поверхность недоступна: проверьте сегментацию и точки мыщелков")
+                return self.binary(mesh_bytes(mesh.vertices, mesh.faces))
             # мыщелки (контракт — casedesigner/condyles.py, docs/handoff/archive/condyle-adjustment.md): состояние, поставить, подтвердить, сбросить
             if p == ["articulation", "condyles"]:
                 if method == "POST":
