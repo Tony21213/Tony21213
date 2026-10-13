@@ -20,11 +20,13 @@ from . import errorlog
 from .. import exocad_project
 from .. import model_store
 from .. import landmarks as lmk
+from .. import mount_planes as mplanes
+from .. import motion as mo
 from ..fusion import (BITE, SHARED_SHARE, CaseCT, Registration, Scan, deviation_colors, export_case, in_occlusion,
                       is_bite_name, jaw_by_name, place_bites, shared_share, split_by_jaw)
 from ..jawcase import JawCase, Mesh as JawMesh
 from ..learning import AlignmentMemory
-from ..register import apply
+from ..register import apply, rigid
 from ..segment import Segmenter
 from ..structures import jaw_of, structure
 from ..volume import load_volume
@@ -204,19 +206,23 @@ class Session:
         self.guide_teeth: dict = {}  # зубы из сегментации — опора совмещения (сохраняются с кейсом)
         self.jaw = JawCase()  # артикуляция: монтаж, суставы, движения, контакты (интерфейс — позже)
         self._articulation_ready = False
+        self._case_mount_plane: str | None = None
 
     # --- настройки (рядом с памятью совмещений) -----------------------------
     def _load_settings(self) -> dict:
         import json
 
         known = [p for p, _t, _k in SEGMENT_PARTS]
-        settings = {"segment_parts": known, "recent": [], "incognito": False}
+        settings = {"segment_parts": known, "recent": [], "incognito": False,
+                    "mount_plane": "aesthetic_hinge"}
         try:
             with open(self.settings_path, encoding="utf-8") as f:
                 saved = json.load(f)
             settings["segment_parts"] = [p for p in known if p in saved.get("segment_parts", [])]
             settings["recent"] = [r for r in saved.get("recent", []) if isinstance(r, str)][:RECENT]
             settings["incognito"] = saved.get("incognito") is True
+            plane = saved.get("mount_plane", "aesthetic_hinge")
+            settings["mount_plane"] = plane if plane in mplanes.PLANES else mplanes.DEFAULT
         except (OSError, ValueError, AttributeError):  # нет файла или он испорчен — всё по умолчанию
             pass
         return settings
@@ -243,6 +249,21 @@ class Session:
         self.settings["incognito"] = bool(on)
         self._save_settings()
         return {"incognito": self.settings["incognito"]}
+
+    def set_default_mount_plane(self, key: str) -> dict:
+        """Сохранить предпочтительную плоскость монтажа; недоступная для кейса позже разрешится по FALLBACK."""
+        if key not in mplanes.PLANES:
+            raise ValueError(f"нет такой плоскости монтажа: {key}")
+        self.settings["mount_plane"] = key
+        self._save_settings()
+        return {"mount_plane": key}
+
+    def set_articulation_plane(self, key: str) -> dict:
+        """Выбрать плоскость текущего кейса; недоступность проверяется при монтаже."""
+        if key not in mplanes.PLANES:
+            raise ValueError(f"нет такой плоскости монтажа: {key}")
+        self._case_mount_plane = key
+        return self.articulation_planes()
 
     def segment_parts_info(self) -> dict:
         return {"parts": [{"id": p, "title": t} for p, t, _k in SEGMENT_PARTS],
@@ -828,7 +849,92 @@ class Session:
         self._prepare_jawcase()
         return self.jaw.state()
 
-    def articulation_mount(self, method: str = "auto") -> dict:
+    def _face_points(self):
+        parts = [np.asarray(self.structures[key].vertices, float) for key in ("skull", "maxilla")
+                 if key in self.structures]
+        if parts:
+            return np.vstack(parts)
+        if self.jaw.skull is not None:
+            return np.asarray(self.jaw.skull.vertices, float)
+        return None
+
+    def _mount_plane_choice(self, method: str, plane: str | None):
+        if method != "ct":
+            if plane is not None and plane != mplanes.DEFAULT:
+                raise ValueError("выбор плоскости доступен только для монтажа по КТ")
+            return mplanes.DEFAULT, None, None
+        if plane is not None and plane not in mplanes.PLANES:
+            raise ValueError(f"нет такой плоскости монтажа: {plane}")
+        preferred = plane or self._case_mount_plane or (self.jaw.plane if self.jaw.mounting == "ct"
+                                                         else self.settings["mount_plane"])
+        hinge, _ct_points, why = self._mount_condyles()
+        if hinge is None:
+            raise ValueError(f"монтаж по КТ невозможен: {why}")
+        face = self._face_points()
+        available = mplanes.available(self.landmarks, hinge, face is not None)
+        if plane is not None:
+            info = available[plane]
+            if not info["available"]:
+                raise ValueError(f"плоскость «{info['name']}» недоступна: не хватает {', '.join(info['missing'])}")
+            return plane, None, hinge
+        resolved, note = mplanes.resolve(preferred, self.landmarks, hinge, face is not None)
+        return resolved, note, hinge
+
+    def validate_articulation_mount(self, method: str = "auto", plane: str | None = None) -> dict:
+        """Проверить выбор плоскости до запуска фонового HTTP-задания."""
+        if method not in ("auto", "ct", "average", "motion"):
+            raise ValueError(f"неизвестный способ монтажа: {method}")
+        if method in ("auto", "ct"):
+            if self.case is None:
+                if method == "ct":
+                    raise ValueError("монтаж по КТ недоступен: нет КТ")
+                return {"method": method, "plane": mplanes.DEFAULT}
+            if method == "auto" and self._mount_condyles()[0] is None:
+                return {"method": "motion" if self.jaw._recorded() else "average", "plane": mplanes.DEFAULT}
+            selected_plane, _note, hinge = self._mount_plane_choice("ct", plane)
+            return {"method": "ct", "plane": selected_plane, "condyles": hinge}
+        if method == "average" and plane not in (None, mplanes.DEFAULT):
+            raise ValueError("выбор плоскости доступен только для монтажа по КТ")
+        return {"method": method, "plane": mplanes.DEFAULT}
+
+    def articulation_planes(self) -> dict:
+        """Доступность плоскостей, активная и предпочтительная плоскости и наклон к окклюзионной."""
+        hinge = None
+        if self.case is not None:
+            hinge, _ct_points, _why = self._mount_condyles()
+        face = self._face_points()
+        planes = mplanes.available(self.landmarks, hinge, face is not None)
+        tilt = {}
+        if self._articulation_ready and self.jaw.upper is not None and self.jaw.lower_vertices is not None:
+            up = mo.occlusal_up(self.jaw.upper.vertices, self.jaw.lower_vertices)
+            _occlusal_up, anterior = mo.arch_axes(self.jaw.upper.vertices, up)
+            for key, info in planes.items():
+                if not info["available"]:
+                    continue
+                try:
+                    if key in ("aesthetic", "aesthetic_hinge"):
+                        if face is None:
+                            continue
+                        base = mplanes.base_for_aesthetic(self.landmarks, hinge)
+                        base_R = mplanes.rotation(base, up, anterior, self.landmarks, hinge)
+                        from .. import aesthetic as ae
+                        aesthetic_frame = ae.aesthetic_frame_ct(rigid(base_R, np.zeros(3)), face).frame
+                        if key == "aesthetic":
+                            rotation = aesthetic_frame[:3, :3]
+                        else:
+                            rotation = mplanes.rotation(key, up, anterior, self.landmarks, hinge,
+                                                        face_up=aesthetic_frame[:3, :3][2])
+                    else:
+                        rotation = mplanes.rotation(key, up, anterior, self.landmarks, hinge)
+                    tilt[key] = mplanes.relative_angles(rotation, up, anterior)
+                except (ValueError, np.linalg.LinAlgError):
+                    tilt[key] = None
+        selected = self._case_mount_plane or (self.jaw.plane if self.jaw.mounting == "ct" else None)
+        return {"planes": planes, "current": self.jaw.plane if self.jaw.mounting else None,
+                "selected": selected or self.settings["mount_plane"],
+                "default": self.settings["mount_plane"], "tilt": tilt}
+
+    def articulation_mount(self, method: str = "auto", plane: str | None = None) -> dict:
         """Смонтировать модели для предварительного просмотра.
 
         Мыщелки — точки кейса Co_R, Co_L (condyles.py: подтверждённые врачом выше автоматических; недостающие
@@ -841,7 +947,15 @@ class Session:
             if method == "ct":
                 raise ValueError(f"монтаж по КТ невозможен: {why}")
             method = "motion" if self.jaw._recorded() else "average"
-        result = self.jaw.mount(method, condyles=hinge, ct_condyles=ct_points)
+        selected_plane, fallback_note, _selected_hinge = self._mount_plane_choice(method, plane)
+        if method == "ct":
+            self._case_mount_plane = selected_plane
+        face = self._face_points() if method == "ct" else None
+        result = self.jaw.mount(method, condyles=hinge, ct_condyles=ct_points, plane=selected_plane,
+                                landmarks=self.landmarks, face_points=face)
+        if fallback_note:
+            self.jaw.notes = [*self.jaw.notes, fallback_note]
+            result = self.jaw.state()
         self._mounted_condyles = None if hinge is None else self._condyle_signature()
         return result
 
@@ -1344,6 +1458,7 @@ class Session:
             path += CASE_EXT
         arrays = {}
         meta = {"version": 1, "ct_path": self.ct_path, "ct_series": getattr(self, "ct_series_id", None),
+                "mount_plane": self._case_mount_plane,
                 "landmarks": {k: np.asarray(v, float).tolist() for k, v in self.landmarks.items()},
                 "suggested": sorted(self.suggested),
                 "landmark_sources": {k: v for k, v in self.landmark_sources.items() if k in self.landmarks},
@@ -1402,6 +1517,8 @@ class Session:
             self.load_ct(ct, progress, meta.get("ct_series"))
         with self.lock:
             self.window = tuple(meta.get("window", self.window))
+            saved_plane = meta.get("mount_plane")
+            self._case_mount_plane = saved_plane if saved_plane in mplanes.PLANES else None
             self.structures = {key: trimesh.Trimesh(arrays[f"st{k}_v"], arrays[f"st{k}_f"], process=False)
                                for k, key in enumerate(meta["structures"])}
             self.scans = {}
@@ -1456,6 +1573,7 @@ class Session:
                 "recent": self.recent_cases(),
                 "models_dir": self.models_dir, "models": self.models_status(), **self.structures_info(),
                 "segment_parts": self.segment_parts_info(), "bite_view": self.bite_info(),
+                "mount_plane_default": self.settings["mount_plane"],
                 "incognito": self.settings["incognito"],
                 **self.landmarks_info(),
                 "articulation": self.jaw.state(), "articulation_guides": self.articulation_guides()}

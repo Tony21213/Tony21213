@@ -194,10 +194,19 @@ def make_handler(session: Session, jobs: Jobs):
                 return self.json(s.set_incognito(self.body().get("on") is True))
             if p == ["settings", "segment_parts"] and method == "POST":
                 return self.json(s.set_segment_parts(self.body().get("parts", [])))
+            if p == ["settings", "mount_plane"] and method == "POST":
+                return self.json(s.set_default_mount_plane(self.body().get("plane")))
             if p == ["articulation", "prepare"] and method == "POST":
                 return self.json(s.articulation_prepare())
+            if p == ["articulation", "planes"]:
+                if method == "POST":
+                    return self.json(s.set_articulation_plane(self.body().get("plane")))
+                return self.json(s.articulation_planes())
             if p == ["articulation", "mount"] and method == "POST":
-                return self.job("Монтаж моделей", lambda progress: s.articulation_mount(self.body().get("method", "auto")))
+                b = self.body()
+                s.validate_articulation_mount(b.get("method", "auto"), b.get("plane"))
+                return self.job("Монтаж моделей", lambda progress: s.articulation_mount(
+                    b.get("method", "auto"), b.get("plane")))
             if p == ["articulation", "generate"] and method == "POST":
                 return self.job("Расчёт движений", lambda progress: s.articulation_generate(self.body().get("travel", 6.0)))
             if p == ["articulation", "analysis"] and method == "POST":
