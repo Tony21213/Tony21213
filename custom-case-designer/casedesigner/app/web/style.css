@@ -262,6 +262,7 @@ button.badge:hover { color: var(--text); }
 /* --- окно ввода пути (в браузере, без системного диалога) --- */
 .modal-back { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: grid; place-items: center; z-index: 50; backdrop-filter: blur(3px); }
 .modal { width: 520px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; padding: 18px; box-shadow: var(--shadow); }
+.mount-plane-select { width: 100%; margin: 4px 0 8px; }
 .modal h3 { margin: 0 0 6px; font-size: 15px; }
 .modal p { margin: 0 0 12px; color: var(--muted); }
 .modal input { width: 100%; }

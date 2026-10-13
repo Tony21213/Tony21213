@@ -20,6 +20,7 @@ const state = {
   modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
   models: null, download: null, downloadError: null, articulation: null, articulationAnalysis: null,
   articulationContacts: [], articulationGuides: null, articulationCondyles: null,
+  articulationPlanes: null, mountPlaneDefault: 'aesthetic_hinge',
   condyleEditing: null, // right / left: точка ставится на кости в 3D и двигается стрелками
   opacity: {}, // объект → прозрачность, заданная кнопкой (иначе — по умолчанию)
   warnOpen: new Set(), // карточки сканов с раскрытым списком предупреждений
@@ -356,6 +357,29 @@ function partsDialog() {
   });
 }
 
+async function settingsDialog() {
+  state.articulationPlanes = await get('articulation/planes').catch((e) => { toast(e.message); return null; });
+  const planes = state.articulationPlanes?.planes;
+  if (!planes) return;
+  const back = document.createElement('div');
+  back.className = 'modal-back';
+  back.innerHTML = `<div class="modal"><h3>Настройки</h3><label class="label" for="defaultMountPlane">Плоскость монтажа по умолчанию</label>
+    <select id="defaultMountPlane">${Object.entries(planes).map(([key, p]) => `<option value="${key}" ${key === state.mountPlaneDefault ? 'selected' : ''}>${hide(p.name)}</option>`).join('')}</select>
+    <p class="muted small">Если для кейса не хватает точек или костей лица, программа последовательно предложит доступную плоскость по цепочке замен и сообщит причину.</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn primary" data-x>Готово</button></div></div>`;
+  document.body.appendChild(back);
+  $('#defaultMountPlane', back).addEventListener('change', async (e) => {
+    try {
+      const saved = await post('settings/mount_plane', { plane: e.target.value });
+      state.mountPlaneDefault = saved.mount_plane;
+      state.articulationPlanes.default = saved.mount_plane;
+      if (!state.articulationPlanes.current && !state.articulationPlanes.selected)
+        state.articulationPlanes.selected = saved.mount_plane;
+    } catch (err) { toast(err.message); }
+  });
+  back.addEventListener('click', (e) => { if (e.target.closest('[data-x]') || e.target === back) back.remove(); });
+}
+
 // ---------- модели сегментации: загрузка в фоне, не мешает работе ----------
 const mb = (b) => (b / 1048576).toFixed(b < 10485760 ? 1 : 0);
 const eta = (s) => (s == null ? '' : s < 60 ? `ещё ${Math.max(1, Math.round(s))} с` : `ещё ${Math.round(s / 60)} мин`);
@@ -486,6 +510,7 @@ async function prepareArticulation() {
     state.articulation = await post('articulation/prepare');
   } catch (e) { toast(e.message); }
   try {
+    state.articulationPlanes = await get('articulation/planes');
     state.articulationCondyles = await get('articulation/condyles');
     state.articulationGuides = await get('articulation/guides');
     drawArticulationGuides();
@@ -496,10 +521,34 @@ async function prepareArticulation() {
 async function articulationAction(kind, body = {}, title = 'Артикулятор') {
   await busy(title, async (progress) => {
     state.articulation = await run(`articulation/${kind}`, body, progress);
+    state.articulationPlanes = await get('articulation/planes');
     state.articulationCondyles = await get('articulation/condyles');
     state.articulationGuides = await get('articulation/guides');
     drawArticulationGuides();
   });
+}
+
+async function selectMountPlane(plane) {
+  try {
+    state.articulationPlanes = await post('articulation/planes', { plane });
+    render();
+  } catch (e) { toast(e.message); }
+}
+
+async function remountPlane() {
+  await busy('Перемонтаж по выбранной плоскости', async (progress) => {
+    state.articulation = await run('articulation/mount', { method: 'ct' }, progress);
+    state.articulation = await run('articulation/generate', { travel: 6.0 }, progress);
+    state.articulationPlanes = await get('articulation/planes');
+    state.articulationCondyles = await get('articulation/condyles');
+    state.articulationGuides = await get('articulation/guides');
+    drawArticulationGuides();
+  });
+}
+
+async function mountWithPlane(method) {
+  if (method === 'ct' && state.articulation?.mounting) return remountPlane();
+  return articulationAction('mount', { method }, 'Гипсовка моделей');
 }
 
 function clearArticulationGuides() {
@@ -1079,9 +1128,17 @@ function renderArticulation() {
   const guides = state.articulationGuides;
   const disabled = ready ? '' : 'disabled';
   const c = state.articulationCondyles;
+  const mountPlanes = state.articulationPlanes;
+  const selectedPlane = mountPlanes?.selected || mountPlanes?.default || state.mountPlaneDefault;
+  const selectedInfo = mountPlanes?.planes?.[selectedPlane];
   const ctDisabled = ready && c?.ready ? '' : 'disabled';
+  const planeOptions = state.ct && mountPlanes?.planes ? `<div class="label">Плоскость монтажа по КТ</div>
+    <select class="mount-plane-select" data-mount-plane ${ready && c?.ready ? '' : 'disabled'}>
+      ${Object.entries(mountPlanes.planes).map(([key, p]) => `<option value="${key}" ${key === selectedPlane ? 'selected' : ''}>${hide(p.name)}${p.available && mountPlanes.tilt?.[key] ? ` · ${mountPlanes.tilt[key].pitch_deg}° / ${mountPlanes.tilt[key].roll_deg}°` : ''}${p.available ? '' : ` — не хватает: ${hide(p.missing.join(', '))}`}</option>`).join('')}
+    </select>${selectedInfo && !selectedInfo.available ? `<p class="muted small">Недоступна: ${hide(selectedInfo.missing.join(', '))}.</p>` : ''}` : '';
+  const selectedIsCurrent = !!a.mounting && a.mounting.plane?.key === selectedPlane;
   const mountButtons = '<div class="label">Гипсовка</div><div class="seg">'
-    + (state.ct ? `<button data-art-mount="ct" ${ctDisabled}>По точкам КТ</button>` : '')
+    + (state.ct ? `<button data-art-mount="ct" ${ctDisabled}>${a.mounting && !selectedIsCurrent ? 'Перемонтировать' : 'По точкам КТ'}</button>` : '')
     + `<button data-art-mount="average" ${disabled}>Средний артикулятор</button></div>`
     + (state.ct && !c?.ready ? `<p class="muted small">Монтаж по КТ недоступен: ${hide(condyleReason(c))}.</p>` : '');
   const movementCards = moves.length ? '<div class="label">Движения</div>' + moves.map((m) =>
@@ -1089,7 +1146,8 @@ function renderArticulation() {
     + '<span class="muted small">' + m.frames + ' кадров</span></div>'
     + '<button class="btn wide" data-art-play="' + m.id + '">' + icons.play + 'Проиграть в 3D</button></div>').join('') : '';
   const settings = a.settings?.values;
-  const settingsText = settings ? '<p class="muted small">ССП: ' + fmt(settings.sagittal_right_deg, 1) + '° / '
+  const planeName = mountPlanes?.planes?.[a.mounting?.plane?.key]?.name || 'окклюзионной плоскости';
+  const settingsText = settings ? '<p class="muted small">ССП от ' + hide(planeName) + ': ' + fmt(settings.sagittal_right_deg, 1) + '° / '
     + fmt(settings.sagittal_left_deg, 1) + '° · Беннетт: ' + fmt(settings.bennett_right_deg, 1) + '° / '
     + fmt(settings.bennett_left_deg, 1) + '°</p>' : '';
   const analysisSummary = analysis && (analysis.notes?.join(' ') || (analysis.recordings?.length
@@ -1109,7 +1167,7 @@ function renderArticulation() {
       + '<button class="btn wide" data-step="scans">Перейти к сканам</button></div>';
   } else {
     const mountingName = mounted ? `Монтаж: ${hide(a.mounting.name)}` : 'Монтаж ещё не выполнен';
-    body = mountButtons
+    body = planeOptions + mountButtons
       + `<div class="card"><div class="card-head">${icons.align}<h3>${mountingName}</h3></div>`
       + `<p class="muted small">${hide(a.mounting?.source || 'Положение моделей будет показано в 3D.')}</p>${basisText}${settingsText}`
       + `<button class="btn ${mounted ? '' : 'primary'} wide" data-art-generate="1" ${mounted ? '' : 'disabled'}>${icons.play}Рассчитать движения</button>`
@@ -1137,6 +1195,7 @@ function render() {
   $('#caseChip').textContent = ct || state.scans.length ? `${caseName}${state.scans.length ? ` · сканов: ${state.scans.length}` : ''}` : '';
   $('#caseActions').innerHTML = `<button class="btn ghost sm" data-case="open" title="Открыть кейс (Ctrl+O)">${icons.folder}Открыть</button>
     <button class="btn ghost sm" data-case="save" title="Сохранить кейс (Ctrl+S)" ${ct || state.scans.length ? '' : 'disabled'}>${icons.check}Сохранить</button>
+    <button class="btn ghost sm" data-a="settings" title="Настройки программы">Настройки</button>
     <button class="btn ghost sm incognito-btn ${state.incognito ? 'on' : ''}" data-a="incognito" title="${state.incognito
       ? 'Инкогнито: имена пациентов и пути скрыты. Нажмите, чтобы показать'
       : 'Инкогнито: скрыть имена пациентов и пути — для показа программы. Системные окна выбора файлов и проводник показывают их как есть'}">${icons.incognito}${state.incognito ? 'Инкогнито' : ''}</button>
@@ -1169,7 +1228,7 @@ document.addEventListener('click', async (e) => {
   if (d.condyleReset) return updateCondyles('/reset', { side: d.condyleReset });
   if (d.condyleEdit) return editCondyle(d.condyleEdit);
   if ('condyleRemount' in d) return remountCondyles();
-  if (d.artMount) return articulationAction('mount', { method: d.artMount }, 'Гипсовка моделей');
+  if (d.artMount) return mountWithPlane(d.artMount);
   if (d.artGenerate) return articulationAction('generate', { travel: 6.0 }, 'Расчёт движений');
   if (d.artAnalysis) return busy('Анализ контактов и движений', async (progress) => {
     const report = await run('articulation/analysis', {}, progress);
@@ -1225,6 +1284,11 @@ document.addEventListener('click', async (e) => {
   action?.();
 });
 
+document.addEventListener('change', (e) => {
+  const select = e.target.closest('[data-mount-plane]');
+  if (select) selectMountPlane(select.value);
+});
+
 document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
   if (ctrl && (key === 's' || key === 'ы')) { e.preventDefault(); return saveCase(e.shiftKey); }
@@ -1261,6 +1325,7 @@ document.addEventListener('keydown', (e) => {
   state.caseInfo = s.case;
   state.recent = s.recent || [];
   state.incognito = !!s.incognito;
+  state.mountPlaneDefault = s.mount_plane_default || 'aesthetic_hinge';
   $('#version').textContent = s.version ? `v${s.version}` : '';
   render();
   if (s.ct) {

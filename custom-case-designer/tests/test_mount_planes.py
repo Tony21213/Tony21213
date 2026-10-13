@@ -5,7 +5,11 @@
 """
 
 import inspect
+import json
 import re
+from pathlib import Path
+import urllib.error
+import urllib.request
 from types import SimpleNamespace
 
 import numpy as np
@@ -267,18 +271,59 @@ def test_aesthetic_hinge_mount_hinge_on_condyles_pitch_from_face(tmp_path):
 
 # --- задачи ведомого ------------------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="ведомый: выбор плоскости в сессии, API, настройках и шаге «Артикулятор»")
 def test_session_and_api_contract(tmp_path):
-    from casedesigner.app import server
+    from casedesigner.app import server as app_server
     from casedesigner.app.session import Session
+    from casedesigner.fusion import Scan
 
     assert "plane" in inspect.signature(Session.articulation_mount).parameters
     s = Session(memory_path=str(tmp_path / "memory.jsonl"))
-    assert s.settings["mount_plane"] == "occlusal"  # плоскость по умолчанию — настройка программы
+    assert s.settings["mount_plane"] == "aesthetic_hinge"  # рекомендация владельца для нового кейса
+    assert s.articulation_planes()["selected"] == "aesthetic_hinge"
+    s.set_articulation_plane("camper")
+    assert s.articulation_planes()["selected"] == "camper"
     s.set_default_mount_plane("frankfurt")
     assert Session(memory_path=str(tmp_path / "memory.jsonl")).settings["mount_plane"] == "frankfurt"
     with pytest.raises(ValueError):
         s.set_default_mount_plane("bonwill")
-    assert set(s.articulation_planes()) >= {"planes", "current", "default", "tilt"}
-    src = inspect.getsource(server)
+    assert set(s.articulation_planes()) >= {"planes", "current", "selected", "default", "tilt"}
+    src = inspect.getsource(app_server)
     assert '"planes"' in src and "mount_plane" in src
+    ui = (Path(__file__).parents[1] / "casedesigner" / "app" / "web" / "app.js").read_text(encoding="utf-8")
+    assert "data-mount-plane" in ui and "defaultMountPlane" in ui
+    s.set_articulation_plane("hip")
+    s.scans["phantom"] = {"scan": Scan("phantom", np.array([[0., 0, 0], [1, 0, 0], [0, 1, 0]]),
+                                          np.array([[0, 1, 2]])),
+                          "path": "phantom.stl", "color": "#fff", "jaw": "upper", "reg": None,
+                          "transform": None, "auto": None, "accepted": False, "role": "jaw"}
+    saved = s.save_case(str(tmp_path / "plane.ccdcase"))
+    reopened = Session(memory_path=str(tmp_path / "reopen-memory.jsonl"))
+    reopened.open_case(saved["path"])
+    assert reopened.articulation_planes()["selected"] == "hip"
+
+    httpd = app_server.serve(s)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    base = f"http://127.0.0.1:{httpd.server_address[1]}/api/"
+    try:
+        with opener.open(base + "articulation/planes") as response:
+            assert json.load(response)["selected"] == "hip"
+        data = json.dumps({"plane": "camper"}).encode()
+        req = urllib.request.Request(base + "articulation/planes", data=data,
+                                     headers={"Content-Type": "application/json"})
+        with opener.open(req) as response:
+            assert json.load(response)["selected"] == "camper"
+        data = json.dumps({"plane": "unknown"}).encode()
+        req = urllib.request.Request(base + "settings/mount_plane", data=data,
+                                     headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as error:
+            opener.open(req)
+        assert error.value.code == 400
+        data = json.dumps({"method": "ct", "plane": "aesthetic_hinge"}).encode()
+        req = urllib.request.Request(base + "articulation/mount", data=data,
+                                     headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as error:
+            opener.open(req)
+        assert error.value.code == 400
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
