@@ -14,6 +14,9 @@
   проекта «в артикуляторе» по координатам файлов (docs/exocad.md, «Лицевая дуга»). В подпапке
   ``KStomCaseDesigner`` — мыщелки для проверки, сводка ``articulator.json`` и папка артикулятора для
   ``library\\articulator`` (межмыщелковое и углы пациента, вставки ССП, плоскость гипсовки).
+* Есть эстетическая система (``ArticulatorCase.aesthetic``: плоскости «эстетическая» и «эстетическая через
+  мыщелки») — в копию пишется набор изображений Smile Design (``<проект>.treatmentImages`` и фон-снимок,
+  exocad_views): в exocad появляется кнопка «Вид Smile Design» — точный эстетический вид спереди.
 * ``.scanInfo`` и ``.matrix4`` исходного проекта не копируются: сцена = файл. Моделировки исходного проекта
   (``*_cad``) тоже — они стоят в старых координатах.
 * Имена пациентов не выводятся: сводка называет файлы по ролям.
@@ -29,6 +32,7 @@ import trimesh
 
 from . import exocad_facebow as ef
 from . import exocad_project
+from . import exocad_views as ev
 from . import kinematics as kin
 from . import motion as mo
 from .fusion import BITE
@@ -64,6 +68,9 @@ class ArticulatorCase:
     condylar_paths: dict | None = None  # {"right", "left"}: N×2 (вперёд, вверх; система монтажа)
     movements: list = field(default_factory=list)  # (имя, N×4×4 в координатах кейса, кадров в секунду)
     mounting: str | None = "ct"  # JawCase.mounting: ct / aesthetic — мыщелки по КТ; average / motion — нет
+    # Эстетическая система (строки «вправо, вперёд, вверх» в координатах кейса, JawCase.aesthetic_axes): есть —
+    # в проект пишется набор изображений Smile Design, в exocad появляется «Вид Smile Design» (exocad_views).
+    aesthetic: np.ndarray | None = None
 
 
 def articulator_values(anatomy: mo.Anatomy, settings: kin.Settings) -> dict:
@@ -197,6 +204,11 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
                                      plane_height=round(float(incisal_art[2]), 2))
     if not case.condylar_paths:
         notes.append("путей мыщелков по КТ нет — вставки ССП в артикуляторе стандартные")
+    if case.aesthetic is not None:
+        axes_art = (to_art[:3, :3] @ np.asarray(case.aesthetic, float).T).T  # оси — строками, в мм артикулятора
+        names = ev.write_treatment_images(folder, stem, axes_art, incisal_art)
+        written["эстетический вид"] = names
+        notes.append("эстетический вид спереди — кнопка «Вид Smile Design» в exocad (набор изображений проекта)")
     if case.mounting not in ("ct", "aesthetic"):
         notes.append("монтаж не по мыщелкам КТ — шарнир артикулятора стоит не на мыщелках пациента")
     summary = {"files": written, "antagonist": antagonist, "articulator_folder": art_name, "notes": notes,
@@ -280,4 +292,4 @@ def case_from_session(session) -> ArticulatorCase:
         fps = (len(rec.transforms) - 1) / rec.duration if getattr(rec, "timed", False) and rec.duration else 60.0
         movements.append((rec.name, np.asarray(rec.transforms, float), float(fps)))
     return ArticulatorCase(upper, lower, jaw.anatomy, jaw.settings.copy(), bites, bones, paths, movements,
-                           getattr(jaw, "mounting", None))
+                           getattr(jaw, "mounting", None), getattr(jaw, "aesthetic_axes", None))

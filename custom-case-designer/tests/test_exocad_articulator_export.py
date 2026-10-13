@@ -149,6 +149,31 @@ def test_antagonist_falls_back_to_sam_2p(case, project, register, tmp_path):
     assert "<AntagonistType>ArticulatorSendling</AntagonistType>" in text
 
 
+def test_aesthetic_axes_give_smile_design_view(case, project, register, tmp_path):
+    """Есть эстетическая система — в копии проекта набор изображений: «Вид Smile Design» по эстетическому «вперёд»."""
+    app = exocad_app(tmp_path, custom=True)
+    plain = xa.export(case, str(project), str(tmp_path / "plain"), register=register, exocad_app=app)
+    assert "эстетический вид" not in plain["files"]
+    assert not any(n.endswith(".treatmentImages") for n in os.listdir(tmp_path / "plain"))
+    R = axis_angle(np.array([1.0, 0, 0]), np.radians(-8))
+    case.aesthetic = (R @ np.eye(3)).T  # строки: вправо, вперёд, вверх (в координатах кейса)
+    res = xa.export(case, str(project), str(tmp_path / "views"), register=register, exocad_app=app)
+    assert res["files"]["эстетический вид"] == ["views.treatmentImages", "views-smile.jpg"]
+    assert any("Вид Smile Design" in n for n in res["notes"])
+    im = ET.parse(tmp_path / "views" / "views.treatmentImages").getroot().find("Images/Image")
+
+    def vec(tag):
+        return np.array([float(im.find(tag).findtext(k)) for k in "xyz"])
+
+    to_art = np.array(res["case_to_articulator"])
+    forward, up = (to_art[:3, :3] @ case.aesthetic[i] for i in (1, 2))
+    assert vec("ViewDirection") == pytest.approx(-forward, abs=1e-5)
+    assert vec("ViewAxisY") == pytest.approx(up, abs=1e-5)
+    centre = np.mean([vec(k) for k in ("TopLeft", "TopRight", "BottomLeft", "BottomRight")], axis=0)
+    incisal = apply(to_art, case.anatomy.points["incisal"][None])[0]
+    assert centre == pytest.approx(incisal - 100.0 * forward, abs=1e-3)  # перекрестье — на резцовой точке
+
+
 def test_articulator_values_from_mount_horizontal(case):
     s = kin.Settings(sagittal_right_deg=30, sagittal_left_deg=30, bennett_right_deg=12, bennett_left_deg=12)
     raw = xa.articulator_values(case.anatomy, s)

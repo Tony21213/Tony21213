@@ -13,6 +13,11 @@
   (aesthetic.aesthetic_frame_ct; позже — по фото анфас), наклон вперёд-назад — от базовой функциональной плоскости
   (франкфуртская, если есть её точки, иначе окклюзионная: base_for_aesthetic). Строится в JawCase.mount по костям
   лица (череп), а не по ориентирам; углы суставов остаются от базовой горизонтали и пересчитываются к эстетической.
+* **эстетическая через мыщелки** — ось «вправо» — линия мыщелков (шарнир артикулятора exocad проходит через оба,
+  как у оси-орбитальной), «вверх» — эстетическое «вверх» поперёк этой оси: поворот вокруг оси мыщелков шарнир не
+  сдвигает, поэтому наклон вперёд-назад берётся от лица. От эстетической системы остаётся отличие на угол между
+  линией мыщелков и горизонталью лица (кейс 3: 0,9°); вид спереди exocad ставит точно по набору изображений
+  Smile Design (exocad_views). Строится в JawCase.mount по костям лица и мыщелкам; углы ССП — от этой горизонтали.
 
 Плоскость по умолчанию — настройка программы (resolve): если для неё нет точек (или костей лица), берётся
 следующая по цепочке FALLBACK, в конце — окклюзионная, с заметкой, почему.
@@ -39,10 +44,12 @@ PLANES = {
     "camper": {"name": "Кемпера (козелок — крыло носа)", "points": (("Tr_R",), ("Tr_L",), ("Al_R", "Al_L"))},
     "hip": {"name": "HIP (вырезки — резцовый сосочек)", "points": (("HN_R",), ("HN_L",), ("IP",))},
     "aesthetic": {"name": "Эстетическая (по лицу)", "points": (), "face": True},
+    "aesthetic_hinge": {"name": "Эстетическая через мыщелки (шарнир точно)", "points": (("Co_R",), ("Co_L",)),
+                        "face": True},
 }
 # Если для плоскости по умолчанию нет точек: на что переходить (в конце всегда окклюзионная).
-FALLBACK = {"aesthetic": "frankfurt", "axis_orbital": "frankfurt", "camper": "frankfurt", "hip": "frankfurt",
-            "frankfurt": "occlusal"}
+FALLBACK = {"aesthetic_hinge": "aesthetic", "aesthetic": "frankfurt", "axis_orbital": "frankfurt",
+            "camper": "frankfurt", "hip": "frankfurt", "frankfurt": "occlusal"}
 
 
 def _check(kind: str):
@@ -68,10 +75,10 @@ def missing(kind: str, landmarks: dict | None, condyles: dict | None = None, fac
     """Названия недостающих ориентиров плоскости (для орбитали — если нет ни одной стороны); face — есть ли кости
     лица (череп) для эстетической."""
     _check(kind)
-    if PLANES[kind].get("face"):
-        return [] if face else ["кости лица (сегментация черепа)"]
     have = set(landmarks or {}) | ({"Co_R", "Co_L"} if condyles is not None else set())
     out = []
+    if PLANES[kind].get("face") and not face:
+        out.append("кости лица (сегментация черепа)")
     for keys in PLANES[kind]["points"]:
         if keys[0].startswith("Or"):
             if not any(k in have for k in keys):
@@ -106,16 +113,31 @@ def resolve(preferred: str | None, landmarks: dict | None, condyles: dict | None
     return kind, note
 
 
-def rotation(kind: str, up, anterior, landmarks: dict | None = None, condyles: dict | None = None) -> np.ndarray:
+def rotation(kind: str, up, anterior, landmarks: dict | None = None, condyles: dict | None = None,
+             face_up=None) -> np.ndarray:
     """Оси монтажа (строки: вправо, вперёд, вверх) в координатах кейса для плоскости kind.
 
     up, anterior — окклюзионные «вверх» и «вперёд» по сканам (mo.occlusal_up, mo.arch_axes); condyles — шарнирные
-    точки {"right", "left"} в координатах кейса (в прикусе монтажа)."""
+    точки {"right", "left"} в координатах кейса (в прикусе монтажа); face_up — эстетическое «вверх» в координатах
+    кейса (для эстетической через мыщелки: строится по направлению, поэтому годятся и Co, и центры головок)."""
     _check(kind)
-    if PLANES[kind].get("face"):
-        raise ValueError("эстетическая плоскость строится по костям лица — монтаж через JawCase.mount(plane=...)")
     up, anterior = np.asarray(up, float), np.asarray(anterior, float)
     up /= np.linalg.norm(up)
+    if kind == "aesthetic_hinge":
+        if condyles is None or face_up is None:
+            raise ValueError("эстетическая через мыщелки строится по мыщелкам и костям лица — JawCase.mount(plane=...)")
+        right = np.asarray(condyles["right"], float) - np.asarray(condyles["left"], float)
+        right /= np.linalg.norm(right)
+        n = np.asarray(face_up, float) - (np.asarray(face_up, float) @ right) * right
+        if np.linalg.norm(n) < 1e-6:
+            raise ValueError("эстетическое «вверх» идёт вдоль линии мыщелков — проверьте точки Co_R и Co_L")
+        n /= np.linalg.norm(n)
+        forward = np.cross(n, right)
+        if forward @ anterior < 0:
+            raise ValueError("мыщелки перепутаны сторонами — проверьте точки Co_R и Co_L")
+        return np.array([right, forward, n])
+    if PLANES[kind].get("face"):
+        raise ValueError("эстетическая плоскость строится по костям лица — монтаж через JawCase.mount(plane=...)")
     if kind == "occlusal":
         anterior = anterior - (anterior @ up) * up
         anterior /= np.linalg.norm(anterior)
