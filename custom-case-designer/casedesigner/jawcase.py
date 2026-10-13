@@ -65,6 +65,9 @@ class JawCase:
         self.anatomy: mo.Anatomy | None = None
         self.mounting: str | None = None
         self.plane = "occlusal"  # плоскость монтажа (casedesigner/mount_planes.py) — у монтажа по КТ
+        # Эстетическая система (строки «вправо, вперёд, вверх» в координатах кейса) — у эстетических плоскостей;
+        # по ней выгрузка для exocad пишет вид Smile Design (exocad_views).
+        self.aesthetic_axes: np.ndarray | None = None
         self.settings = kin.Settings()
         self.lower_fix = np.eye(4)  # посадка прикуса: «нижний скан → посаженный»
         self.movements: dict[str, Movement] = {}
@@ -77,12 +80,14 @@ class JawCase:
     # --- отмена -------------------------------------------------------------
     def _snapshot(self) -> dict:
         return {"anatomy": copy.deepcopy(self.anatomy), "mounting": self.mounting, "plane": self.plane,
+                "aesthetic_axes": None if self.aesthetic_axes is None else self.aesthetic_axes.copy(),
                 "settings": self.settings.copy(), "lower_fix": self.lower_fix.copy(),
                 "movements": dict(self.movements), "notes": list(self.notes)}
 
     def _restore(self, snap: dict):
         self.anatomy, self.mounting = snap["anatomy"], snap["mounting"]
         self.plane = snap.get("plane", "occlusal")
+        self.aesthetic_axes = snap.get("aesthetic_axes")
         self.settings, self.lower_fix = snap["settings"], snap["lower_fix"]
         self.movements, self.notes = snap["movements"], snap["notes"]
         self._occlusion = None
@@ -177,6 +182,9 @@ class JawCase:
         Эстетическая (plane="aesthetic") — монтаж по базовой плоскости (mount_planes.base_for_aesthetic), затем крен
         и разворот по симметрии костей лица (face_points, по умолчанию череп кейса; aesthetic.aesthetic_frame_ct);
         углы суставов остаются от базовой горизонтали (Settings.frame) и пересчитываются к эстетической.
+        Эстетическая через мыщелки (plane="aesthetic_hinge") — та же эстетическая система, затем монтаж с осью
+        «вправо» по линии мыщелков и «вверх» — эстетическим поперёк неё (mount_planes.rotation): шарнир на
+        мыщелках, наклон — по лицу, углы ССП — от этой горизонтали; остаток к эстетике — в заметках.
         """
         from . import mount_planes as mp
 
@@ -207,17 +215,35 @@ class JawCase:
             ct = method == "ct"
             aesthetic = plane == "aesthetic"
             face = None
-            if aesthetic:
+            if mp.PLANES[plane].get("face"):
                 face = face_points if face_points is not None else (None if self.skull is None else self.skull.vertices)
                 if face is None:
                     raise ValueError("для эстетической плоскости нужны кости лица (сегментация черепа)")
-            base_plane = mp.base_for_aesthetic(landmarks, condyles) if aesthetic else plane
-            anatomy, settings, eminence, notes = ew.mount(self.upper.vertices, self.lower_vertices,
-                                                          self.mandible if ct else None, self.skull if ct else None,
-                                                          condyles=condyles if ct else None,
-                                                          eminence_condyles=ct_condyles if ct else None,
-                                                          plane=base_plane, landmarks=landmarks)
+            base_plane = mp.base_for_aesthetic(landmarks, condyles) if face is not None else plane
+
+            def ew_mount(kind, face_up=None):
+                return ew.mount(self.upper.vertices, self.lower_vertices, self.mandible if ct else None,
+                                self.skull if ct else None, condyles=condyles if ct else None,
+                                eminence_condyles=ct_condyles if ct else None, plane=kind, landmarks=landmarks,
+                                face_up=face_up)
+
+            anatomy, settings, eminence, notes = ew_mount(base_plane)
+            aesthetic_axes = None
+            if plane == "aesthetic_hinge":
+                from . import aesthetic as ae
+
+                a = ae.aesthetic_frame_ct(anatomy.frame, np.asarray(face, float))
+                aesthetic_axes = np.asarray(a.frame, float)[:3, :3].copy()
+                anatomy, settings, eminence, notes = ew_mount("aesthetic_hinge", face_up=aesthetic_axes[2])
+                rel = anatomy.frame[:3, :3] @ aesthetic_axes.T  # столбцы — эстетические оси в системе монтажа
+                left = float(np.degrees(np.arccos(np.clip((np.trace(rel) - 1) / 2, -1, 1))))
+                anatomy = mo.Anatomy(anatomy.frame, anatomy.points, f"{anatomy.source}; наклон — по эстетике (кости "
+                                     f"лица, от {mp.PLANES[base_plane]['name'].lower()})", anatomy.hinge_rms_mm)
+                notes = list(notes) + [f"оси артикулятора — через оба мыщелка, наклон — по лицу; от эстетической "
+                                       f"системы отличаются на {left:.1f}° (линия мыщелков к горизонтали лица): виды "
+                                       "exocad сбоку и сверху — с этим отличием, спереди — точно («Вид Smile Design»)"]
             self.anatomy = anatomy
+            self.aesthetic_axes = aesthetic_axes
             base = self.settings.copy()
             for key, value in vars(settings).items():
                 if key in settings.sources:
@@ -235,7 +261,10 @@ class JawCase:
                 self.anatomy = mo.Anatomy(np.asarray(a.frame, float), dict(self.anatomy.points),
                                           f"{self.anatomy.source}; модели — по эстетической плоскости (по КТ, наклон "
                                           f"— от {mp.PLANES[base_plane]['name'].lower()})", self.anatomy.hinge_rms_mm)
+                self.aesthetic_axes = np.asarray(a.frame, float)[:3, :3].copy()
                 notes = list(notes) + list(a.notes)
+        if method == "motion":
+            self.aesthetic_axes = None
         self.mounting = method
         self.plane = plane
         self.notes = notes
@@ -251,6 +280,7 @@ class JawCase:
         self.anatomy = mo.Anatomy(np.asarray(aesthetic.frame, float), dict(self.anatomy.points),
                                   f"эстетическая плоскость (крен {aesthetic.roll_deg:+.1f}°); "
                                   f"суставы — от прежней горизонтали", self.anatomy.hinge_rms_mm)
+        self.aesthetic_axes = np.asarray(aesthetic.frame, float)[:3, :3].copy()
         self.mounting = "aesthetic"
         self.plane = "aesthetic"
         return self.state()
@@ -435,6 +465,8 @@ class JawCase:
         if s.frame is not None:
             arrays["settings_frame"] = s.frame
         arrays["lower_fix"] = self.lower_fix
+        if self.aesthetic_axes is not None:
+            arrays["aesthetic_axes"] = self.aesthetic_axes
         for i, m in enumerate(self.movements.values()):
             r = m.recording
             arrays[f"mov{i}_t"], arrays[f"mov{i}_T"] = r.times, r.transforms
@@ -461,6 +493,7 @@ class JawCase:
                                         a["source"], a["hinge_rms_mm"])
             jc.mounting, jc.notes = meta["mounting"], meta["notes"]
             jc.plane = meta.get("plane", "occlusal")  # кейсы до выбора плоскости — окклюзионная
+            jc.aesthetic_axes = np.asarray(z["aesthetic_axes"], float) if "aesthetic_axes" in z else None
             sv = dict(meta["settings"])
             jc.settings = kin.Settings(**{k: v for k, v in sv.items() if k != "sources"}, sources=sv["sources"],
                                        frame=z["settings_frame"] if "settings_frame" in z else None)

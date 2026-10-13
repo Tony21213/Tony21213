@@ -5,6 +5,7 @@
 """
 
 import inspect
+import re
 from types import SimpleNamespace
 
 import numpy as np
@@ -195,6 +196,73 @@ def test_default_plane_resolves_with_fallback():
     assert mp.base_for_aesthetic(lm, CO) == "frankfurt" and mp.base_for_aesthetic({}, CO) == "occlusal"
     with pytest.raises(ValueError, match="нет такой плоскости"):
         mp.resolve("bonwill", lm, CO)
+
+
+def test_aesthetic_hinge_rotation_keeps_condyle_axis():
+    """Ось «вправо» — линия мыщелков (шарнир через оба), «вверх» — эстетическое поперёк неё."""
+    tilted = {"right": np.array([50.0, 1.0, 3.0]), "left": np.array([-50.0, -1.0, -3.0])}
+    face_up = axis_angle(np.array([1.0, 0, 0]), np.radians(-8)) @ np.array([0, 0, 1.0])  # лицо передом вниз на 8°
+    R = mp.rotation("aesthetic_hinge", [0, 0, 1], [0, 1, 0], condyles=tilted, face_up=face_up)
+    line = (tilted["right"] - tilted["left"]) / np.linalg.norm(tilted["right"] - tilted["left"])
+    assert R[0] == pytest.approx(line)
+    assert R @ R.T == pytest.approx(np.eye(3), abs=1e-12) and np.linalg.det(R) == pytest.approx(1)
+    up = face_up - (face_up @ line) * line
+    assert R[2] == pytest.approx(up / np.linalg.norm(up))
+    # по направлению: центры головок (Co на радиус ниже) дают ту же систему
+    centres = {s: p - CONDYLE_RADIUS_MM * R[2] for s, p in tilted.items()}
+    assert mp.rotation("aesthetic_hinge", [0, 0, 1], [0, 1, 0], condyles=centres, face_up=face_up) == pytest.approx(R)
+    with pytest.raises(ValueError, match="мыщелкам и костям лица"):
+        mp.rotation("aesthetic_hinge", [0, 0, 1], [0, 1, 0], condyles=tilted)
+    with pytest.raises(ValueError, match="перепутаны"):
+        mp.rotation("aesthetic_hinge", [0, 0, 1], [0, 1, 0], condyles={"right": tilted["left"], "left": tilted["right"]},
+                    face_up=face_up)
+    info = mp.available({}, CO, face=True)["aesthetic_hinge"]
+    assert info["available"]
+    assert mp.missing("aesthetic_hinge", {}, None, face=False) == ["кости лица (сегментация черепа)",
+                                                                   "Мыщелок правый", "Мыщелок левый"]
+    kind, note = mp.resolve("aesthetic_hinge", landmarks(), None, face=True)
+    assert kind == "aesthetic" and "Мыщелок правый" in note
+
+
+def test_aesthetic_hinge_mount_hinge_on_condyles_pitch_from_face(tmp_path):
+    """Лицо с креном 3°, мыщелки ровно: шарнир на мыщелках, наклон — от франкфуртской (по эстетике), остаток — 3°."""
+    upper, lower = scans()
+    jc = JawCase()
+    jc.set_scans(Mesh(*upper, "верх"), Mesh(*lower, "низ"))
+    jc.skull = Mesh(skull().vertices, skull().faces, "череп")
+    jc.mount("ct", condyles=CO, ct_condyles=CO)
+    assert jc.aesthetic_axes is None
+    st = jc.mount("ct", condyles=CO, ct_condyles=CO, plane="aesthetic_hinge", landmarks=landmarks(),
+                  face_points=face_cloud(3.0))
+    F = jc.anatomy.frame
+    for side in ("right", "left"):  # центры головок — на оси x: шарнир артикулятора через оба мыщелка
+        assert apply(F, jc.anatomy.points[f"condyle_{side}"][None])[0][1:] == pytest.approx([0, 0], abs=1e-6)
+    assert st["mounting"]["plane"]["key"] == "aesthetic_hinge"
+    note = next(n for n in st["notes"] if "отличаются на" in n)
+    assert "Вид Smile Design" in note
+    assert float(re.search(r"отличаются на ([\d.]+)°", note).group(1)) == pytest.approx(3.0, abs=0.3)
+    assert "наклон — по эстетике" in jc.anatomy.source
+    for side in ("right", "left"):  # горизонталь — эстетическая с наклоном франкфуртской (10° к окклюзионной)
+        assert jc.settings.get("sagittal", side) == pytest.approx(ALPHA[side] + 10.0, abs=0.7)
+    E = jc.aesthetic_axes
+    assert E @ E.T == pytest.approx(np.eye(3), abs=1e-9)
+    assert abs(np.degrees(np.arcsin(E[0][2]))) == pytest.approx(3.0, abs=0.3)  # «вправо» лица — с креном
+    assert F[2, :3] @ E[2] == pytest.approx(np.cos(np.radians(3.0)), abs=2e-3)  # «вверх» — поперёк оси мыщелков
+    path = str(tmp_path / "case.npz")
+    jc.save(path)
+    loaded = JawCase.load(path)
+    assert loaded.plane == "aesthetic_hinge" and loaded.aesthetic_axes == pytest.approx(E)
+    jc.undo()
+    assert jc.aesthetic_axes is None and jc.plane == "occlusal"
+    # мыщелки на разной высоте: шарнир всё равно через оба
+    tilted = {"right": np.array([50.0, 0.0, 2.0]), "left": np.array([-50.0, 0.0, -2.0])}
+    bare = _bare()
+    bare.mount("ct", condyles=tilted, ct_condyles=tilted, plane="aesthetic_hinge", face_points=face_cloud(0.0))
+    for side in ("right", "left"):
+        p = apply(bare.anatomy.frame, bare.anatomy.points[f"condyle_{side}"][None])[0]
+        assert p[1:] == pytest.approx([0, 0], abs=1e-6)
+    with pytest.raises(ValueError, match="кости лица"):
+        _bare().mount("ct", condyles=CO, plane="aesthetic_hinge")
 
 
 # --- задачи ведомого ------------------------------------------------------------------------------------

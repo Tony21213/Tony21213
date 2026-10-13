@@ -380,7 +380,7 @@ def load(path: str) -> Scene:
 # --- динамика по сцене ---
 
 def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=None, eminence_condyles=None,
-          plane: str = "occlusal", landmarks: dict | None = None) -> tuple:
+          plane: str = "occlusal", landmarks: dict | None = None, face_up=None) -> tuple:
     """Монтаж по сканам и, если есть, КТ: (Anatomy, Settings, сведения о бугорках, примечания).
 
     Горизонталь — плоскость монтажа plane (casedesigner/mount_planes.py; по умолчанию окклюзионная по сканам,
@@ -391,7 +391,8 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=No
     центры головок: на радиус головки (guidance.CONDYLE_RADIUS_MM) ниже Co по вертикали монтажа; путь мыщелка
     по бугорку — путь этого же центра. ССП — по суставному бугорку черепа (skull: vertices и faces) у точек Co
     eminence_condyles — в координатах черепа, то есть в соотношении КТ (без них — у condyles), от плоскости
-    монтажа; угол Беннетта — по Ханау; чего нет — значения по умолчанию.
+    монтажа; угол Беннетта — по Ханау; чего нет — значения по умолчанию. face_up — эстетическое «вверх» в
+    координатах кейса (для plane="aesthetic_hinge", см. mount_planes.rotation).
     """
     from . import mount_planes as mp
 
@@ -408,7 +409,7 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=No
         where = "КТ: мыщелки по нижней челюсти"
     tops = {"right": co["Co_R"], "left": co["Co_L"]} if len(co) == 2 else {}
     if tops:
-        R = mp.rotation(plane, up, anterior, landmarks, tops)
+        R = mp.rotation(plane, up, anterior, landmarks, tops, face_up=face_up)
         # Шарнир — центры головок: на радиус ниже Co по вертикали монтажа. У оси-орбитальной плоскость сама
         # проходит через шарнир, поэтому её строим по центрам (сходится за пару шагов).
         for _ in range(3 if plane == "axis_orbital" else 0):
