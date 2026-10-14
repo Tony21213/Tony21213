@@ -131,7 +131,7 @@ def test_session_finds_landmarks_as_suggestions(toy_models, tmp_path, monkeypatc
     assert s.landmark_models_status()["usable"]
     target = np.array([6.0, -9.0, 4.5])
     vol = blob_volume(target)
-    monkeypatch.setattr("casedesigner.app.session.CaseCT", lambda v, *a: type("C", (), {"levels": None})())
+    monkeypatch.setattr("casedesigner.app.steps.ct.CaseCT", lambda v, *a: type("C", (), {"levels": None})())
     s.vol, s.case = vol, object()
     s.landmarks["N"] = np.array([1.0, 2.0, 3.0])  # врач уже поставил
     info = s.auto_landmarks()
