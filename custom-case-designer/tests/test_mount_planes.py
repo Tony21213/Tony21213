@@ -289,7 +289,9 @@ def test_session_and_api_contract(tmp_path):
     assert set(s.articulation_planes()) >= {"planes", "current", "selected", "default", "tilt"}
     src = app_server.routes_source()
     assert '"planes"' in src and "mount_plane" in src
-    ui = (Path(__file__).parents[1] / "casedesigner" / "app" / "web" / "app.js").read_text(encoding="utf-8")
+    web = Path(__file__).parents[1] / "casedesigner" / "app" / "web"
+    ui = "".join(p.read_text(encoding="utf-8") for p in [web / "app.js", web / "core.js", *sorted((web / "steps").glob("*.js"))])
+    assert "settings: settingsDialog" in ui  # кнопка «Настройки» подключена к диалогу
     assert "data-mount-plane" in ui and "defaultMountPlane" in ui
     s.set_articulation_plane("hip")
     s.scans["phantom"] = {"scan": Scan("phantom", np.array([[0., 0, 0], [1, 0, 0], [0, 1, 0]]),

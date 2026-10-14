@@ -3,7 +3,7 @@ import { $, NEXT_JAW, RENDER, app, busy, loadStructures, render, scanById, showS
 import { get, mesh, post, run } from './api.js';
 import { SliceView } from './slices.js';
 import { articulationAction, editCondyle, endCondyleEdit, handleCondylePick, mountWithPlane, nudgeCondyle, playArticulation, prepareArticulation, rememberPointerDown, remountCondyles, renderArticulation, selectMountPlane, toggleJoints, updateCondyles } from './steps/articulation.js';
-import { helpDialog, openCase, saveCase } from './steps/case.js';
+import { helpDialog, openCase, saveCase, settingsDialog } from './steps/case.js';
 import { downloadModels, openCt, partsDialog, renderCt, segment } from './steps/ct.js';
 import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport } from './steps/export.js';
 import { accept, addScans, endCorrection, refine, register, removeScan, renderScans, resetAuto, revertCorrection, startCorrection, stepHistory, toggleBite } from './steps/scans.js';
@@ -85,6 +85,7 @@ document.addEventListener('click', async (e) => {
     'exocad-project': chooseExocadProject, 'exocad-articulator': doExportExocadArticulator,
     getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog,
     openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog, incognito: toggleIncognito,
+    settings: settingsDialog,
     scansonly: () => { state.step = 'scans'; render(); } }[d.a];
   action?.();
 });
