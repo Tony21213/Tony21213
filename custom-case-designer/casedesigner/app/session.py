@@ -46,7 +46,7 @@ CASE_EXT = ".ccdcase"
 MOUNT_PLANE_SETTING = "aesthetic_hinge"  # плоскость монтажа по умолчанию — решение владельца
 DEV_COLORS = ("#28aa46", "#e6be1e", "#d23228", "#8a8f99")  # ≤ 0.1, ≤ 0.2, > 0.2 мм, не коронки (как карта в 3D)
 MAX_SLICE_PIXELS = 2048  # сторона картинки видимой части среза
-UPPER_BONES, LOWER_BONES = ("skull", "maxilla"), ("mandible",)  # в exocad — бюгельными каркасами своей челюсти
+UPPER_BONES, LOWER_BONES = ("skull", "maxilla"), ("mandible",)  # в exocad — bone_upper.stl / bone_lower.stl
 EXOCAD_SUBFOLDER = "KStomCaseDesigner"  # куда в папке проекта exocad кладётся экспорт
 SCAN_COLORS = ["#7fb2ff", "#ffb86b", "#b48cff", "#6be0c1"]
 # Скан совмещён до сегментации — только по плотности (см. CaseCT.use_teeth).
@@ -1479,8 +1479,8 @@ class Session:
                  f"{project.source}). В exocad: «Load mesh as …»; копии сканов там же должны совпасть со сканами проекта."]
         bone_files, bone_notes = self._bones_as_frameworks(project, jaws)
         if bone_files:
-            notes.append("Кости — бюгельными каркасами проекта: верхний — череп и верхняя челюсть (с ВЧ), нижний — "
-                         "нижняя челюсть (с НЧ); exocad подгрузит их сам и будет двигать с челюстями в артикуляторе.")
+            notes.append("Кости — bone_upper.stl (кость верхней челюсти: череп и верхняя челюсть) и bone_lower.stl "
+                         "(кость нижней челюсти); exocad подгрузит их сам и будет двигать с челюстями в артикуляторе.")
         notes += bone_notes
         if frame == "dicom" and self.case is not None:
             notes.append("Для проекта exocad выгрузка всегда в координатах его сцены, а не КТ.")
@@ -1491,7 +1491,7 @@ class Session:
                 "bite": report["ct_bite_vs_scans"], "frame": report["frame"], "frameworks": bone_files}
 
     def _bones_as_frameworks(self, project, jaws) -> tuple[list, list]:
-        """Кости КТ — в координаты файла скана своей челюсти и бюгельными каркасами в папку проекта."""
+        """Кости КТ — в координаты файла скана своей челюсти и в папку проекта (bone_upper.stl, bone_lower.stl)."""
         bones, notes = {}, []
         for jaw, keys in (("upper", UPPER_BONES), ("lower", LOWER_BONES)):
             reg = next((r for r in jaws if r.jaw == jaw), None)

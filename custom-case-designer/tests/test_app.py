@@ -249,14 +249,14 @@ def test_bones_as_exocad_frameworks(case_files, tmp_path):
     bone = phantom.teeth_mesh("lower")  # «кость» нижней челюсти в координатах КТ
     s.structures = {"mandible": trimesh.Trimesh(bone.vertices, bone.faces, process=False)}
     res = s.export(str(project), "scan", "exocad")
-    assert res["frameworks"] == ["p-lowerjaw-partialframework_cad.stl", "p-lowerjaw.partialInfo"]
-    got = trimesh.load_mesh(str(project / "p-lowerjaw-partialframework_cad.stl"), process=False).vertices
+    assert res["frameworks"] == ["bone_lower.stl", "p-lowerjaw.partialInfo"]
+    got = trimesh.load_mesh(str(project / "bone_lower.stl"), process=False).vertices
     T = np.array(s.scan_info(sid)["transform"])  # скан → КТ
     want = apply(np.linalg.inv(T), bone.vertices)[bone.faces].reshape(-1, 3)
     assert np.abs(got - want).max() < 1e-3
     info = ET.parse(project / "p-lowerjaw.partialInfo").getroot()
-    assert info.findtext("PartialFileList/PartialFile/FileName") == "p-lowerjaw-partialframework_cad.stl"
-    assert any("бюгельными каркасами" in n for n in res["notes"])
+    assert info.findtext("PartialFileList/PartialFile/FileName") == "bone_lower.stl"
+    assert any("bone_lower.stl (кость нижней челюсти)" in n for n in res["notes"])
     s.export(str(project), "scan", "exocad")  # повторная выгрузка — свой каркас обновляется
     (project / "p-lowerjaw.partialInfo").write_text("<PartialInfo><ProductName>partialCAD</ProductName></PartialInfo>",
                                                     encoding="utf-8")

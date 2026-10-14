@@ -23,15 +23,15 @@ def test_export_without_skull_uses_standard_inserts(case, project, register, tmp
     result = xa.export(case, str(project), str(out), register=register,
                        exocad_app=exocad_app(tmp_path, custom=True))
     assert any("вставки ССП" in n and "стандартные" in n for n in result["notes"])
-    assert result["files"].get("кости-каркасы", 0) == int(with_mandible)
-    assert not list(out.glob("*-upperjaw-partialframework_cad.stl"))
+    assert result["files"].get("кости", []) == (["bone_lower.stl"] if with_mandible else [])
+    assert not (out / "bone_upper.stl").exists()
     assert not list(out.glob("*-TotalJaw*.ply"))
     for jaw in ("upper", "lower"):
         mesh = trimesh.load_mesh(out / f"case-002-{jaw}jaw.ply", process=False)
         expected = apply(np.asarray(result["case_to_articulator"]), getattr(case, jaw).vertices)
         np.testing.assert_allclose(mesh.vertices, expected, atol=1e-3)
     if with_mandible:
-        mesh = trimesh.load_mesh(out / "case-002-lowerjaw-partialframework_cad.stl", process=False)
+        mesh = trimesh.load_mesh(out / "bone_lower.stl", process=False)
         # STL дублирует вершины граней — сравниваем поверхность через ближайшие вершины.
         from scipy.spatial import cKDTree
         expected = apply(np.asarray(result["case_to_articulator"]), bone.vertices)
@@ -39,7 +39,7 @@ def test_export_without_skull_uses_standard_inserts(case, project, register, tmp
         assert (out / "case-002-lowerjaw.partialInfo").is_file()
     else:
         assert not list(out.glob("*.partialInfo"))
-        assert not list(out.glob("*-partialframework_cad.stl"))
+        assert not list(out.glob("bone_*.stl"))
     art = out / xa.SUBFOLDER / "articulator" / result["articulator_folder"]
     settings = ET.parse(art / "articulatorparameters.xml").getroot()
     # общий артикулятор: набор вставок есть всегда, подбора по пути нет
