@@ -95,3 +95,17 @@ def test_ceph_points_are_case_landmarks_with_ali_networks():
     used = {k for a in ce.ANALYSES.values() for m in a.measures if m.kind != "difference" for k in m.points}
     known = set(lmk.BY_KEY) | {"Go", "Po", "Or", "Co"}  # двусторонние — средним
     assert used <= known
+
+
+def test_doubtful_incisor_apex_is_not_used():
+    """Верхушка корня ближе 15 мм к краю (ALI-CBCT на архиве) — углы резца не считаются, с причиной."""
+    pts = steiner_case()
+    pts["U1_tip"] = pts["N"] + 40 * (pts["A"] - pts["N"]) / np.linalg.norm(pts["A"] - pts["N"])
+    pts["U1_apex"] = pts["U1_tip"] + [0, -2.0, 9.0]  # 9,2 мм — у шейки, а не у верхушки
+    res = ce.analyze(pts, "steiner")
+    got = {r["key"] for r in res["results"]}
+    assert "U1_NA_mm" in got and "U1_NA_deg" not in got  # расстояние по краю — есть, угол по оси — нет
+    skip = next(s for s in res["skipped"] if s["key"] == "U1_NA_deg")
+    assert "верхушка сомнительна" in skip["reason"] and "9,2 мм" in skip["reason"]
+    rep = ce.report([res], "Кейс 1")
+    assert any("верхушка сомнительна" in n for n in rep.sections[0].notes)
