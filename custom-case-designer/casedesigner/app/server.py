@@ -15,10 +15,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import errorlog
-from .session import Session, mesh_bytes
+from .session import Session, mesh_bytes  # noqa: F401 — mesh_bytes: прежний импорт для тестов
+from .steps import articulation, casefile, ct, export, landmarks, scans
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 USER_ERRORS = (ValueError, FileNotFoundError, FileExistsError, KeyError, RuntimeError)
+
+# Маршруты шагов (порядок — как раньше в одном списке).
+STEP_ROUTES = [ct.route, export.route, scans.route, casefile.route, articulation.route, landmarks.route]
+
+
+def routes_source() -> str:
+    """Текст всех HTTP-маршрутов (общие — здесь, шагов — steps/<шаг>.route): для контрактных тестов."""
+    import inspect
+    import sys
+
+    return inspect.getsource(sys.modules[__name__]) + "".join(inspect.getsource(r) for r in STEP_ROUTES)
 
 
 class Jobs:
@@ -68,19 +80,20 @@ def make_handler(session: Session, jobs: Jobs):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+            return True
 
         def json(self, data, status: int = 200):
-            self.send(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status)
+            return self.send(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status)
 
         def binary(self, data: bytes):
-            self.send(data, "application/octet-stream")
+            return self.send(data, "application/octet-stream")
 
         def body(self) -> dict:
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n) or b"{}") if n else {}
 
         def job(self, title, fn):
-            self.json({"job": jobs.start(title, fn)})
+            return self.json({"job": jobs.start(title, fn)})
 
         # --- маршруты ---
         def do_GET(self):
@@ -122,13 +135,6 @@ def make_handler(session: Session, jobs: Jobs):
                 return self.json(s.state())
             if p == ["jobs", p[-1]] and len(p) == 2:
                 return self.json(jobs.get(p[1]))
-            if p == ["ct"] and method == "POST":
-                b = self.body()
-                return self.job("Открываю КТ", lambda progress: s.load_ct(b["path"], progress, b.get("series")))
-            if p == ["ct", "series"] and method == "POST":
-                # DICOM folders and archives can contain thousands of files. Keep
-                # the UI responsive while SimpleITK inspects them.
-                return self.job("Читаю серии КТ", lambda progress: s.ct_series(self.body()["path"]))
             if p == ["log"] and method == "POST":  # ошибка в интерфейсе
                 b = self.body()
                 errorlog.error("интерфейс", details=f"{str(b.get('message', ''))[:2000]}\n{str(b.get('stack', ''))[:6000]}")
@@ -136,138 +142,15 @@ def make_handler(session: Session, jobs: Jobs):
             if p == ["log", "open"] and method == "POST":
                 s.open_log_folder()
                 return self.json({"ok": True})
-            if p == ["export", "open"] and method == "POST":
-                s.open_export_folder()
-                return self.json({"ok": True})
-            if p == ["ct", "geometry"]:
-                return self.json(s.slice_geometry(q["axis"]))
-            if p == ["ct", "slice"]:
-                level = float(q["level"]) if "level" in q else None
-                width = float(q["width"]) if "width" in q else None
-                region = tuple(float(q[k]) for k in ("ua", "ub", "va", "vb")) if "ua" in q else None
-                size = (int(q["cols"]), int(q["rows"])) if region else None
-                if q.get("format") == "raw":
-                    return self.binary(s.slice_raw(q["axis"], float(q["pos"]), level, width, region, size))
-                return self.send(s.slice_png(q["axis"], float(q["pos"]), level, width, region, size), "image/png")
-            if p == ["ct", "surface"]:
-                return self.binary(s.ct_surface(q.get("part", "teeth")))
-            if p == ["overlays"] and method == "POST":
-                b = self.body()
-                return self.json(s.overlays(b["axis"], float(b["pos"]), b.get("visible", []), bool(b.get("heat"))))
-            if p == ["scans"] and method == "POST":
-                return self.json(s.add_scan(self.body()["path"]))
-            if len(p) == 3 and p[0] == "scans":
-                sid, action = p[1], p[2]
-                if action == "mesh":
-                    return self.binary(s.scan_mesh(sid))
-                if action == "colors":
-                    return self.binary(s.scan_colors(sid))
-                b = self.body() if method == "POST" else {}
-                if action == "register":
-                    return self.job("Совмещаю скан", lambda progress: s.register(
-                        sid, b.get("jaw"), pairs=b.get("pairs"), start=b.get("start"), progress=progress))
-                if action == "evaluate":
-                    return self.job("Оцениваю положение", lambda progress: s.evaluate(sid, b["transform"]))
-                if action == "jaw":
-                    s.set_jaw(sid, b.get("jaw"))
-                    return self.json(s.scan_info(sid))
-                if action == "accept":
-                    return self.json(s.accept(sid))
-                if action == "remove":
-                    s.remove_scan(sid)
-                    return self.json({"ok": True})
-            if p == ["case", "save"] and method == "POST":
-                return self.json(s.save_case(self.body().get("path")))
-            if p == ["case", "open"] and method == "POST":
-                b = self.body()
-                return self.job("Открываю кейс", lambda progress: s.open_case(b["path"], progress, b.get("ct_path")))
-            if p == ["models"]:
-                return self.json(s.models_status())
-            if p == ["models", "download"] and method == "POST":
-                return self.job("Загрузка моделей", lambda progress: s.download_models(progress))
-            if p == ["models", "cancel"] and method == "POST":
-                s.cancel_download()
-                return self.json({"ok": True})
-            if p == ["bite_view"] and method == "POST":
-                return self.json(s.set_bite_view(bool(self.body().get("on"))))
             if p == ["settings", "incognito"] and method == "POST":
                 return self.json(s.set_incognito(self.body().get("on") is True))
             if p == ["settings", "segment_parts"] and method == "POST":
                 return self.json(s.set_segment_parts(self.body().get("parts", [])))
             if p == ["settings", "mount_plane"] and method == "POST":
                 return self.json(s.set_default_mount_plane(self.body().get("plane")))
-            if p == ["articulation", "prepare"] and method == "POST":
-                return self.json(s.articulation_prepare())
-            if p == ["articulation", "planes"]:
-                if method == "POST":
-                    return self.json(s.set_articulation_plane(self.body().get("plane")))
-                return self.json(s.articulation_planes())
-            if p == ["articulation", "mount"] and method == "POST":
-                b = self.body()
-                s.validate_articulation_mount(b.get("method", "auto"), b.get("plane"))
-                return self.job("Монтаж моделей", lambda progress: s.articulation_mount(
-                    b.get("method", "auto"), b.get("plane")))
-            if p == ["articulation", "generate"] and method == "POST":
-                return self.job("Расчёт движений", lambda progress: s.articulation_generate(self.body().get("travel", 6.0)))
-            if p == ["articulation", "analysis"] and method == "POST":
-                return self.job("Анализ контактов и движений", lambda progress: s.articulation_report())
-            if p == ["articulation", "guides"]:
-                return self.json(s.articulation_guides())
-            if p == ["articulation", "joint"]:
-                parts = s.articulation_joint_parts()
-                side, part = q.get("side"), q.get("part")
-                if side is None and part is None:
-                    return self.json({s: {k: v is not None for k, v in sides.items()}
-                                      for s, sides in parts.items()})
-                if side not in ("right", "left") or part not in ("head", "slope"):
-                    raise ValueError("суставная поверхность: side=right|left, part=head|slope")
-                mesh = parts[side][part]
-                if mesh is None:
-                    raise ValueError("эта суставная поверхность недоступна: проверьте сегментацию и точки мыщелков")
-                return self.binary(mesh_bytes(mesh.vertices, mesh.faces))
-            # мыщелки (контракт — casedesigner/condyles.py, docs/handoff/archive/condyle-adjustment.md): состояние, поставить, подтвердить, сбросить
-            if p == ["articulation", "condyles"]:
-                if method == "POST":
-                    b = self.body()
-                    return self.json(s.set_condyle(b["side"], b["point"], b.get("space", "ct")))
-                return self.json(s.articulation_condyles())
-            if p == ["articulation", "condyles", "confirm"] and method == "POST":
-                return self.json(s.confirm_condyle(self.body().get("side", "both")))
-            if p == ["articulation", "condyles", "reset"] and method == "POST":
-                return self.json(s.reset_condyle(self.body().get("side", "both")))
-            if len(p) == 3 and p[:2] == ["articulation", "motion"]:
-                return self.json(s.articulation_motion(p[2]))
-            if p == ["segment"] and method == "POST":
-                b = self.body()
-                return self.job("Сегментация", lambda progress: s.segment(b.get("models_dir"), b.get("device", "auto"),
-                                                                           progress))
-            if len(p) >= 3 and p[0] == "structures" and p[-1] == "mesh":
-                return self.binary(s.structure_mesh("/".join(p[1:-1])))
-            if p == ["landmarks"]:
-                if method == "POST":
-                    b = self.body()
-                    return self.json(s.set_landmark(b["key"], b.get("point")))
-                return self.json(s.landmarks_info())
-            if p == ["landmarks", "models"]:
-                return self.json(s.landmark_models_status())
-            if p == ["landmarks", "models", "download"] and method == "POST":
-                return self.job("Загрузка моделей ориентиров", lambda progress: s.download_landmark_models(progress))
-            if p == ["landmarks", "auto"] and method == "POST":
-                b = self.body()
-                return self.job("Ищу ориентиры", lambda progress: s.auto_landmarks(progress, b.get("keys")))
-            if p == ["landmarks", "suggest"] and method == "POST":
-                return self.json(s.suggest_landmarks())
-            if p == ["export"] and method == "POST":
-                b = self.body()
-                return self.job("Экспорт", lambda progress: s.export(b["out_dir"], b.get("bite", "scan"),
-                                                                      b.get("frame", "exocad"), b.get("include"),
-                                                                      b.get("reference")))
-            if p == ["export", "exocad-articulator"] and method == "POST":
-                b = self.body()
-                project, out_dir = b.get("project"), b.get("out")
-                s.validate_exocad_articulator(project, out_dir)
-                return self.job("Экспорт для exocad с артикулятором",
-                                lambda progress: s.export_exocad_articulator(project, out_dir, progress))
+            for route in STEP_ROUTES:  # маршруты шагов — casedesigner/app/steps/<шаг>.py, route()
+                if route(self, s, p, method, q):
+                    return
             self.json({"error": f"нет такого запроса: {method} /api/{'/'.join(p)}"}, 404)
 
     return Handler

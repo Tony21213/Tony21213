@@ -286,3 +286,31 @@ class ScanSteps:
         return {"scan": self.scan_info(sid),
                 "record": {k: rec[k] for k in ("corrected_mm", "edge_shift_mm")} | {"learned": self.memory.usable(rec)},
                 "memory": self.memory.summary().get(self.vol.device or "unknown"), "min_cases": MIN_CASES}
+
+
+def route(h, s, p, method, q):
+    """HTTP-маршруты шага (вызывает server.Handler.api): h — обработчик запроса, s — сессия; True — запрос обработан."""
+    if p == ["scans"] and method == "POST":
+        return h.json(s.add_scan(h.body()["path"]))
+    if len(p) == 3 and p[0] == "scans":
+        sid, action = p[1], p[2]
+        if action == "mesh":
+            return h.binary(s.scan_mesh(sid))
+        if action == "colors":
+            return h.binary(s.scan_colors(sid))
+        b = h.body() if method == "POST" else {}
+        if action == "register":
+            return h.job("Совмещаю скан", lambda progress: s.register(
+                sid, b.get("jaw"), pairs=b.get("pairs"), start=b.get("start"), progress=progress))
+        if action == "evaluate":
+            return h.job("Оцениваю положение", lambda progress: s.evaluate(sid, b["transform"]))
+        if action == "jaw":
+            s.set_jaw(sid, b.get("jaw"))
+            return h.json(s.scan_info(sid))
+        if action == "accept":
+            return h.json(s.accept(sid))
+        if action == "remove":
+            s.remove_scan(sid)
+            return h.json({"ok": True})
+    if p == ["bite_view"] and method == "POST":
+        return h.json(s.set_bite_view(bool(h.body().get("on"))))

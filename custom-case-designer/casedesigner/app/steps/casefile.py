@@ -158,3 +158,12 @@ class CaseFileSteps:
                 "incognito": self.settings["incognito"],
                 **self.landmarks_info(),
                 "articulation": self.jaw.state(), "articulation_guides": self.articulation_guides()}
+
+
+def route(h, s, p, method, q):
+    """HTTP-маршруты шага (вызывает server.Handler.api): h — обработчик запроса, s — сессия; True — запрос обработан."""
+    if p == ["case", "save"] and method == "POST":
+        return h.json(s.save_case(h.body().get("path")))
+    if p == ["case", "open"] and method == "POST":
+        b = h.body()
+        return h.job("Открываю кейс", lambda progress: s.open_case(b["path"], progress, b.get("ct_path")))

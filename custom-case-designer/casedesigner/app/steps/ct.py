@@ -317,3 +317,42 @@ class CtSteps:
     def structure_mesh(self, key: str) -> bytes:
         v, f, _version = self._shown_structure(key)
         return mesh_bytes(v, f)
+
+
+def route(h, s, p, method, q):
+    """HTTP-маршруты шага (вызывает server.Handler.api): h — обработчик запроса, s — сессия; True — запрос обработан."""
+    if p == ["ct"] and method == "POST":
+        b = h.body()
+        return h.job("Открываю КТ", lambda progress: s.load_ct(b["path"], progress, b.get("series")))
+    if p == ["ct", "series"] and method == "POST":
+        # DICOM folders and archives can contain thousands of files. Keep
+        # the UI responsive while SimpleITK inspects them.
+        return h.job("Читаю серии КТ", lambda progress: s.ct_series(h.body()["path"]))
+    if p == ["ct", "geometry"]:
+        return h.json(s.slice_geometry(q["axis"]))
+    if p == ["ct", "slice"]:
+        level = float(q["level"]) if "level" in q else None
+        width = float(q["width"]) if "width" in q else None
+        region = tuple(float(q[k]) for k in ("ua", "ub", "va", "vb")) if "ua" in q else None
+        size = (int(q["cols"]), int(q["rows"])) if region else None
+        if q.get("format") == "raw":
+            return h.binary(s.slice_raw(q["axis"], float(q["pos"]), level, width, region, size))
+        return h.send(s.slice_png(q["axis"], float(q["pos"]), level, width, region, size), "image/png")
+    if p == ["ct", "surface"]:
+        return h.binary(s.ct_surface(q.get("part", "teeth")))
+    if p == ["overlays"] and method == "POST":
+        b = h.body()
+        return h.json(s.overlays(b["axis"], float(b["pos"]), b.get("visible", []), bool(b.get("heat"))))
+    if p == ["models"]:
+        return h.json(s.models_status())
+    if p == ["models", "download"] and method == "POST":
+        return h.job("Загрузка моделей", lambda progress: s.download_models(progress))
+    if p == ["models", "cancel"] and method == "POST":
+        s.cancel_download()
+        return h.json({"ok": True})
+    if p == ["segment"] and method == "POST":
+        b = h.body()
+        return h.job("Сегментация", lambda progress: s.segment(b.get("models_dir"), b.get("device", "auto"),
+                                                                   progress))
+    if len(p) >= 3 and p[0] == "structures" and p[-1] == "mesh":
+        return h.binary(s.structure_mesh("/".join(p[1:-1])))

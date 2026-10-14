@@ -122,3 +122,21 @@ class LandmarkSteps:
                 raise ValueError(f"нет такого артикулятора: {key}")
             return arts.articulator_frame(self.landmarks, art), f"{art.maker} {art.name}"
         raise ValueError(f"неизвестная система координат: {kind}")
+
+
+def route(h, s, p, method, q):
+    """HTTP-маршруты шага (вызывает server.Handler.api): h — обработчик запроса, s — сессия; True — запрос обработан."""
+    if p == ["landmarks"]:
+        if method == "POST":
+            b = h.body()
+            return h.json(s.set_landmark(b["key"], b.get("point")))
+        return h.json(s.landmarks_info())
+    if p == ["landmarks", "models"]:
+        return h.json(s.landmark_models_status())
+    if p == ["landmarks", "models", "download"] and method == "POST":
+        return h.job("Загрузка моделей ориентиров", lambda progress: s.download_landmark_models(progress))
+    if p == ["landmarks", "auto"] and method == "POST":
+        b = h.body()
+        return h.job("Ищу ориентиры", lambda progress: s.auto_landmarks(progress, b.get("keys")))
+    if p == ["landmarks", "suggest"] and method == "POST":
+        return h.json(s.suggest_landmarks())

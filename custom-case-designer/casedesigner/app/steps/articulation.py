@@ -413,3 +413,49 @@ class ArticulationSteps:
             raise ValueError("неизвестная поверхность КТ")
         mesh = self.case.surfaces(step=2)["ct_" + part]
         return mesh_bytes(mesh.vertices, mesh.faces)
+
+
+from ..common import mesh_bytes  # noqa: E402
+def route(h, s, p, method, q):
+    """HTTP-маршруты шага (вызывает server.Handler.api): h — обработчик запроса, s — сессия; True — запрос обработан."""
+    if p == ["articulation", "prepare"] and method == "POST":
+        return h.json(s.articulation_prepare())
+    if p == ["articulation", "planes"]:
+        if method == "POST":
+            return h.json(s.set_articulation_plane(h.body().get("plane")))
+        return h.json(s.articulation_planes())
+    if p == ["articulation", "mount"] and method == "POST":
+        b = h.body()
+        s.validate_articulation_mount(b.get("method", "auto"), b.get("plane"))
+        return h.job("Монтаж моделей", lambda progress: s.articulation_mount(
+            b.get("method", "auto"), b.get("plane")))
+    if p == ["articulation", "generate"] and method == "POST":
+        return h.job("Расчёт движений", lambda progress: s.articulation_generate(h.body().get("travel", 6.0)))
+    if p == ["articulation", "analysis"] and method == "POST":
+        return h.job("Анализ контактов и движений", lambda progress: s.articulation_report())
+    if p == ["articulation", "guides"]:
+        return h.json(s.articulation_guides())
+    if p == ["articulation", "joint"]:
+        parts = s.articulation_joint_parts()
+        side, part = q.get("side"), q.get("part")
+        if side is None and part is None:
+            return h.json({s: {k: v is not None for k, v in sides.items()}
+                              for s, sides in parts.items()})
+        if side not in ("right", "left") or part not in ("head", "slope"):
+            raise ValueError("суставная поверхность: side=right|left, part=head|slope")
+        mesh = parts[side][part]
+        if mesh is None:
+            raise ValueError("эта суставная поверхность недоступна: проверьте сегментацию и точки мыщелков")
+        return h.binary(mesh_bytes(mesh.vertices, mesh.faces))
+    # мыщелки (контракт — casedesigner/condyles.py, docs/handoff/archive/condyle-adjustment.md): состояние, поставить, подтвердить, сбросить
+    if p == ["articulation", "condyles"]:
+        if method == "POST":
+            b = h.body()
+            return h.json(s.set_condyle(b["side"], b["point"], b.get("space", "ct")))
+        return h.json(s.articulation_condyles())
+    if p == ["articulation", "condyles", "confirm"] and method == "POST":
+        return h.json(s.confirm_condyle(h.body().get("side", "both")))
+    if p == ["articulation", "condyles", "reset"] and method == "POST":
+        return h.json(s.reset_condyle(h.body().get("side", "both")))
+    if len(p) == 3 and p[:2] == ["articulation", "motion"]:
+        return h.json(s.articulation_motion(p[2]))
