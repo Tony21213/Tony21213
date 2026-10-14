@@ -131,7 +131,7 @@ def test_segmentation_reregisters_scans(case_files, tmp_path, monkeypatch):
         def run(self, vol, progress=None, want=None):
             return SegmentationResult(meshes={f"{j}_teeth": phantom.teeth_mesh(j) for j in ("upper", "lower")})
 
-    monkeypatch.setattr(app_session, "Segmenter", Segmenter)
+    monkeypatch.setattr("casedesigner.app.steps.ct.Segmenter", Segmenter)  # сегментация — шаг «КТ»
     d, truth = case_files
     s = Session(memory_path=str(tmp_path / "memory.jsonl"))
     s.load_ct(str(d / "ct.nii.gz"))
@@ -285,7 +285,7 @@ def test_segment_parts_setting(case_files, tmp_path, monkeypatch):
             meshes["mandibular_canal"] = meshes["mandible"] = phantom.teeth_mesh("lower")
             return SegmentationResult(meshes=meshes)
 
-    monkeypatch.setattr(app_session, "Segmenter", Segmenter)
+    monkeypatch.setattr("casedesigner.app.steps.ct.Segmenter", Segmenter)  # сегментация — шаг «КТ»
     d, _truth = case_files
     s = Session(memory_path=str(tmp_path / "memory.jsonl"))
     assert set(s.segment_parts_info()["selected"]) == {p for p, _t, _k in app_session.SEGMENT_PARTS}  # по умолчанию всё
