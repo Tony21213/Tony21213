@@ -314,7 +314,7 @@ GAMMA при разных позициях одна и та же средняя 
    находятся на мыщелках, а скаты и вставки не пересекают кость. Предупреждения выгрузки требуют
    проверки врачом/техником до клинического применения.
 
-**Модульный артикулятор (14.10, `docs/handoff/modular-articulator.md`).** Один артикулятор на все
+**Модульный артикулятор (14.10, `docs/handoff/archive/modular-articulator.md`).** Один артикулятор на все
 кейсы, значения пациента — в копии проекта, в параметрах каждого зуба (`Tooth/Parameters/Parameter`:
 `TiltCondylarGuideLeft/Right`, `BennettAngleLeft/Right`, `ImmediateSideshiftLeft/Right`, `Retrusion`,
 `TiltFrontplate`; пределы — как у exocad, когда он сам сохраняет их в проект). exocad берёт их при
