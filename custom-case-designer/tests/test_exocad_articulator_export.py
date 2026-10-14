@@ -66,7 +66,12 @@ def project(tmp_path):
     d = tmp_path / "case-001"
     d.mkdir()
     text = ("<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<Treatment>\r\n  <AntagonistType>MushBite</AntagonistType>\r\n"
-            "  <MovementMarkerScan>false</MovementMarkerScan>\r\n  <Other>оставить как есть</Other>\r\n</Treatment>\r\n")
+            "  <MovementMarkerScan>false</MovementMarkerScan>\r\n  <Other>оставить как есть</Other>\r\n"
+            "  <Teeth>\r\n    <Tooth>\r\n      <Number>11</Number>\r\n      <Parameters>\r\n        <Parameter>\r\n"
+            "          <Type>MinThickness</Type>\r\n          <Value>0.5</Value>\r\n        </Parameter>\r\n"
+            "        <Parameter>\r\n          <Type>TiltCondylarGuideLeft</Type>\r\n          <Value>24.9</Value>\r\n"
+            "        </Parameter>\r\n      </Parameters>\r\n    </Tooth>\r\n    <Tooth>\r\n      <Number>21</Number>\r\n"
+            "      <Parameters />\r\n    </Tooth>\r\n  </Teeth>\r\n</Treatment>\r\n")
     (d / "case-001.dentalProject").write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
     (d / "case-001.scanInfo").write_text("<ScanInfo/>", encoding="utf-8")
     return d
@@ -110,15 +115,30 @@ def test_export_writes_exocad_project_copy_in_articulator_coordinates(case, proj
     assert np.abs(mid - [30, -80, 60]).max() < 1e-3
     # мыщелки фантома — на разной высоте: ось через середину, предупреждение — в сводке
     assert max(res["off_axis_mm"].values()) > 1.0 and any("несимметрично" in n for n in res["notes"])
-    # плоскость гипсовки — горизонталь на высоте резцовой точки; папка артикулятора с вставками
-    # папка — под тем именем, на которое наш тип указывает в конфигурации exocad (установка под прежним названием)
+    # общий артикулятор — одинаковый для всех кейсов (набор вставок, первая — прямая; межмыщелковое библиотеки),
+    # под тем именем, на которое наш тип указывает в конфигурации exocad (установка под прежним названием)
     assert res["articulator_folder"] == "Custom Case Designer"
     art = out / xa.SUBFOLDER / "articulator" / "Custom Case Designer"
     root = ET.parse(art / "articulatorparameters.xml").getroot()
-    plane = float(root.findtext("ArticulationPlaneIncisalNeedle/z")) + float(root.findtext("ArticulatorPosition/z"))
-    assert plane == pytest.approx(apply(to_art, case.anatomy.points["incisal"][None])[0, 2], abs=0.01)
-    assert root.findtext("CurrentCondylarInsertColorRight") == ef.INSERT_ID
-    assert float(root.findtext("IntercondylarDistance")) == pytest.approx(res["icd_mm"])
+    assert root.findtext("CurrentCondylarInsertColorRight") == "Прямая"
+    assert float(root.findtext("IntercondylarDistance")) == ef.LIBRARY_ICD_MM
+    assert ef.library_version(str(art)) == ef.LIBRARY_VERSION
+    assert any("не найден" in n and "один раз" in n for n in res["notes"])  # в библиотеке exocad его ещё нет
+    # значения пациента — в параметрах каждого зуба копии проекта: такой же тип заменён, новые добавлены
+    params = res["project_parameters"]
+    assert params["TiltCondylarGuideRight"] == res["articulator"]["TiltCondylarGuideRight"]
+    teeth = ET.fromstring(text.encode("utf-8")).findall("Teeth/Tooth")
+    assert len(teeth) == 2
+    for tooth in teeth:
+        got = {p.findtext("Type"): float(p.findtext("Value")) for p in tooth.findall("Parameters/Parameter")}
+        assert {k: got[k] for k in params} == pytest.approx(params)
+        assert [p.findtext("Type") for p in tooth.findall("Parameters/Parameter")].count("TiltCondylarGuideLeft") == 1
+        assert "IntercondylarDistance" not in got  # межмыщелковое в проект — только при ICD_IN_PROJECT
+    assert got.get("MinThickness") is None and teeth[0].findtext("Parameters/Parameter/Type") == "MinThickness"
+    assert any("межмыщелковое пациента" in n for n in res["notes"])
+    # вставка ССП: путь фантома — прямой под 30° → прямая вставка, ССП 30°
+    assert res["inserts"]["right"]["insert"] == "Прямая"
+    assert res["inserts"]["right"]["tilt_deg"] == pytest.approx(30, abs=0.15)
     assert (out / xa.SUBFOLDER / "condyles.stl").is_file() and (out / xa.SUBFOLDER / "articulator.json").is_file()
     # exocad: вилка библиотеки на вилке маркера и метки из файла движений → «файл → регистратор»; с переводом
     # регистратор → артикулятор это тождество: модели остаются, где лежат в файлах
@@ -160,8 +180,9 @@ def test_export_without_bones_or_skull_uses_standard_inserts(case, project, regi
     assert any("вставки ССП в артикуляторе стандартные" in note for note in result["notes"])
     values = ET.parse(out / xa.SUBFOLDER / "articulator" / "Custom Case Designer" /
                       "articulatorparameters.xml").getroot()
-    assert values.findtext("CurrentCondylarInsertColorRight") is None
-    assert values.findtext("CurrentBennettInsertColorLeft") is None
+    # общий артикулятор тот же; подбора вставки нет
+    assert values.findtext("CurrentCondylarInsertColorRight") == "Прямая"
+    assert result["inserts"] is None
 
 
 def test_aesthetic_axes_give_smile_design_view(case, project, register, tmp_path):
@@ -336,3 +357,56 @@ def test_http_export_validation_errors_are_400(body, ready, applied, message):
         assert message in answer["error"]
     finally:
         server.shutdown()
+
+
+# --- модульный артикулятор (п. 0.5): значения пациента — в проекте, артикулятор — общий ---------------------------
+
+def test_set_tooth_parameters_replaces_appends_and_opens_empty():
+    nl = "\r\n"
+    text = nl.join(["<Teeth>", "  <Tooth>", "    <Parameters>", "      <Parameter>", "        <Type>BennettAngleLeft</Type>",
+                    "        <Value>3</Value>", "      </Parameter>", "    </Parameters>", "  </Tooth>",
+                    "  <Tooth>", "    <Parameters />", "  </Tooth>", "  <ToothColor>A2</ToothColor>", "</Teeth>"])
+    params = [("BennettAngleLeft", 12.5, 0, 30, 0.1), ("Retrusion", 0.0, 0, 2, 0.1)]
+    out, teeth = xa.set_tooth_parameters(text, params)
+    assert teeth == 2 and "\n" not in out.replace("\r\n", "")  # переводы строк — как в файле
+    root = ET.fromstring(out)
+    for tooth in root.findall("Tooth"):
+        got = {p.findtext("Type"): p.findtext("Value") for p in tooth.findall("Parameters/Parameter")}
+        assert got == {"BennettAngleLeft": "12.5", "Retrusion": "0"}
+    assert root.findtext("ToothColor") == "A2"
+
+
+def test_project_parameters_clamped_to_exocad_limits():
+    params, notes = xa.project_parameters({"TiltCondylarGuideLeft": 65.0, "BennettAngleRight": 12.0, "Unknown": 1})
+    assert [(k, v) for k, v, *_ in params] == [("TiltCondylarGuideLeft", 60.0), ("BennettAngleRight", 12.0)]
+    assert len(notes) == 1 and "TiltCondylarGuideLeft" in notes[0]
+    params, _ = xa.project_parameters({}, icd=101.26)
+    assert params == [("IntercondylarDistance", 101.26, 80.0, 130.0, 0.1)]
+
+
+def test_icd_into_project_when_enabled(case, project, register, tmp_path, monkeypatch):
+    monkeypatch.setattr(xa, "ICD_IN_PROJECT", True)
+    res = xa.export(case, str(project), str(tmp_path / "icd"), register=register,
+                    exocad_app=exocad_app(tmp_path, custom=True))
+    text = (tmp_path / "icd" / "icd.dentalProject").read_text(encoding="utf-8-sig")
+    assert text.count("<Type>IntercondylarDistance</Type>") == 2 and f"<Value>{res['icd_mm']:g}</Value>" in text
+    assert not any("межмыщелковое пациента" in n for n in res["notes"])
+
+
+def test_same_library_articulator_for_every_case(case, project, register, tmp_path):
+    """Папка артикулятора в выгрузке не зависит от кейса: её ставят в exocad один раз; установленная — без заметки."""
+    app = exocad_app(tmp_path, custom=True)
+    first = xa.export(case, str(project), str(tmp_path / "a"), register=register, exocad_app=app)
+    case.condylar_paths = None
+    case.anatomy.points["condyle_left"] = case.anatomy.points["condyle_left"] + np.array([4.0, 0, 0])
+    second = xa.export(case, str(project), str(tmp_path / "b"), register=register, exocad_app=app)
+    assert first["icd_mm"] != second["icd_mm"]
+    dirs = [tmp_path / d / xa.SUBFOLDER / "articulator" / "Custom Case Designer" for d in ("a", "b")]
+    assert sorted(p.name for p in dirs[0].iterdir()) == sorted(p.name for p in dirs[1].iterdir())
+    for p in dirs[0].iterdir():
+        assert p.read_bytes() == (dirs[1] / p.name).read_bytes(), p.name
+    import shutil
+    shutil.copytree(dirs[0], os.path.join(app, "library", "articulator", "Custom Case Designer"))
+    third = xa.export(case, str(project), str(tmp_path / "c"), register=register, exocad_app=app)
+    assert third["library_installed"] == ef.LIBRARY_VERSION
+    assert not any("общий артикулятор" in n for n in third["notes"])
