@@ -49,6 +49,7 @@ class CtSteps:
             self.window = ((lo + hi) / 2, max(hi - lo, 1.0) * 2.5)
             self.structures, self._sections = {}, {}
             self.bite_view, self.bite_motion, self._bite_meshes = False, None, {}
+            self.bite_fix, self._bite_proposal = np.eye(4), None
             self.landmarks, self.suggested, self.landmark_sources = {}, set(), {}
             self.landmark_notes = {}
             self._joint_parts_cache_key = self._joint_parts_cache = None
@@ -64,6 +65,7 @@ class CtSteps:
             self.case_path, self.guide_teeth = None, {}
             self.structures, self._sections = {}, {}
             self.bite_view, self.bite_motion, self._bite_meshes = False, None, {}
+            self.bite_fix, self._bite_proposal = np.eye(4), None
             self.landmarks, self.suggested, self.landmark_sources = {}, set(), {}
             self.landmark_notes = {}
             self._joint_parts_cache_key = self._joint_parts_cache = None

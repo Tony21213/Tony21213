@@ -90,6 +90,10 @@ class Session(CtSteps, ScanSteps, ArticulationSteps, LandmarkSteps, ExportSteps,
         # Прикус сканов в окне: нижняя челюсть со всеми её структурами — в прикусе сканов (врача), а не как на КТ.
         self.bite_view = False
         self.bite_motion = None  # движение нижней челюсти с КТ в прикус сканов (мм КТ → мм КТ); None — прикуса нет
+        # «Исправить прикус» (bite.correct_bite): поправка прикуса сканов, мм КТ → мм КТ, после прикуса сканера или
+        # сканов прикуса; сбрасывается, когда меняется совмещение сканов. Предложение — до «Принять» / «Отменить».
+        self.bite_fix = np.eye(4)
+        self._bite_proposal = None
         self._bite_meshes = {}
         self.structures: dict[str, trimesh.Trimesh] = {}
         self._sections = {}
