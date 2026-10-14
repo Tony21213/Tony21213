@@ -40,7 +40,7 @@ class CaseFileSteps:
                 "landmark_sources": {k: v for k, v in self.landmark_sources.items() if k in self.landmarks},
                 "landmark_notes": {k: v for k, v in self.landmark_notes.items() if k in self.landmarks},
                 "window": list(self.window), "scans": [], "structures": [],
-                "guide": []}
+                "guide": [], "bite_fix": np.asarray(self.bite_fix, float).tolist()}
         for i, (sid, item) in enumerate(self.scans.items()):
             scan = item["scan"]
             arrays[f"scan{i}_v"], arrays[f"scan{i}_f"] = scan.vertices, scan.faces
@@ -132,6 +132,9 @@ class CaseFileSteps:
             with self.lock:
                 self.scans[sid] = item
         self._place_bites()  # сканы прикуса — на сканы челюстей, как при совмещении
+        if meta.get("bite_fix") is not None:  # «Исправить прикус»; старые кейсы — без поправки
+            self.bite_fix = np.asarray(meta["bite_fix"], float)
+            self._update_bite_motion()
         self.case_path = path
         self._remember(path)
         return self.state()

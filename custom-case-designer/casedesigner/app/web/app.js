@@ -6,7 +6,7 @@ import { articulationAction, editCondyle, endCondyleEdit, handleCondylePick, mou
 import { helpDialog, openCase, saveCase, settingsDialog } from './steps/case.js';
 import { downloadModels, openCt, partsDialog, renderCt, segment } from './steps/ct.js';
 import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport } from './steps/export.js';
-import { accept, addScans, endCorrection, refine, register, removeScan, renderScans, resetAuto, revertCorrection, startCorrection, stepHistory, toggleBite } from './steps/scans.js';
+import { accept, addScans, biteCorrect, biteDecide, endCorrection, refine, register, removeScan, renderScans, resetAuto, revertCorrection, startCorrection, stepHistory, toggleBite } from './steps/scans.js';
 
 // панели шагов и мышь в окне 3D — здесь: шаги исполняются при загрузке раньше core.js (циклические импорты)
 RENDER.ct = renderCt;
@@ -85,7 +85,8 @@ document.addEventListener('click', async (e) => {
     'exocad-project': chooseExocadProject, 'exocad-articulator': doExportExocadArticulator,
     getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog,
     openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog, incognito: toggleIncognito,
-    settings: settingsDialog,
+    settings: settingsDialog, bitefix: biteCorrect, biteaccept: () => biteDecide('accept'),
+    bitereject: () => biteDecide('reject'), bitereset: () => biteDecide('reset'),
     scansonly: () => { state.step = 'scans'; render(); } }[d.a];
   action?.();
 });

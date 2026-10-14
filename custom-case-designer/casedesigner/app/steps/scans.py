@@ -25,6 +25,18 @@ from ..common import (  # noqa: F401
 )
 
 
+
+def _plain(value):
+    """Отчёт ядра в JSON: numpy-числа и массивы — в обычные."""
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return value
+
+
 class ScanSteps:
     # --- сканы -------------------------------------------------------------
     def add_scan(self, path: str) -> dict:
@@ -66,6 +78,7 @@ class ScanSteps:
         # Любое изменение совмещения требует заново передать модели в окно
         # артикулятора, иначе просмотр мог бы использовать старую гипсовку.
         self._articulation_ready = False
+        self.bite_fix, self._bite_proposal = np.eye(4), None  # поправка прикуса — к прежнему совмещению
         try:
             self._place_bite_scans()
         finally:
@@ -83,6 +96,8 @@ class ScanSteps:
                 motion = lo["lower_bite"] @ np.linalg.inv(lo["reg"].transform)
             elif in_occlusion(up["scan"], lo["scan"]) or in_occlusion(lo["scan"], up["scan"]):
                 motion = up["reg"].transform @ np.linalg.inv(lo["reg"].transform)  # общие координаты сканера
+        if motion is not None:
+            motion = np.asarray(self.bite_fix, float) @ motion  # «Исправить прикус»: поправка после прикуса сканов
         self.bite_motion, self._bite_meshes = motion, {}
         if motion is None:
             self.bite_view = False
@@ -130,12 +145,63 @@ class ScanSteps:
         return self.bite_info()
 
     def bite_info(self) -> dict:
-        info = {"on": self.bite_view, "available": self.bite_motion is not None, "shift_mm": None}
+        fixed = not np.allclose(self.bite_fix, np.eye(4))
+        info = {"on": self.bite_view, "available": self.bite_motion is not None, "shift_mm": None,
+                "fixed": fixed, "fix_mm": None, "proposal": self._bite_proposal is not None}
         if self.bite_motion is not None:
             _up, lo = self._jaw_items()
             at = apply(lo["reg"].transform, lo["scan"].vertices[lo["scan"].crowns])
             info["shift_mm"] = round(float(np.linalg.norm(apply(self.bite_motion, at) - at, axis=1).mean()), 2)
+            if fixed:
+                bitten = apply(self.bite_motion, at)
+                info["fix_mm"] = round(float(np.linalg.norm(
+                    bitten - apply(np.linalg.inv(self.bite_fix), bitten), axis=1).mean()), 2)
         return info
+
+    # --- «Исправить прикус» (bite.correct_bite; docs/handoff/bite-correction.md) -------------------------------
+    def bite_correct(self, progress=None) -> dict:
+        """Предложить поправку прикуса сканов: нижний скан садится в фиссурно-бугорковый контакт от прикуса сканера.
+        Верх — в мм КТ, низ — в прикусе сканов, мыщелки — точки КТ, переехавшие с нижней челюстью (иначе — треугольник
+        Бонвилля, заметка ядра). Отказ ядра (нет опоры, сверх предела) — ValueError с причиной."""
+        from ... import bite as bt
+        from ... import condyles as cnd
+
+        if self.bite_motion is None:
+            raise ValueError("прикуса сканов нет: сканы челюстей не в прикусе и сканов прикуса нет — исправлять нечего")
+        up, lo = self._jaw_items()
+        if progress:
+            progress(0.1, "Сажаю нижнюю челюсть в контакт")
+        upper = apply(up["reg"].transform, up["scan"].vertices)
+        lower = apply(self.bite_motion @ lo["reg"].transform, lo["scan"].vertices)
+        points = self._condyle_points()
+        condyles = None
+        if all(points[s].point is not None for s in cnd.SIDES):
+            condyles = tuple(cnd.to_view(points[s].point, self.bite_motion) for s in ("right", "left"))
+        result = bt.correct_bite(upper, up["scan"].faces, lower, condyles)
+        self._bite_proposal = np.asarray(result.transform, float)
+        return {"report": _plain(result.report), "notes": list(result.report.get("notes", [])),
+                "bite_view": self.bite_info()}
+
+    def bite_accept(self) -> dict:
+        """Принять предложение: поправка ∘ прежняя поправка; прикус сканов, гипсовка — заново."""
+        if self._bite_proposal is None:
+            raise ValueError("сначала «Исправить прикус»")
+        self.bite_fix = self._bite_proposal @ np.asarray(self.bite_fix, float)
+        self._bite_proposal = None
+        self._update_bite_motion()
+        self._articulation_ready = False
+        return self.bite_info()
+
+    def bite_reject(self) -> dict:
+        self._bite_proposal = None
+        return self.bite_info()
+
+    def bite_reset(self) -> dict:
+        """Вернуть прикус сканов без поправки."""
+        self.bite_fix, self._bite_proposal = np.eye(4), None
+        self._update_bite_motion()
+        self._articulation_ready = False
+        return self.bite_info()
 
     def _place_bite_scans(self):
         up, lo = self._jaw_items()
@@ -314,3 +380,11 @@ def route(h, s, p, method, q):
             return h.json({"ok": True})
     if p == ["bite_view"] and method == "POST":
         return h.json(s.set_bite_view(bool(h.body().get("on"))))
+    if p == ["bite", "correct"] and method == "POST":
+        return h.job("Исправляю прикус", lambda progress: s.bite_correct(progress))
+    if p == ["bite", "accept"] and method == "POST":
+        return h.json(s.bite_accept())
+    if p == ["bite", "reject"] and method == "POST":
+        return h.json(s.bite_reject())
+    if p == ["bite", "reset"] and method == "POST":
+        return h.json(s.bite_reset())

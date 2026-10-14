@@ -219,6 +219,60 @@ export async function accept(id) {
 }
 
 // Прозрачность объекта в 3D: кнопкой — прозрачный ↔ непрозрачный (по умолчанию — как задано для структуры).
+// ---------- «Исправить прикус» (bite.correct_bite; docs/handoff/bite-correction.md) ----------
+export async function biteCorrect() {
+  state.biteError = null;
+  await busy('Исправляю прикус', async (progress) => {
+    try {
+      const r = await run('bite/correct', {}, progress);
+      state.biteProposal = r;
+      state.biteView = r.bite_view;
+    } catch (e) {
+      state.biteError = e.message; // отказ ядра (нет опоры, сверх предела) — в карточке, а не всплывающим окном
+    }
+  });
+}
+
+export async function biteDecide(kind) { // accept · reject · reset
+  const r = await post(`bite/${kind}`).catch((e) => toast(e.message));
+  if (!r) return;
+  state.biteView = r;
+  state.biteProposal = null;
+  state.biteError = null;
+  if (kind === 'reject') return render();
+  await busy(kind === 'accept' ? 'Прикус исправлен' : 'Прикус без поправки', async () => {
+    await reloadStructureMeshes();
+    await refreshScans(true);
+    if (state.jointsVisible) await refreshJointParts();
+    bumpOverlay();
+    app.setCursor(app.cursor);
+  });
+}
+
+function biteCard() {
+  const bv = state.biteView;
+  if (!bv?.available || !state.ct) return '';
+  const p = state.biteProposal;
+  if (p) {
+    const r = p.report;
+    const contacts = (c) => `${c.points} (справа ${c.sectors.right}, спереди ${c.sectors.front}, слева ${c.sectors.left})`;
+    const notes = (p.notes || []).map((n) => `<div class="warning">${icons.warn}<span>${hide(n)}</span></div>`).join('');
+    return `<div class="card bite-fix"><div class="card-head">${icons.refine}<h3>Исправление прикуса</h3></div>
+      <div class="kv"><span>Резцы</span><b>${fmt(r.incisal_mm)} мм</b><span>Моляры П / Л</span><b>${fmt(r.molar_right_mm)} / ${fmt(r.molar_left_mm)} мм</b>
+        <span>Поворот</span><b>${fmt(r.turn_deg)}°</b><span>Контакты до</span><b>${contacts(r.before)}</b>
+        <span>Контакты после</span><b>${contacts(r.after)}</b><span>Мыщелки</span><b>${hide(r.condyles)}</b></div>${notes}
+      <div class="row" style="margin-top:8px"><button class="btn ghost" data-a="bitereject">Отменить</button>
+        <button class="btn ok grow" data-a="biteaccept">${icons.check}Принять</button></div></div>`;
+  }
+  const refused = state.biteError ? `<div class="warning">${icons.warn}<span>Прикус не исправлен: ${hide(state.biteError)}</span></div>` : '';
+  const fixed = bv.fixed ? `<p class="muted small">Прикус исправлен: нижняя челюсть сдвинута в среднем на ${fmt(bv.fix_mm)} мм.</p>
+    <button class="btn ghost wide sm" data-a="bitereset">Вернуть прикус сканера</button>` : '';
+  return `<div class="card bite-fix"><div class="card-head">${icons.refine}<h3>Прикус сканов</h3></div>
+    <p class="muted small" style="margin-top:0">Нижняя челюсть садится в фиссурно-бугорковый контакт от прикуса сканера: исправляются
+      ошибки скана (до 1,5 мм), а не ищется другой прикус.</p>
+    <button class="btn wide" data-a="bitefix">${icons.refine}${bv.fixed ? 'Исправить ещё раз' : 'Исправить прикус'}</button>${refused}${fixed}</div>`;
+}
+
 export function renderScans() {
   const ct = !!state.ct;
   const sel = scanById(state.selected);
@@ -261,5 +315,5 @@ export function renderScans() {
   const lead = ct ? 'STL, PLY или OBJ как есть со сканера. Совмещение — по коронкам зубов, сразу после загрузки; сканы прикуса (bite, TotalJaw) ставятся на сканы челюстей и задают прикус.'
     : 'Без КТ: STL, PLY или OBJ как есть со сканера — сканы стоят в его координатах, сканы прикуса (bite, TotalJaw) ставят нижний скан в прикус. Откройте КТ — сканы совместятся с ним.';
   return `<h2>Сканы</h2><p class="lead">${lead}</p>
-    ${cards}<button class="btn ${state.scans.length ? '' : 'primary'} wide" data-a="scan">${icons.plus}Добавить сканы</button>${tools}`;
+    ${cards}<button class="btn ${state.scans.length ? '' : 'primary'} wide" data-a="scan">${icons.plus}Добавить сканы</button>${tools}${biteCard()}`;
 }
