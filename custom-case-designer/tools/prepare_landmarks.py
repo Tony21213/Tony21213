@@ -5,7 +5,7 @@
     python tools/prepare_landmarks.py ПАПКА [--pth ПАПКА_ВЕСОВ] [--release ПАПКА_РЕЛИЗА]
 
 --release складывает файлы плоско, под именами релиза (ali-<точка>-<масштаб>.onnx),
-для загрузки: gh release create landmarks-v1 ПАПКА_РЕЛИЗА/*.onnx
+для загрузки: gh release create landmarks-v2 ПАПКА_РЕЛИЗА/*.onnx
 
 Из релиза SlicerAutomatedDentalTools (v0.1-v2.0_models) берутся только сети
 нужных точек (casedesigner.auto_landmarks.POINTS) — из архивов по 1–2 ГБ
@@ -34,7 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from casedesigner.auto_landmarks import POINTS, SCALE_KEYS  # noqa: E402
 
 RELEASE = "https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalTools/releases/download/v0.1-v2.0_models/"
-ARCHIVES = ["Cranial_Base", "Upper_Bones_v2", "Lower_Bones_1", "Lower_Bones_2"]
+ARCHIVES = ["Cranial_Base", "Upper_Bones_v2", "Lower_Bones_1", "Lower_Bones_2", "Upper_Right_Teeth_v2",
+            "Lower_Right_Teeth"]
 
 
 def _range(url, a, b):
@@ -190,7 +191,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("out", help="папка моделей ориентиров (<точка>/<масштаб>.onnx)")
     ap.add_argument("--pth", help="папка для исходных весов .pth (по умолчанию <out>/_pth)")
-    ap.add_argument("--release", help="сложить файлы для релиза landmarks-v1 в эту папку")
+    ap.add_argument("--release", help="сложить файлы для релиза landmarks-v2 в эту папку")
     a = ap.parse_args()
     pth = a.pth or os.path.join(a.out, "_pth")
     fetch_pth(pth)

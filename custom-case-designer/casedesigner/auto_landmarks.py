@@ -51,6 +51,9 @@ HU_LOW, HU_HIGH = -1500, 4000
 POINTS = {
     "Po_R": "RPo", "Po_L": "LPo", "Or_R": "ROr", "Or_L": "LOr", "Co_R": "RCo", "Co_L": "LCo",
     "N": "N", "S": "S", "ANS": "ANS", "PNS": "PNS", "Ba": "Ba", "IP": "IF",
+    # landmarks-v2 — цефалометрия: A, B, Pog, Gn, Me, Go; резцы — правые центральные (O — режущий край, R — корень)
+    "A": "A", "B": "B", "Pog": "Pog", "Gn": "Gn", "Me": "Me", "Go_R": "RGo", "Go_L": "LGo",
+    "U1_tip": "UR1O", "U1_apex": "UR1R", "L1_tip": "LR1O", "L1_apex": "LR1R",
 }
 APPROXIMATE = {"IP": "по резцовому отверстию: сосочек лежит на несколько мм ниже, на слизистой"}
 LICENSE_NOTE = ("ALI-CBCT (Gillot M. et al., DCBIA-OrthoLab), веса из SlicerAutomatedDentalTools "

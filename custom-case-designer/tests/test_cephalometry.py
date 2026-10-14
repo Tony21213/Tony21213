@@ -84,3 +84,14 @@ def test_report_on_generator():
     assert ("SNA", "82,0° (норма 82,0 ± 2,0) — в норме") in rep.sections[0].rows
     assert any("нет точек U1_tip" in n or "нет точек U1_apex" in n for n in rep.sections[0].notes)
     assert reports.render(rep)[0].size == reports.PAGE
+
+
+def test_ceph_points_are_case_landmarks_with_ali_networks():
+    """Точки цефалометрии хранятся в кейсе (landmarks.LANDMARKS) и ищутся ALI-CBCT (landmarks-v2)."""
+    from casedesigner import auto_landmarks as al
+    from casedesigner import landmarks as lmk
+
+    assert set(ce.CEPH_POINTS) <= set(lmk.BY_KEY) and set(ce.CEPH_POINTS) <= set(al.POINTS)
+    used = {k for a in ce.ANALYSES.values() for m in a.measures if m.kind != "difference" for k in m.points}
+    known = set(lmk.BY_KEY) | {"Go", "Po", "Or", "Co"}  # двусторонние — средним
+    assert used <= known
