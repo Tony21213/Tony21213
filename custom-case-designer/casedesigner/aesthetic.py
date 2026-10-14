@@ -38,6 +38,7 @@ LIP_DEPTH_MM = 10.0  # средняя линия лица на высоте ре
 
 # Точки MediaPipe Face Landmarker (478): зрачки, углы глаз, крылья носа, углы рта, срединные точки.
 FACE_POINTS = {"pupil_right": 468, "pupil_left": 473, "canthus_right": 33, "canthus_left": 263,
+               "endocanthion_right": 133, "endocanthion_left": 362,
                "ala_right": 64, "ala_left": 294, "commissure_right": 61, "commissure_left": 291}
 MIDLINE_POINTS = {"glabella": 9, "nasion": 168, "pronasale": 1, "subnasale": 2, "labrale_superius": 0,
                   "labrale_inferius": 17, "menton": 152}
@@ -340,6 +341,65 @@ def aesthetic_frame_ct(base_frame: np.ndarray, face_points: np.ndarray) -> Aesth
     notes = [f"эстетическая плоскость по КТ: средняя линия — по симметрии лицевого скелета (СКО {rms:.1f} мм); "
              f"к функциональной системе — крен {roll:+.1f}°, разворот {yaw:+.1f}°; наклон — от функциональной"]
     return Aesthetic(rigid(R_a, -R_a @ origin), round(roll, 3), None, None, {"yaw_deg": round(yaw, 3)}, notes)
+
+
+# Размеры передних зубов по лицу — ориентиры (средние соотношения из литературы), не правило: подсказка к выбору
+# библиотеки зубов в Smile Design, где масштаб фото подбирается вручную.
+TOOTH_GUIDES = {
+    "central_by_pupils": (1 / 6.6, "межзрачковое / 6,6 (Cesario, Latta, 1984)"),
+    "centrals_by_canthi": (0.618, "две центральные — между внутренними углами глаз × 0,618 (Abdullah, 2002)"),
+    "canines_by_alae": (1.0, "между буграми клыков по прямой — ширина крыльев носа (Hoffman и др., 1986)"),
+}
+CENTRAL_WIDTH_TO_LENGTH = 0.78  # ширина центрального резца к длине — 75–80 %
+# Глубина точек лица за резцовой точкой по взгляду камеры (средняя пропорция профиля): зрачки и углы глаз — глубже,
+# крылья носа — ближе. Ошибка масштаба ≈ ошибка глубины / расстояние до камеры (10 мм на 300 мм — 3 %).
+FACE_DEPTH_MM = {"pupil": 18.0, "endocanthion": 16.0, "canthus": 20.0, "ala": 6.0, "commissure": 0.0}
+FACE_WIDTHS = {"межзрачковое": "pupil", "между внутренними углами глаз": "endocanthion",
+               "между наружными углами глаз": "canthus", "крыльев носа": "ala", "рта": "commissure"}
+
+
+def face_widths_mm(camera: Camera, face: dict, incisal_point, depth_mm: dict | None = None) -> dict:
+    """Расстояния по лицу в мм по фото с камерой совмещения (fit_camera): точки лица (face_hints или вручную,
+    пиксели) — на лучах камеры, на глубине FACE_DEPTH_MM за резцовой точкой по взгляду камеры. Возвращает
+    {название: мм} для пар, отмеченных на фото."""
+    depth = {**FACE_DEPTH_MM, **(depth_mm or {})}
+    view = camera.R.T @ np.array([0.0, 0.0, 1.0])
+    inc = np.asarray(incisal_point, float)
+    out = {}
+    for name, key in FACE_WIDTHS.items():
+        right, left = face.get(f"{key}_right"), face.get(f"{key}_left")
+        if right is None or left is None:
+            continue
+        plane = inc + depth[key] * view
+        pts = []
+        for uv in (right, left):
+            o, d = camera.ray(uv)
+            pts.append(o + ((plane - o) @ view) / (d @ view) * d)
+        out[name] = round(float(np.linalg.norm(pts[0] - pts[1])), 1)
+    return out
+
+
+def tooth_guide(widths: dict) -> dict:
+    """Ориентиры размеров передних зубов по расстояниям лица (face_widths_mm), мм: ширина центрального резца — по
+    межзрачковому и по внутренним углам глаз, длина — по ширине, между клыками — по крыльям носа; к каждому —
+    откуда (TOOTH_GUIDES)."""
+    out = {}
+    if "межзрачковое" in widths:
+        k, why = TOOTH_GUIDES["central_by_pupils"]
+        out["ширина центрального резца (по зрачкам)"] = (round(widths["межзрачковое"] * k, 1), why)
+    if "между внутренними углами глаз" in widths:
+        k, why = TOOTH_GUIDES["centrals_by_canthi"]
+        out["ширина центрального резца (по углам глаз)"] = (round(widths["между внутренними углами глаз"] * k / 2, 1),
+                                                            why)
+    centrals = [v for key, (v, _w) in out.items() if key.startswith("ширина центрального")]
+    if centrals:
+        w = float(np.mean(centrals))
+        out["длина центрального резца"] = (round(w / CENTRAL_WIDTH_TO_LENGTH, 1),
+                                           f"ширина {w:.1f} мм / {CENTRAL_WIDTH_TO_LENGTH:g}".replace(".", ","))
+    if "крыльев носа" in widths:
+        k, why = TOOTH_GUIDES["canines_by_alae"]
+        out["между клыками (по прямой)"] = (round(widths["крыльев носа"] * k, 1), why)
+    return out
 
 
 def _wrap(a: float) -> float:

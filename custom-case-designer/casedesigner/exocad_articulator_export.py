@@ -87,6 +87,9 @@ class ArticulatorCase:
     # Эстетическая система (строки «вправо, вперёд, вверх» в координатах кейса, JawCase.aesthetic_axes): есть —
     # в проект пишется набор изображений Smile Design, в exocad появляется «Вид Smile Design» (exocad_views).
     aesthetic: np.ndarray | None = None
+    # Фото пациента («Эстетика», часть 1): [{"kind": "smile" | "retracted", "image": RGB, "camera": aesthetic.Camera}]
+    # в координатах кейса — в набор Smile Design настоящие снимки по камере совмещения вместо снимка-сетки.
+    photos: list = field(default_factory=list)
 
 
 def articulator_values(anatomy: mo.Anatomy, settings: kin.Settings) -> dict:
@@ -311,7 +314,13 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
                      "по умолчанию), для точного пути выберите эти вставки и углы в окне артикулятора")
     else:
         notes.append("путей мыщелков по КТ нет — вставки ССП в артикуляторе стандартные")
-    if case.aesthetic is not None:
+    if case.photos:
+        names = ev.write_photo_images(folder, stem, [{**p, "anchor": np.asarray(a.points["incisal"], float)}
+                                                     for p in case.photos], to_art)
+        written["эстетический вид"] = names
+        notes.append("фото пациента — в наборе Smile Design по камере совмещения: «Вид Smile Design» в exocad "
+                     "открывает фото с улыбкой, наложенное на модели")
+    elif case.aesthetic is not None:
         axes_art = (to_art[:3, :3] @ np.asarray(case.aesthetic, float).T).T  # оси — строками, в мм артикулятора
         names = ev.write_treatment_images(folder, stem, axes_art, incisal_art)
         written["эстетический вид"] = names

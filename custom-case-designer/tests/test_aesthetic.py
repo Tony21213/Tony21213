@@ -135,3 +135,28 @@ def test_face_hints_on_a_public_domain_portrait():
     assert face["pupil_right"][0] < face["pupil_left"][0]  # анфас: правый глаз пациента — слева на снимке
     mid = np.asarray(face["midline"])
     assert np.ptp(mid[:, 0]) < 0.25 * np.ptp(mid[:, 1])  # срединные точки — почти вертикаль
+
+
+def test_face_widths_and_tooth_guide_in_mm():
+    """«Эстетика», часть 1: расстояния по лицу в мм по камере совмещения (точки — на глубине лица за резцами) и
+    ориентиры размеров передних зубов."""
+    R = np.array([[-1.0, 0, 0], [0, 0, -1.0], [0, -1.0, 0]])  # спереди: x вправо, y вперёд, z вверх
+    incisal = np.array([0.0, 0.0, 0.0])
+    cam = ae.Camera(np.array([[3000.0, 0, 1000], [0, 3000.0, 750], [0, 0, 1]]), R, -R @ np.array([4.0, 320.0, 10.0]),
+                    0.3, size=(2000, 1500))
+    view = R.T @ np.array([0.0, 0, 1])
+    pupils = {"pupil_right": np.array([31.0, 0, 70]), "pupil_left": np.array([-31.0, 0, 70])}
+    canthi = {"endocanthion_right": np.array([16.0, 0, 70]), "endocanthion_left": np.array([-16.0, 0, 70])}
+    alae = {"ala_right": np.array([17.5, 0, 35]), "ala_left": np.array([-17.5, 0, 35])}
+    face = {}
+    for group, key in ((pupils, "pupil"), (canthi, "endocanthion"), (alae, "ala")):
+        for name, p in group.items():  # точка лица — на своей глубине за резцовой по взгляду
+            q = p + (ae.FACE_DEPTH_MM[key] - (p - incisal) @ view) * view
+            face[name] = cam.project(q[None])[0]
+    widths = ae.face_widths_mm(cam, face, incisal)
+    assert widths == {"межзрачковое": 62.0, "между внутренними углами глаз": 32.0, "крыльев носа": 35.0}
+    guide = ae.tooth_guide(widths)
+    assert guide["ширина центрального резца (по зрачкам)"][0] == 9.4  # 62 / 6,6
+    assert guide["ширина центрального резца (по углам глаз)"][0] == 9.9  # 32 × 0,618 / 2
+    assert guide["длина центрального резца"][0] == round(np.mean([9.4, 9.9]) / 0.78, 1)
+    assert guide["между клыками (по прямой)"][0] == 35.0 and "Hoffman" in guide["между клыками (по прямой)"][1]
