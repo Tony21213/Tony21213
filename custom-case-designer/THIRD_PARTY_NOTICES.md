@@ -55,7 +55,10 @@ KStom Case Designer использует следующие открытые б�
   под лицензией 3D Slicer (BSD-подобная):
   https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalTools. Алгоритм
   поиска (агент, шаги, итоговые пробы) повторён в
-  `casedesigner/auto_landmarks.py` без исходного кода.
+  `casedesigner/auto_landmarks.py` без исходного кода. В выпуске `landmarks-v2` (14.10.2026) —
+  ещё точки цефалометрии A, B, Pog, Gn, Me, Go и правых центральных резцов
+  (архивы `Lower_Bones_1/2`, `Upper_Bones_v2`, `Upper_Right_Teeth_v2`,
+  `Lower_Right_Teeth` того же релиза).
 - **MONAI** (архитектура DenseNet этих сетей; нужна только при переводе
   весов, `tools/prepare_landmarks.py`) — Apache-2.0.
 
