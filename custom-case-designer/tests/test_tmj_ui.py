@@ -132,3 +132,21 @@ def test_mounting_sagittal_warning_is_present_in_state(tmp_path):
     session = Session(memory_path=str(tmp_path / "memory.jsonl"))
     session.jaw.notes = ["ССП справа вне 5–75° — не применён"]
     assert session.jaw.state()["notes"] == ["ССП справа вне 5–75° — не применён"]
+
+
+def test_slope_in_mount_frame_like_core_not_moved_by_bite(tmp_path, monkeypatch):
+    """Приёмка №3: скат — в системе монтажа, как в ядре (череп и Co в соотношении КТ); прикус сканов
+    (поворот нижней челюсти) его не поворачивает."""
+    session = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    triangle = trimesh.Trimesh(vertices=[[0, 0, 0], [1, 0, 0], [0, 1, 0]], faces=[[0, 1, 2]], process=False)
+    session.structures = {"skull": triangle.copy()}
+    frame = trimesh.transformations.rotation_matrix(np.radians(10), (0, 0, 1))
+    session.jaw.anatomy = SimpleNamespace(frame=frame)
+    session._articulation_ready = True
+    session.landmarks = {"Co_R": np.array([0., 0., 0.]), "Co_L": np.array([0., 0., 0.])}
+    session.bite_motion = trimesh.transformations.rotation_matrix(np.radians(3), (1, 0, 0))
+    seen = []
+    monkeypatch.setattr(guidance, "articular_surface", lambda _v, _f, fr, _c: seen.append(np.array(fr)) or np.array([0]))
+
+    session.articulation_joint_parts()
+    assert len(seen) == 2 and all(np.allclose(fr, frame) for fr in seen)

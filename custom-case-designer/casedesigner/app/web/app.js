@@ -498,11 +498,7 @@ async function toggleBite() {
   await busy(r.on ? 'Прикус сканов' : 'Как на КТ', async () => {
     await reloadStructureMeshes();
     await refreshScans(true);
-    if (state.jointsVisible) {
-      for (const key of [...viewer.objects.keys()].filter((k) => String(k).startsWith('joint:'))) viewer.remove(key);
-      state.jointParts = await get('articulation/joint');
-      await drawJointParts();
-    }
+    if (state.jointsVisible) await refreshJointParts();
     overlayVersion += 1;
     app.setCursor(app.cursor);
     if (state.step === 'articulation') drawArticulationGuides();
@@ -539,9 +535,8 @@ async function articulationAction(kind, body = {}, title = 'Артикулято
     state.articulationPlanes = await get('articulation/planes');
     state.articulationCondyles = await get('articulation/condyles');
     state.articulationGuides = await get('articulation/guides');
-    state.jointParts = await get('articulation/joint');
     drawArticulationGuides();
-    await drawJointParts();
+    await refreshJointParts();
   });
 }
 
@@ -560,6 +555,7 @@ async function remountPlane() {
     state.articulationCondyles = await get('articulation/condyles');
     state.articulationGuides = await get('articulation/guides');
     drawArticulationGuides();
+    await refreshJointParts();
   });
 }
 
@@ -590,6 +586,12 @@ async function drawJointParts() {
     }).catch((e) => toast(e.message)));
   }
   await Promise.all(requests);
+}
+
+async function refreshJointParts() {
+  for (const key of [...viewer.objects.keys()].filter((k) => String(k).startsWith('joint:'))) viewer.remove(key);
+  state.jointParts = await get('articulation/joint');
+  await drawJointParts();
 }
 
 async function toggleJoints() {
@@ -637,11 +639,7 @@ async function updateCondyles(path = '', body = {}) {
       if (landmark && point) Object.assign(landmark, { point: point.ct, source: point.source, note: point.note });
     }
     drawArticulationGuides();
-    if (state.jointsVisible) {
-      for (const key of [...viewer.objects.keys()].filter((k) => String(k).startsWith('joint:'))) viewer.remove(key);
-      state.jointParts = await get('articulation/joint');
-      await drawJointParts();
-    }
+    if (state.jointsVisible) await refreshJointParts();
     render();
     return true;
   } catch (e) {

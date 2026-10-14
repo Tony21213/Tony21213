@@ -959,7 +959,8 @@ class Session:
         """Головки мыщелков и суставные скаты для окна артикулятора.
 
         Головки следуют за нижней челюстью в прикусе сканов; скаты остаются на черепе.
-        Все сетки возвращаются в координатах 3D-окна.
+        Все сетки возвращаются в координатах 3D-окна. Скат выбирается, как в ядре (JawCase.mount →
+        eminence_profile): череп и точка мыщелка — в соотношении КТ, система — монтажа (anatomy.frame).
         """
         empty = {side: {"head": None, "slope": None} for side in cond.SIDES}
         if not self._articulation_ready or self.jaw.anatomy is None:
@@ -967,7 +968,7 @@ class Session:
         mandible, skull = self.structures.get("mandible"), self.structures.get("skull")
         points = self._condyle_points()
         motion = np.eye(4) if self.bite_motion is None else np.asarray(self.bite_motion, float)
-        frame = np.asarray(self.jaw.anatomy.frame, float) @ motion
+        frame = np.asarray(self.jaw.anatomy.frame, float)
         signature = (id(mandible), id(skull),
                      tuple(None if points[s].point is None else tuple(np.round(points[s].point, 4))
                            for s in cond.SIDES), motion.tobytes(), frame.tobytes())
