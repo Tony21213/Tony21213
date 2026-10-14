@@ -9,43 +9,49 @@
 Обновлено 14.10.2026. Общая ветка: `claude/lucid-euler-8zyldi`. Порядок работ — решение владельца
 (13.10): `docs/roadmap.md`, «Очередь работ — Порядок работ»; номера «п. …» ниже — оттуда.
 
+Файлы интерфейса — по шагам (п. 7, 14.10): сессия — `app/steps/<шаг>.py` (методы `Session` и HTTP-маршруты
+`route`), окно — `app/web/steps/<шаг>.js` (действия и панель). Шаги: `ct`, `scans`, `articulation`, `landmarks`
+(только сессия), `export`, `casefile` / `case` (кейс, настройки, подсказка). Общее: `app/common.py`, `app/session.py`
+(`__init__`, настройки), `app/server.py` (общие маршруты, `STEP_ROUTES`), `app/web/core.js` (состояние, окна КТ и 3D,
+помощники, `render`), `app/web/app.js` (события, старт, регистрация панелей); `style.css` — общий. Задача шага трогает
+файлы своего шага; общие — по договорённости на доске.
+
 | Задача | Исполнитель | Ветка | Занятые файлы | Состояние | Передача |
 |---|---|---|---|---|---|
 | 1. Выгрузка «Для exocad с артикулятором» — интерфейс | Codex | `follower/exocad-export-ui` | — | принято (`2195b03`, `f3b2e24`, `c67947f`; 256 passed) | `docs/handoff/archive/exocad-articulator-export.md` |
 | 2. Плоскость монтажа — интерфейс и настройка | Codex | `follower/mount-plane-ui` | — | принято (`ffc3270`…`4a92578`); ведущий исправил монтаж «auto» без плоскости из настройки (`c3f76c2`) | `docs/handoff/archive/mount-plane.md` |
 | 3. Сустав отдельно: показ головок и скатов, заметка замены точки ALI | Codex | `follower/tmj-segments-ui` | — | принято (`ebf1d00`…`1d73736`, конфликт с №2 разрешён); ведущий исправил систему ската (`e16336f`); полный набор — 268 passed | `docs/handoff/archive/tmj-segments.md` |
 | Проверки выгрузки для exocad (HTTP-тесты, стили панели) — до №1 | Codex | `follower/export-checks` | — | принято частично: тесты вариантов (`825c1cb`) и порядок открытия копии (`3bfcffe`); HTTP-тесты и стили заменила №1 | — |
-| 5. Кнопка «Исправить прикус» в шаге «Сканы» + повтор проверки архива (кейсы 4 и 5 — уход челюсти) | Codex | `follower/bite-correction-ui` | `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css` (шаг «Сканы») | п. 0.4 — **к работе, первая у Codex** (№2–3 приняты, начинать от общей ветки) | `docs/handoff/bite-correction.md` |
+| 5. Кнопка «Исправить прикус» в шаге «Сканы» + повтор проверки архива (кейсы 4 и 5 — уход челюсти) | Codex | `follower/bite-correction-ui` | `app/steps/scans.py`, `app/steps/casefile.py`, `app/web/steps/scans.js` | п. 0.4 — **к работе, первая у Codex** (№2–3 приняты, начинать от общей ветки) | `docs/handoff/bite-correction.md` |
 | 4. Проверка суставов на архиве КТ: головки против ALI, скаты, ССП | Codex | — (на ПК, вне репозитория) | только `docs/handoff/tmj-archive-check.md` | п. 0.4, после №5; 13.10 не выполнена — нет сохранённых кейсов с сегментацией | `docs/handoff/tmj-archive-check.md` |
 | Модульный артикулятор exocad с межмыщелковым расстоянием (один на всех, значения пациента — в проекте) | Claude | `lead/modular-articulator` | — | каркас готов (`ae9d5ea`): углы — в параметрах зубов проекта, общий артикулятор с набором вставок, подбор вставки; МШР в проект — `ICD_IN_PROJECT`, ждёт проверки копии K4i владельцем; выбор вставки из файла — опыт 13 (K4k) | `docs/handoff/modular-articulator.md` |
-| 6. Модульный артикулятор — сводка в шаге «Экспорт» (значения в проекте, вставки, общий артикулятор установлен или нет) | Codex | `follower/modular-articulator-ui` | `app/web/app.js`, `app/web/style.css`, `app/session.py` (шаг «Экспорт») | очередь Codex, после №5 (те же файлы) | `docs/handoff/modular-articulator.md` |
+| 6. Модульный артикулятор — сводка в шаге «Экспорт» (значения в проекте, вставки, общий артикулятор установлен или нет) | Codex | `follower/modular-articulator-ui` | `app/steps/export.py`, `app/web/steps/export.js` | очередь Codex, после №5 (те же файлы) | `docs/handoff/modular-articulator.md` |
 | Цветные сканы PLY: цвет в скане, в кейсе и в выгрузке (ядро) | Claude | `lead/color-scans` | — | каркас готов (`f0d830d`) | `docs/handoff/color-scans.md` |
-| 7. Цвет скана в окне 3D — переключателем, карты поверх | Codex | `follower/color-scans-ui` | `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css` | очередь Codex, после №6 | `docs/handoff/color-scans.md` |
+| 7. Цвет скана в окне 3D — переключателем, карты поверх | Codex | `follower/color-scans-ui` | `app/steps/scans.py`, `app/web/steps/scans.js`, `app/web/core.js` | очередь Codex, после №6 | `docs/handoff/color-scans.md` |
 | Генератор отчётов и паспорт кейса (ядро) | Claude | `lead/reports` | — | каркас готов (`a5617e7`); дальше — входной контроль (ядро) | `docs/handoff/passport.md` |
-| 8. Паспорт кейса при выгрузке для exocad со скриншотами окна 3D | Codex | `follower/passport-ui` | те же (шаг «Экспорт») | очередь Codex, после №7 | `docs/handoff/passport.md` |
+| 8. Паспорт кейса при выгрузке для exocad со скриншотами окна 3D | Codex | `follower/passport-ui` | `app/steps/export.py`, `app/web/steps/export.js`, `app/web/core.js` | очередь Codex, после №7 | `docs/handoff/passport.md` |
 | Входной контроль кейса (ядро) | Claude | `lead/reports` | — | каркас готов (`dcbfd59`) | `docs/handoff/intake.md` |
-| 9. Кнопка «Входной контроль» и отчёт для клиники | Codex | `follower/intake-ui` | `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css` | очередь Codex, после №8 | `docs/handoff/intake.md` |
+| 9. Кнопка «Входной контроль» и отчёт для клиники | Codex | `follower/intake-ui` | `app/steps/ct.py`, `app/web/steps/ct.js` | очередь Codex, после №8 | `docs/handoff/intake.md` |
 | «Эстетика», часть 1 (ядро): фото в Smile Design по камере, монтаж по фото, размеры зубов | Claude | `lead/aesthetics` | — | каркас готов (`fad455c`) | `docs/handoff/aesthetics-photo.md` |
-| 10. Шаг «Эстетика» (часть 1): фото с улыбкой и с ретрактором, пары точек, камера, монтаж и выгрузка по фото | Codex | `follower/aesthetics-ui` | те же | п. 8 — после разделения файлов по шагам (п. 7) | `docs/handoff/aesthetics-photo.md` |
+| 10. Шаг «Эстетика» (часть 1): фото с улыбкой и с ретрактором, пары точек, камера, монтаж и выгрузка по фото | Codex | `follower/aesthetics-ui` | новый шаг `app/steps/aesthetics.py`, `app/web/steps/aesthetics.js` + подключение шага | п. 8 — после разделения файлов по шагам (п. 7) | `docs/handoff/aesthetics-photo.md` |
 | Кости КТ в exocad: `bone_upper.stl`, `bone_lower.stl` (решение владельца 14.10) | Claude | `lead/bone-names` | — | готово (`499c2d5`, `4f4af99`); `.partialInfo` ссылается на них — проверить в exocad, что кости подгружаются и двигаются с челюстями | `docs/exocad.md`, «Кости КТ в проекте exocad» |
 | Цефалометрия (ядро): Steiner и Ricketts как данные, отчёт; точки ALI-CBCT `landmarks-v2` | Claude | `lead/cephalometry`, `lead/landmarks-v2` | — | каркас готов (`7eb97e1`, `867f7c9`…`66bfa2f`): 23 точки, на архиве — 23 из 23; верхушки резцов ненадёжны — проверка оси; релиз `landmarks-v2` опубликован 14.10 | — |
 | «Кривая» ось в exocad: шарнир точно + эстетические виды | Claude | `lead/exocad-aesthetic-views` | — | принято в общую ветку (`829fbb1`): «эстетическая через мыщелки» + «Вид Smile Design» из `.treatmentImages`; остаток к эстетике 0,9° (кейс 3) | `docs/exocad.md`, «Эстетический вид» |
 | Сустав отдельно: головки и скаты (ядро) | Claude | `lead/tmj-segments` | — | каркас готов (идея владельца): головки по связности сетки, ALI > 4 мм → головка, скаты, ССП 5–75° | `docs/handoff/tmj-segments.md` |
 | Каркас «Исправить прикус» (отказ без контактной опоры, предел поправки) | Claude | `lead/bite-correction` | — | каркас готов (`e0ff418`, `676129a`): отказ «нет опоры» (меньше 50 точек ближе 2 мм), смыкание до 1 мм, поправка до 1,5 мм | `docs/handoff/bite-correction.md` |
-| Разделение `session.py`, `server.py`, `app.js` по шагам | Claude | `lead/split-steps` | — | п. 7: после сдачи №5 (одни файлы), пока Codex делает №4; до №6–8 и «Эстетики» | — |
+| Разделение `session.py`, `server.py`, `app.js` по шагам | Claude | `lead/split-steps` | — | готово (14.10): методы `Session` — дословно, маршруты и `app.js` — по шагам; проверено тестами и в браузере на фантоме; заодно подключена кнопка «Настройки» (из №2 не работала) | — |
 | Опись параметров exocad; порог перекоса; прикус на архиве | Codex | `follower/pc-checks` | — | принято (`bb6841b`, `424a79e`, `ba6c208`) | `docs/handoff/archive/` |
 | Ручная проверка и поправка мыщелков | Codex, Claude | — | — | принято (`bc0476b`) | `docs/handoff/archive/condyle-adjustment.md` |
 
-Очередь ведущего: ядро готово 14.10 — модульный артикулятор (п. 0.5), цветные сканы (п. 6), генератор
-отчётов, паспорт и входной контроль (п. 9), «Эстетика», часть 1 (п. 8) → разделение `session.py`,
-`server.py`, `app.js` по шагам (п. 7) — после сдачи Codex №5 (одни файлы), пока Codex делает №4 → приёмка
-№5–9 → «Эстетика», часть 2 — цефалометрия (п. 10: точки ALI-CBCT, `landmarks-v2`, анализы) и корни из КТ,
-толщина десны (пп. 11–12). Ждут владельца: МШР из проекта на копии K4i (тогда `ICD_IN_PROJECT = True`),
-выбор вставки из файла движений — опыт 13 на копии K4k.
+Очередь ведущего: ядро готово 14.10 — модульный артикулятор (п. 0.5), цветные сканы (п. 6), отчёты, паспорт и
+входной контроль (п. 9), «Эстетика», часть 1 (п. 8), цефалометрия и `landmarks-v2` (п. 10); разделение файлов по
+шагам (п. 7) — готово 14.10 → пока Codex недоступен — его задачи по очереди (№5 «Исправить прикус» и далее) →
+корни из КТ и толщина десны (пп. 11–12). Ждут владельца: МШР из проекта на копии K4i (тогда
+`ICD_IN_PROJECT = True`), выбор вставки из файла движений — опыт 13 на копии K4k, кости `bone_upper/lower`.
 
 Очередь Codex (интерфейс — по одной, одни файлы): №5 «Исправить прикус» + повтор проверки архива
 (п. 0.4) → №4 проверка суставов на архиве (п. 0.4; файлов интерфейса не трогает — пока ведущий делит
-файлы по шагам) → №6 сводка модульного артикулятора → №7 цвет скана в окне 3D → №8 паспорт при
+файлы) → №6 сводка модульного артикулятора → №7 цвет скана в окне 3D → №8 паспорт при
 выгрузке → №9 входной контроль → №10 шаг «Эстетика», часть 1 (п. 8). Каждая — своя ветка от последнего
 коммита общей ветки, перед началом — `git fetch`.
 

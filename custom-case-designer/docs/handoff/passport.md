@@ -21,8 +21,8 @@
    бывает имя пациента). Проверка: HTTP-тест — `passport.pdf` и `.png` в копии, в сводке роль «паспорт».
 3. Шаг «Экспорт»: в результате — роль «паспорт кейса» и кнопка «Открыть паспорт» (как «Открыть папку»).
 
-Можно менять: `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css` (шаг
-«Экспорт»), новые тесты. Не трогать: `reports.py`, `exocad_articulator_export.py`.
+Можно менять: `app/steps/export.py` (методы и `route`), `app/web/steps/export.js`, `app/web/core.js` (снимок
+окна 3D), `app/web/app.js` (действия), `app/web/style.css`, новые тесты. Не трогать: `reports.py`, `exocad_articulator_export.py`.
 
 Готово, когда: новые тесты проходят; полный набор проходит; `git diff --check` чисто; паспорт со
 скриншотами открывается из шага «Экспорт» на фантоме.

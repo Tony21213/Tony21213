@@ -17,8 +17,8 @@
 3. Сохранение и открытие кейса — цвет уже в `.ccdcase` (`scan{i}_c`); переключатель — в настройке
    просмотра, не в кейсе.
 
-Можно менять: `app/session.py` (только отдача цвета), `app/server.py`, `app/web/app.js`,
-`app/web/style.css`, новые тесты. Не трогать: `fusion.py`, `exocad_articulator_export.py`.
+Можно менять: `app/steps/scans.py` (только отдача цвета и `route`), `app/web/steps/scans.js`, `app/web/core.js`
+(показ скана в окне 3D), `app/web/app.js` (действия), `app/web/style.css`, новые тесты. Не трогать: `fusion.py`, `exocad_articulator_export.py`.
 
 Готово, когда: новые тесты проходят; полный набор проходит; `git diff --check` чисто; цвет виден в
 браузере на фантоме с цветным PLY.

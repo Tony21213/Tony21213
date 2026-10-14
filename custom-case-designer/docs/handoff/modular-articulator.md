@@ -18,7 +18,7 @@
    в `app.js` (как в `tests/test_mount_planes.py`).
 3. Браузер на фантоме: выгрузка, сводка, заметки; в инкогнито — без путей.
 
-Можно менять: `app/web/app.js`, `app/web/style.css` (шаг «Экспорт»), `app/session.py` (только
+Можно менять: `app/web/steps/export.js`, `app/web/style.css` (шаг «Экспорт»), `app/steps/export.py` (только
 прокидка сводки), новые тесты. Не трогать: `exocad_articulator_export.py`, `exocad_facebow.py`.
 
 Готово, когда: `pytest tests/test_exocad_articulator_export.py -q` и новые тесты проходят; полный
