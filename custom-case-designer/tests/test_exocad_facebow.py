@@ -262,3 +262,34 @@ def test_real_exocad_register_and_samples():
         if os.path.isfile(path):
             got = ef.read_jawmotion(path)
             assert got["coordinate_system"] == system and got["marks"].shape == (3, 3) and got["movements"]
+
+
+def test_insert_family_and_fit():
+    """Набор вставок общего артикулятора: подъём над касательной bend·(s/10)²; подбор по пути мыщелка находит
+    изгиб и угол, прямая для сравнения хуже."""
+    for bend, tilt in ((1.0, 40.0), (2.0, 25.0), (0.0, 33.3)):
+        path = ef.bend_path(bend, tilt, length=12.0)
+        fit = ef.fit_insert(path)
+        name = next(k for k, v in ef.INSERT_BENDS.items() if v == bend)
+        assert fit["insert"] == name and fit["tilt_deg"] == pytest.approx(tilt, abs=0.11) and fit["rms_mm"] < 0.02
+        if bend:
+            assert fit["straight"]["rms_mm"] > 0.1
+    # вставка набора в системе дорожки: на 10 мм пути крыша выше прямой на изгиб
+    for name, bend in ef.INSERT_BENDS.items():
+        ins = ef.condylar_insert(ef.bend_path(bend, 0.0), 0.0)
+        assert _roof(ins, 10.0) == pytest.approx(ef.CONDYLAR_HEAD_MM + bend, abs=1e-3)
+
+
+def test_library_articulator(tmp_path):
+    files = ef.write_library_articulator(str(tmp_path / "lib"))
+    root = ET.parse(tmp_path / "lib" / "articulatorparameters.xml").getroot()
+    assert float(root.findtext("IntercondylarDistance")) == ef.LIBRARY_ICD_MM
+    assert root.findtext("CurrentCondylarInsertColorLeft") == root.findtext("CurrentBennettInsertColorLeft") == "Прямая"
+    cond = root.findall("ArticulatorMainParts/CondylarInserts/ArticulatorMesh")
+    benn = root.findall("ArticulatorMainParts/BennettInserts/ArticulatorMesh")
+    pairs = {(m.findtext("Id"), m.findtext("Side")) for m in cond}
+    assert pairs == {(k, s) for k in ef.INSERT_BENDS for s in ("Left", "Right")} == {
+        (m.findtext("Id"), m.findtext("Side")) for m in benn}
+    assert all(m.findtext("Filename") in files for m in cond + benn)
+    assert ef.library_version(str(tmp_path / "lib")) == ef.LIBRARY_VERSION
+    assert ef.library_version(str(tmp_path / "нет")) is None

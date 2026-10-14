@@ -12,8 +12,14 @@
   скан-маркер движения челюсти), сканы, прикусы, маркер, файл движений и кости-каркасы — **в координатах
   артикулятора** (x вправо, y вперёд, z вверх, середина шарнирной оси (30, −80, 60)): так exocad ставит модели
   проекта «в артикуляторе» по координатам файлов (docs/exocad.md, «Лицевая дуга»). В подпапке
-  ``KStomCaseDesigner`` — мыщелки для проверки, сводка ``articulator.json`` и папка артикулятора для
-  ``library\\articulator`` (межмыщелковое и углы пациента, вставки ССП, плоскость гипсовки).
+  ``KStomCaseDesigner`` — мыщелки для проверки, сводка ``articulator.json`` и папка общего артикулятора для
+  ``library\\articulator`` (``exocad_facebow.write_library_articulator``: одна на все кейсы, ставится один раз).
+* **Модульный артикулятор** (порядок работ владельца, п. 0.5): значения пациента — параметры зубов копии
+  проекта (``project_parameters``: углы ССП, Беннетта, боковой сдвиг, ретрузия, резцовый столик; exocad берёт
+  их при открытии — кейс 4, 13.10), межмыщелковое — там же при ``ICD_IN_PROJECT``. Вставка ССП — из набора
+  общего артикулятора: по пути мыщелка подбирается ближайшая (``exocad_facebow.fit_insert``) — в сводке и
+  заметке; в проекте — ССП прямой вставки (её exocad берёт по умолчанию), пока выбор вставки из файла не
+  проверен (опыт 13).
 * Есть эстетическая система (``ArticulatorCase.aesthetic``: плоскости «эстетическая» и «эстетическая через
   мыщелки») — в копию пишется набор изображений Smile Design (``<проект>.treatmentImages`` и фон-снимок,
   exocad_views): в exocad появляется кнопка «Вид Smile Design» — точный эстетический вид спереди.
@@ -37,6 +43,16 @@ from . import kinematics as kin
 from . import motion as mo
 from .fusion import BITE
 from .register import apply
+
+# Параметры артикулятора в проекте exocad (Tooth/Parameters/Parameter): пределы и шаг — как у exocad, когда он
+# сам сохраняет их в проект (кейс 4, 13.10). Сторонам — Left/Right.
+PROJECT_PARAMETERS = {"TiltCondylarGuide": (-20.0, 60.0, 0.1), "BennettAngle": (0.0, 30.0, 0.1),
+                      "ImmediateSideshift": (0.0, 1.5, 0.1), "Retrusion": (0.0, 2.0, 0.1),
+                      "TiltFrontplate": (0.0, 89.0, 1.0), "IntercondylarDistance": (80.0, 130.0, 0.1)}
+# Межмыщелковое в проекте: в exocad владельца регулируется и выгружается значением в проекте (входящие 13.10),
+# проверка значения из проекта — копия K4i. У exocad без этой доработки незнакомый тип параметра может не дать
+# открыть проект, поэтому по умолчанию не пишется (значение — в сводке и заметке).
+ICD_IN_PROJECT = False
 
 SUBFOLDER = "KStomCaseDesigner"
 COPY_SUFFIX = "-KStom"
@@ -128,6 +144,75 @@ def target(project_dir: str, out_dir: str | None = None) -> tuple[str, str]:
     return folder, os.path.basename(os.path.normpath(folder)) if out_dir else stem + COPY_SUFFIX
 
 
+def project_parameters(values: dict, icd: float | None = None) -> tuple[list, list[str]]:
+    """Значения артикулятора → параметры зубов проекта exocad: [(тип, значение, мин, макс, шаг)] и заметки.
+    values — как у articulator_values (+ Retrusion, TiltFrontplate); icd — межмыщелковое, мм (None — не писать).
+    Значение вне пределов exocad — к ближайшему пределу, с заметкой."""
+    items = dict(values)
+    if icd is not None:
+        items["IntercondylarDistance"] = icd
+    out, notes = [], []
+    for kind, value in items.items():
+        base = kind[:-4] if kind.endswith("Left") else kind[:-5] if kind.endswith("Right") else kind
+        if base not in PROJECT_PARAMETERS:
+            continue
+        low, high, step = PROJECT_PARAMETERS[base]
+        v = float(value)
+        if not low <= v <= high:
+            notes.append(f"{kind} = {v:g} вне пределов exocad ({low:g}…{high:g}) — в проекте {min(max(v, low), high):g}")
+            v = min(max(v, low), high)
+        out.append((kind, round(v, 2), low, high, step))
+    return out, notes
+
+
+def _param_xml(kind, value, low, high, step, indent: str, nl: str) -> str:
+    inner = indent + "  "
+    rows = [f"<Type>{kind}</Type>", f"<Value>{value:g}</Value>", f"<MinValue>{low:g}</MinValue>",
+            f"<MaxValue>{high:g}</MaxValue>", f"<StepSize>{step:g}</StepSize>"]
+    return f"<Parameter>{nl}" + "".join(f"{inner}{r}{nl}" for r in rows) + f"{indent}</Parameter>"
+
+
+def set_tooth_parameters(text: str, params: list) -> tuple[str, int]:
+    """Записать параметры (project_parameters) в каждый Tooth/Parameters проекта: такой же тип заменяется,
+    нового — добавляется в конец; пустой <Parameters /> раскрывается. Возвращает текст и число зубов."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    teeth = 0
+
+    def fill(block: str, indent: str) -> str:
+        block = block.rstrip(" \t\r\n")
+        for kind, value, low, high, step in params:
+            node = _param_xml(kind, value, low, high, step, indent, nl)
+            pattern = re.compile(rf"<Parameter>\s*<Type>{kind}</Type>.*?</Parameter>", re.S)
+            if pattern.search(block):
+                block = pattern.sub(lambda _m: node, block, count=1)
+            else:
+                block = block + nl + indent + node
+        return block
+
+    def tooth(m: re.Match) -> str:
+        nonlocal teeth
+        body = m.group(0)
+        p = re.search(r"([ \t]*)<Parameters>(.*?)([ \t]*)</Parameters>", body, re.S)
+        e = re.search(r"([ \t]*)<Parameters\s*/>", body)
+        if p:
+            outer = p.group(1)
+            first = re.search(r"\n([ \t]*)<Parameter>", p.group(2))
+            indent = first.group(1) if first else outer + "  "
+            new = f"{outer}<Parameters>{fill(p.group(2), indent)}{nl}{outer}</Parameters>"
+            body = body[:p.start()] + new + body[p.end():]
+        elif e:
+            outer = e.group(1)
+            new = f"{outer}<Parameters>{fill('', outer + '  ')}{nl}{outer}</Parameters>"
+            body = body[:e.start()] + new + body[e.end():]
+        else:
+            return body
+        teeth += 1
+        return body
+
+    text = re.sub(r"<Tooth>.*?</Tooth>", tooth, text, flags=re.S)
+    return text, teeth
+
+
 def _set_tag(text: str, tag: str, value: str) -> tuple[str, bool]:
     pattern = re.compile(rf"<{tag}>[^<]*</{tag}>")
     if len(pattern.findall(text)) != 1:
@@ -135,8 +220,9 @@ def _set_tag(text: str, tag: str, value: str) -> tuple[str, bool]:
     return pattern.sub(f"<{tag}>{value}</{tag}>", text), True
 
 
-def copy_project(project_dir: str, folder: str, stem: str, antagonist: str) -> list[str]:
-    """Копия .dentalProject в новую папку: новое имя, тип антагониста и скан-маркер движения. Возвращает заметки."""
+def copy_project(project_dir: str, folder: str, stem: str, antagonist: str, params: list | None = None) -> list[str]:
+    """Копия .dentalProject в новую папку: новое имя, тип антагониста, скан-маркер движения и параметры
+    артикулятора у зубов (project_parameters). Возвращает заметки."""
     raw = open(_project_file(project_dir), "rb").read()
     bom = raw.startswith(b"\xef\xbb\xbf")
     text = raw.decode("utf-8-sig")
@@ -145,6 +231,10 @@ def copy_project(project_dir: str, folder: str, stem: str, antagonist: str) -> l
         text, ok = _set_tag(text, tag, value)
         if not ok:
             notes.append(f"в .dentalProject нет единственного <{tag}> — задайте это в DentalDB вручную")
+    if params:
+        text, teeth = set_tooth_parameters(text, params)
+        if not teeth:
+            notes.append("в .dentalProject нет зубов с параметрами — значения артикулятора выставьте в exocad вручную")
     with open(os.path.join(folder, stem + ".dentalProject"), "wb") as f:
         f.write((b"\xef\xbb\xbf" if bom else b"") + text.encode("utf-8"))
     return notes
@@ -163,7 +253,10 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
         raise FileExistsError("папка для копии проекта уже существует и не пуста — выберите другую")
     os.makedirs(folder, exist_ok=True)
     antagonist, type_note, art_name = antagonist_type(exocad_app)
-    notes = copy_project(project_dir, folder, stem, antagonist) + [type_note] + fb.notes
+    icd = round(float(np.linalg.norm(fb.condyles["right"] - fb.condyles["left"])), 1)
+    values = {**articulator_values(a, case.settings), "Retrusion": 0.0, "TiltFrontplate": 40}
+    params, param_notes = project_parameters(values, icd if ICD_IN_PROJECT else None)
+    notes = copy_project(project_dir, folder, stem, antagonist, params) + [type_note] + fb.notes + param_notes
     written = {"проект": f"{stem}.dentalProject"}
 
     def path(suffix):
@@ -196,13 +289,27 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
     spheres = [trimesh.creation.icosphere(subdivisions=2, radius=2.5).apply_translation(p)
                for p in fb.condyles.values()]
     trimesh.util.concatenate(spheres).apply_transform(to_art).export(os.path.join(sub, "condyles.stl"))
-    icd = round(float(np.linalg.norm(fb.condyles["right"] - fb.condyles["left"])), 1)
-    values = {**articulator_values(a, case.settings), "TiltFrontplate": 40}
     incisal_art = apply(to_art, np.asarray(a.points["incisal"], float)[None])[0]
     art_dir = os.path.join(sub, "articulator", art_name)
-    art_files = ef.write_articulator(art_dir, icd, values, inserts=case.condylar_paths,
-                                     plane_height=round(float(incisal_art[2]), 2))
-    if not case.condylar_paths:
+    art_files = ef.write_library_articulator(art_dir)
+    app = exocad_app or ef.find_exocad()
+    installed = ef.library_version(os.path.join(app, "library", "articulator", art_name)) if app else None
+    if installed != ef.LIBRARY_VERSION:
+        notes.append(f"общий артикулятор «{art_name}» в библиотеке exocad "
+                     + ("не найден" if installed is None else f"устарел (версия {installed})")
+                     + f" — скопируйте папку {SUBFOLDER}\\articulator\\{art_name} в library\\articulator один раз "
+                       "(одна на все кейсы)")
+    if not ICD_IN_PROJECT:
+        notes.append(f"межмыщелковое пациента {icd:g} мм — в проект не записано (ждёт проверки в exocad), "
+                     f"в общем артикуляторе {ef.LIBRARY_ICD_MM:g} мм: выставьте его в окне артикулятора")
+    inserts = None
+    if case.condylar_paths:
+        inserts = {side: ef.fit_insert(case.condylar_paths[side]) for side in SIDES}
+        text = ", ".join(f"{'справа' if s == 'right' else 'слева'} «{inserts[s]['insert']}» "
+                         f"(ССП {inserts[s]['tilt_deg']:g}°, отклонение {inserts[s]['rms_mm']:g} мм)" for s in SIDES)
+        notes.append(f"вставки ССП по пути мыщелка: {text}; в проекте — ССП для прямой вставки (exocad берёт её "
+                     "по умолчанию), для точного пути выберите эти вставки и углы в окне артикулятора")
+    else:
         notes.append("путей мыщелков по КТ нет — вставки ССП в артикуляторе стандартные")
     if case.aesthetic is not None:
         axes_art = (to_art[:3, :3] @ np.asarray(case.aesthetic, float).T).T  # оси — строками, в мм артикулятора
@@ -213,6 +320,8 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
         notes.append("монтаж не по мыщелкам КТ — шарнир артикулятора стоит не на мыщелках пациента")
     summary = {"files": written, "antagonist": antagonist, "articulator_folder": art_name, "notes": notes,
                "icd_mm": icd, "articulator": values, "off_axis_mm": fb.off_axis_mm,
+               "project_parameters": {kind: value for kind, value, *_r in params}, "inserts": inserts,
+               "library_version": ef.LIBRARY_VERSION, "library_installed": installed,
                "plane_height_mm": round(float(incisal_art[2]), 2),
                "condyles_articulator": {s: apply(to_art, fb.condyles[s][None])[0].round(3).tolist() for s in SIDES},
                "case_to_articulator": to_art.round(6).tolist(), "movements": len(case.movements),

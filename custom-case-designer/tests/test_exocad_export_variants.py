@@ -42,8 +42,9 @@ def test_export_without_skull_uses_standard_inserts(case, project, register, tmp
         assert not list(out.glob("*-partialframework_cad.stl"))
     art = out / xa.SUBFOLDER / "articulator" / result["articulator_folder"]
     settings = ET.parse(art / "articulatorparameters.xml").getroot()
-    assert settings.find("ArticulatorMainParts/CondylarInserts") is None
-    assert settings.find("ArticulatorMainParts/BennettInserts") is None
+    # общий артикулятор: набор вставок есть всегда, подбора по пути нет
+    assert settings.findtext("CurrentCondylarInsertColorRight") == "Прямая"
+    assert result["inserts"] is None
     for side in ("Left", "Right"):
         assert float(settings.findtext(f"RotationAxis{side}Param/Value")) == 0
 

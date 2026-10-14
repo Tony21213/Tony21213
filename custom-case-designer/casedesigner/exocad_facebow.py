@@ -24,6 +24,7 @@
 середину между ними вдоль горизонтали монтажа, насколько каждый мыщелок от неё — в отчёте.
 """
 
+import json
 import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -317,6 +318,51 @@ CONDYLAR_HEAD_MM = 4.0  # радиус головки мыщелка артик�
 INSERT_ID = "КТ пациента"  # имя вставки в диалоге exocad (Id; у Harman OSH тоже не только латиница)
 ARTICULATOR_POSITION = (30, -80, -31)
 
+# Общий (модульный) артикулятор: один на все кейсы, значения пациента — в проекте exocad
+# (exocad_articulator_export.project_parameters). Вставки ССП — набор по изгибу, как у SAM и Harman OSH
+# (белая, синяя, красная, чёрная): изгиб — подъём пути над касательной в начале, на BEND_AT_MM пути.
+# exocad по умолчанию берёт первую вставку списка (опыт 12, 13.10), поэтому первая — прямая.
+LIBRARY_VERSION = 1
+LIBRARY_ICD_MM = 100.0
+LIBRARY_INFO = "kstom-articulator.json"
+BEND_AT_MM = 10.0
+INSERT_BENDS = {"Прямая": 0.0, "Изгиб 0,5 мм": 0.5, "Изгиб 1 мм": 1.0, "Изгиб 1,5 мм": 1.5, "Изгиб 2 мм": 2.0,
+                "Изгиб 3 мм": 3.0}
+
+
+def bend_path(bend: float, tilt_deg: float, length: float = 16.0, step: float = 0.25) -> np.ndarray:
+    """Путь центра головки для вставки набора (N×2: вперёд, вверх; система монтажа): в системе дорожки, повёрнутой
+    на tilt_deg (как в condylar_insert), — подъём над касательной bend·(s/BEND_AT_MM)²."""
+    yl = np.arange(0.0, length + 1e-9, step)
+    zl = bend * (yl / BEND_AT_MM) ** 2
+    a = np.radians(tilt_deg)
+    return np.c_[yl * np.cos(a) + zl * np.sin(a), -yl * np.sin(a) + zl * np.cos(a)]
+
+
+def fit_insert(path, bends: dict | None = None, tilts=None) -> dict:
+    """Вставка набора и угол ССП под неё по пути мыщелка пациента (N×2: вперёд, вверх; guidance.condylar_path).
+
+    Для каждой вставки — угол дорожки с наименьшим СКО пути от её кривой; выбирается вставка с наименьшим СКО
+    (при разнице меньше 0,02 мм — менее изогнутая). Возвращает {"insert", "tilt_deg", "rms_mm", "straight":
+    {"tilt_deg", "rms_mm"}} — прямая вставка для сравнения."""
+    bends = INSERT_BENDS if bends is None else bends
+    tilts = np.arange(-20.0, 75.0 + 1e-9, 0.1) if tilts is None else np.asarray(tilts, float)
+    p = np.asarray(path, float)
+    p = p - p[0]
+    a = np.radians(tilts)[:, None]
+    yl = p[:, 0] * np.cos(a) - p[:, 1] * np.sin(a)
+    zl = p[:, 0] * np.sin(a) + p[:, 1] * np.cos(a)
+    fits = {}
+    for name, bend in bends.items():
+        rms = np.sqrt(((zl - bend * (np.clip(yl, 0.0, None) / BEND_AT_MM) ** 2) ** 2).mean(axis=1))
+        i = int(np.argmin(rms))
+        fits[name] = (round(float(tilts[i]), 1), float(rms[i]))
+    lowest = min(r for _t, r in fits.values())
+    name = min((k for k in fits if fits[k][1] <= lowest + 0.02), key=lambda k: bends[k])
+    straight = min(bends, key=lambda k: abs(bends[k]))
+    return {"insert": name, "tilt_deg": fits[name][0], "rms_mm": round(fits[name][1], 3),
+            "straight": {"tilt_deg": fits[straight][0], "rms_mm": round(fits[straight][1], 3)}}
+
 
 def preview_image(size=(700, 770)):
     """Картинка артикулятора для диалога exocad (preview.png): схема сбоку на прозрачном фоне — рамы, мыщелок
@@ -396,14 +442,15 @@ def bennett_insert(side: str, head_radius: float = CONDYLAR_HEAD_MM, reach=(-6.0
 
 
 def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = None, inserts: dict | None = None,
-                      plane_height: float | None = None) -> list[str]:
+                      plane_height: float | None = None, insert_family: dict | None = None) -> list[str]:
     """Папка своего артикулятора для library\\articulator exocad: перевод из регистратора без наклона,
     геометрия — как у SAM 2P (та же система). settings — значения по умолчанию (TiltCondylarGuideLeft=…).
 
     inserts — пути центра мыщелка пациента по сторонам ({"right": N×2, "left": N×2}, guidance.condylar_path):
     индивидуальные вставки ССП (condylar_insert), выбраны по умолчанию. plane_height — высота плоскости гипсовки
     (горизонталь монтажа) в координатах артикулятора: её exocad рисует по «Плоскости артикулятора»; без неё —
-    средняя окклюзионная плоскость SAM 2P (40.7 мм ниже оси у мыщелков, 65.5 мм у штифта)."""
+    средняя окклюзионная плоскость SAM 2P (40.7 мм ниже оси у мыщелков, 65.5 мм у штифта).
+    insert_family — набор вставок вместо вставок пациента ({Id: изгиб, мм}, INSERT_BENDS; первая — по умолчанию)."""
     os.makedirs(folder, exist_ok=True)
     values = {"TiltCondylarGuideLeft": 35, "TiltCondylarGuideRight": 35, "BennettAngleLeft": 10,
               "BennettAngleRight": 10, "ImmediateSideshiftLeft": 0, "ImmediateSideshiftRight": 0,
@@ -435,34 +482,45 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
                        ("CollapseTiltFrontplate", "false"), ("FrontplateAdjustable", "true"),
                        ("CollapseCondylarInsert", "false"), ("CollapseBennettInsert", "true")):
         _sub(root, tag, value)
+    family = {}  # Id → сторона → (файл, сетка)
     if inserts:
+        family[INSERT_ID] = {side: (f"condylar_insert_{side}.off",
+                                    condylar_insert(inserts[side], values[f"TiltCondylarGuide{side.capitalize()}"]))
+                             for side in ("right", "left")}
+    elif insert_family:
+        for k, (name, bend) in enumerate(insert_family.items()):
+            family[name] = {side: (f"condylar_insert_{side}_{k}.off", condylar_insert(bend_path(bend, 0.0), 0.0))
+                            for side in ("right", "left")}
+    if family:
+        first = next(iter(family))
         for side in ("Left", "Right"):
-            _sub(root, f"CurrentCondylarInsertColor{side}", INSERT_ID)
-            _sub(root, f"CurrentBennettInsertColor{side}", INSERT_ID)
+            _sub(root, f"CurrentCondylarInsertColor{side}", first)
+            _sub(root, f"CurrentBennettInsertColor{side}", first)
     parts = _sub(root, "ArticulatorMainParts")
     for tag, name in (("Incisalneedle", "incisal_needle.off"), ("FrontplateLeft", "incisal_plate_left.off"),
                       ("FrontplateRight", "incisal_plate_right.off")):
         _sub(_sub(parts, tag), "Filename", name)
     insert_meshes = {}
-    if inserts:
+    if family:
         node = _sub(parts, "CondylarInserts")
-        for side in ("right", "left"):
-            name = f"condylar_insert_{side}.off"
-            tilt = values[f"TiltCondylarGuide{side.capitalize()}"]
-            insert_meshes[name] = condylar_insert(inserts[side], tilt)
-            mesh = _sub(node, "ArticulatorMesh")
-            for tag, value in (("Id", INSERT_ID), ("Filename", name), ("ColorDiffuse", "#E8C547"),
-                               ("Side", side.capitalize())):
-                _sub(mesh, tag, value)
-        # Без вставок Беннетта exocad при расчёте движения рисует вставку ССП копиями по кольцу (кейс 3).
+        for insert_id, sides in family.items():
+            for side, (name, ins) in sides.items():
+                insert_meshes[name] = ins
+                mesh = _sub(node, "ArticulatorMesh")
+                for tag, value in (("Id", insert_id), ("Filename", name), ("ColorDiffuse", "#E8C547"),
+                                   ("Side", side.capitalize())):
+                    _sub(mesh, tag, value)
+        # Без вставок Беннетта exocad при расчёте движения рисует вставку ССП копиями по кольцу (кейс 3); у каждой
+        # вставки ССП — вставка Беннетта с тем же Id (пластина одна на сторону).
         node = _sub(parts, "BennettInserts")
-        for side in ("right", "left"):
-            name = f"bennett_insert_{side}.off"
-            insert_meshes[name] = bennett_insert(side)
-            mesh = _sub(node, "ArticulatorMesh")
-            for tag, value in (("Id", INSERT_ID), ("Filename", name), ("ColorDiffuse", "#E8C547"),
-                               ("Side", side.capitalize())):
-                _sub(mesh, tag, value)
+        for insert_id in family:
+            for side in ("right", "left"):
+                name = f"bennett_insert_{side}.off"
+                insert_meshes[name] = bennett_insert(side)
+                mesh = _sub(node, "ArticulatorMesh")
+                for tag, value in (("Id", insert_id), ("Filename", name), ("ColorDiffuse", "#E8C547"),
+                                   ("Side", side.capitalize())):
+                    _sub(mesh, tag, value)
     for kind, value, low, high in (("Protrusion", 5, 0, 12), ("Retrusion", 0, 0, 2), ("LaterotrusionRight", 5, 0, 12),
                                    ("LaterotrusionLeft", 5, 0, 12), ("BennettAngleLeft", None, -5, 45),
                                    ("BennettAngleRight", None, -5, 45), ("TiltCondylarGuideLeft", None, -20, 75),
@@ -493,6 +551,27 @@ def write_articulator(folder: str, icd: float = 110.0, settings: dict | None = N
         write_off(os.path.join(folder, name), mesh)
     preview_image().save(os.path.join(folder, "preview.png"))
     return sorted([*files, *meshes, "preview.png"])
+
+
+def write_library_articulator(folder: str) -> list[str]:
+    """Общий артикулятор для library\\articulator exocad — один на все кейсы: межмыщелковое LIBRARY_ICD_MM,
+    углы по умолчанию, набор вставок INSERT_BENDS (первая — прямая), средняя плоскость гипсовки. Значения пациента
+    пишет в проект exocad_articulator_export. Файлы одинаковы при каждой записи; версия — в LIBRARY_INFO."""
+    files = write_articulator(folder, LIBRARY_ICD_MM, None, insert_family=INSERT_BENDS)
+    info = {"name": ARTICULATOR_NAME, "version": LIBRARY_VERSION, "icd_mm": LIBRARY_ICD_MM,
+            "inserts": INSERT_BENDS, "bend_at_mm": BEND_AT_MM}
+    with open(os.path.join(folder, LIBRARY_INFO), "w", encoding="utf-8", newline="\n") as f:
+        json.dump(info, f, ensure_ascii=False, indent=1)
+    return sorted([*files, LIBRARY_INFO])
+
+
+def library_version(folder: str) -> int | None:
+    """Версия общего артикулятора в папке (LIBRARY_INFO) или None — папки нет или это не общий артикулятор."""
+    try:
+        with open(os.path.join(folder, LIBRARY_INFO), encoding="utf-8") as f:
+            return int(json.load(f).get("version"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
 
 
 def export(out_dir: str, frame, condyle_right, condyle_left, incisal, register: Register,
