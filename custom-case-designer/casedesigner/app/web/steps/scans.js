@@ -1,5 +1,5 @@
 // Шаг «Сканы»: добавить, совместить, поправить, принять, прикус сканов, панель.
-import { $, JAWS, TRANSLUCENT, app, bumpOverlay, busy, choose, fmt, heatOn, hide, metricsHtml, opacityButton, render, scanById, scanLabel, showScan, slices, state, toast, updateScan, viewer } from '../core.js';
+import { $, JAWS, TRANSLUCENT, app, bumpOverlay, busy, choose, fmt, heatOn, hide, metricsHtml, opacityButton, render, scanById, scanLabel, scanRgb, showScan, slices, state, toast, updateScan, viewer } from '../core.js';
 import { get, mesh, post, run } from '../api.js';
 import { icons } from '../icons.js';
 import { drawArticulationGuides, refreshJointParts } from './articulation.js';
@@ -130,8 +130,7 @@ export async function evaluateNow(id) {
       await showScan(info);
       await refreshScans();
     } else {
-      const rgb = heatOn(info) ? new Uint8Array(await get(`scans/${id}/colors`)) : null;
-      viewer.setColors(id, rgb);
+      viewer.setColors(id, await scanRgb(info));
     }
     bumpOverlay();
     app.setCursor(app.cursor);

@@ -75,3 +75,34 @@ def test_articulator_export_takes_colors_from_scan(case):
         _jaw_items=lambda: (items["upper"], items["lower"]))
     got = xa.case_from_session(session)
     assert np.array_equal(got.upper.colors, up.colors) and got.lower.colors is None
+
+
+def test_scan_colors_in_3d_window(tmp_path):
+    """№7: у цветного скана — has_colors и цвет со сканера по API (RGB по вершинам); у бесцветного — пусто;
+    в окне 3D — переключатель «Цвет», карта отклонений — поверх."""
+    import urllib.request
+    from pathlib import Path
+
+    from casedesigner.app import server as app_server
+    from casedesigner.app.session import Session
+
+    _box, colors = colored_ply(tmp_path / "upper.ply")
+    _box.export(str(tmp_path / "gray.stl"))
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    sid = s.add_scan(str(tmp_path / "upper.ply"))["id"]
+    gray = s.add_scan(str(tmp_path / "gray.stl"))["id"]
+    assert s.scan_info(sid)["has_colors"] and not s.scan_info(gray)["has_colors"]
+    httpd = app_server.serve(s)
+    base = f"http://127.0.0.1:{httpd.server_address[1]}/api"
+    try:
+        with urllib.request.urlopen(f"{base}/scans/{sid}/texture") as r:
+            rgb = np.frombuffer(r.read(), np.uint8).reshape(-1, 3)
+        with urllib.request.urlopen(f"{base}/scans/{gray}/texture") as r:
+            assert r.read() == b""
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert np.array_equal(rgb, s.scans[sid]["scan"].colors[:, :3])
+    web = Path(__file__).parents[1] / "casedesigner" / "app" / "web"
+    ui = (web / "core.js").read_text(encoding="utf-8") + (web / "app.js").read_text(encoding="utf-8")
+    assert "data-scancolor" in ui and "scans/${info.id}/texture" in ui

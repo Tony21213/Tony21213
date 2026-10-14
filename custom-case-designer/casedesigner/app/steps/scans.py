@@ -229,6 +229,7 @@ class ScanSteps:
         reg: Registration | None = item["reg"]
         return {"id": sid, "name": item["scan"].name, "path": item["path"], "color": item["color"],
                 "vertices": len(item["scan"].vertices),
+                "has_colors": getattr(item["scan"], "colors", None) is not None,  # цвет со сканера (PLY)
                 "jaw": BITE if item["role"] == BITE else (reg.jaw if reg else item["jaw"]), "role": item["role"],
                 "bite_from_scans": item.get("lower_bite") is not None,
                 "transform": None if item["transform"] is None else self.shown_transform(item).tolist(),
@@ -255,6 +256,11 @@ class ScanSteps:
     def scan_mesh(self, sid: str) -> bytes:
         s = self.scans[sid]["scan"]
         return mesh_bytes(s.vertices, s.faces)
+
+    def scan_texture(self, sid: str) -> bytes:
+        """Цвет скана со сканера по вершинам (RGB uint8) или пусто — скан без цвета (fusion.Scan.colors)."""
+        colors = getattr(self.scans[sid]["scan"], "colors", None)
+        return b"" if colors is None else np.ascontiguousarray(np.asarray(colors)[:, :3], np.uint8).tobytes()
 
     def scan_colors(self, sid: str) -> bytes:
         reg = self.scans[sid]["reg"]
@@ -364,6 +370,8 @@ def route(h, s, p, method, q):
             return h.binary(s.scan_mesh(sid))
         if action == "colors":
             return h.binary(s.scan_colors(sid))
+        if action == "texture":  # цвет скана со сканера
+            return h.binary(s.scan_texture(sid))
         b = h.body() if method == "POST" else {}
         if action == "register":
             return h.job("Совмещаю скан", lambda progress: s.register(
