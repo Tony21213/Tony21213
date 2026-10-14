@@ -1,6 +1,7 @@
 """Проверка координат интерактивной поправки без графического контекста."""
 
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -11,9 +12,10 @@ def test_pick_and_arrows_use_displayed_surface_space():
     node = shutil.which("node")
     if node is None:
         pytest.skip("нужен Node.js для проверки обработчиков интерфейса")
-    app = Path(__file__).parents[1] / "casedesigner/app/web/app.js"
+    app = Path(__file__).parents[1] / "casedesigner/app/web/steps/articulation.js"  # шаг «Артикулятор»
     source = app.read_text(encoding="utf-8")
-    handlers = source[source.index("function clearArticulationGuides()") : source.index("const matMul =")]
+    handlers = source[source.index("export function clearArticulationGuides()") : source.index("export const matMul =")]
+    handlers = re.sub(r"^export ", "", handlers, flags=re.M)  # ES-модуль → обычный скрипт для Node
     script = r"""
 const assert = require('node:assert/strict');
 const state = {step: 'articulation', biteView: {on: true}, articulationGuides: {
