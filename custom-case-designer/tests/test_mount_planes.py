@@ -347,3 +347,27 @@ def test_auto_mount_with_condyles_uses_plane_setting(tmp_path, monkeypatch):
     (tmp_path / "settings.json").write_text(json.dumps({"mount_plane": "bonwill"}), encoding="utf-8")
     s.settings_path = str(tmp_path / "settings.json")
     assert s._load_settings()["mount_plane"] == "aesthetic_hinge"  # испорченная настройка — к умолчанию владельца
+
+
+def test_aesthetic_hinge_by_photo_without_face_bones():
+    """«Эстетика», часть 1: наклон эстетической через мыщелки — по фото (камера с креном 4°); кости лица не нужны."""
+    from scipy.spatial.transform import Rotation
+
+    from casedesigner import aesthetic as ae
+
+    jc = _bare()
+    jc.skull = None
+    jc.mount("ct", condyles=CO, ct_condyles=CO)
+    F = jc.anatomy.frame
+    x_f, y_f, z_f = F[:3, :3]
+    R = Rotation.from_euler("z", 4, degrees=True).as_matrix() @ np.array([-x_f, -z_f, -y_f])  # спереди, крен 4°
+    centre = jc.anatomy.points["incisal"] + 300 * y_f
+    cam = ae.Camera(np.array([[2400.0, 0, 600], [0, 2400.0, 400], [0, 0, 1]]), R, -R @ centre, 0.3, size=(1200, 800))
+    st = jc.mount("ct", condyles=CO, ct_condyles=CO, plane="aesthetic_hinge",
+                  photo_aesthetic=lambda base: ae.aesthetic_frame(base, cam))
+    note = next(n for n in st["notes"] if "отличаются на" in n)
+    assert float(re.search(r"отличаются на ([\d.]+)°", note).group(1)) == pytest.approx(4.0, abs=0.3)
+    assert "по эстетике (фото" in jc.anatomy.source
+    assert abs(np.degrees(np.arcsin(jc.aesthetic_axes[0] @ z_f))) == pytest.approx(4.0, abs=0.3)
+    with pytest.raises(ValueError, match="кости лица"):
+        jc.mount("ct", condyles=CO, plane="aesthetic_hinge")  # без фото и без черепа — как раньше

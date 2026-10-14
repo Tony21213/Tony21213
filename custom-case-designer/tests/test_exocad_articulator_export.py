@@ -410,3 +410,24 @@ def test_same_library_articulator_for_every_case(case, project, register, tmp_pa
     third = xa.export(case, str(project), str(tmp_path / "c"), register=register, exocad_app=app)
     assert third["library_installed"] == ef.LIBRARY_VERSION
     assert not any("общий артикулятор" in n for n in third["notes"])
+
+
+def test_patient_photos_go_to_smile_design_by_camera(case, project, register, tmp_path):
+    """«Эстетика», часть 1: фото с улыбкой и с ретрактором — в набор Smile Design по камере совмещения (вместо сетки)."""
+    from casedesigner import aesthetic as ae
+
+    R = np.array([[-1.0, 0, 0], [0, 0, -1.0], [0, -1.0, 0]])  # спереди: система монтажа фантома — единичная
+    centre = case.anatomy.points["incisal"] + [0, 300.0, 0]
+    cam = ae.Camera(np.array([[900.0, 0, 60], [0, 900.0, 40], [0, 0, 1]]), R, -R @ centre, 0.4, size=(120, 80))
+    image = np.full((80, 120, 3), 180, np.uint8)
+    case.aesthetic = np.eye(3)
+    case.photos = [{"kind": "smile", "image": image, "camera": cam}, {"kind": "retracted", "image": image, "camera": cam}]
+    res = xa.export(case, str(project), str(tmp_path / "ph"), register=register,
+                    exocad_app=exocad_app(tmp_path, custom=True))
+    assert res["files"]["эстетический вид"] == ["ph.treatmentImages", "ph-smile.jpg", "ph-retracted.jpg"]
+    root = ET.parse(tmp_path / "ph" / "ph.treatmentImages").getroot()
+    assert [i.findtext("ImageType") for i in root.findall("Images/Image")] == ["SmileImage", "SmileImageRetracted"]
+    view = np.array([float(root.findtext(f"Images/Image/ViewDirection/{k}")) for k in "xyz"])
+    to_art = np.array(res["case_to_articulator"])
+    assert view == pytest.approx(to_art[:3, :3] @ [0, -1.0, 0], abs=1e-6)  # взгляд — назад, в мм артикулятора
+    assert any("фото пациента" in n for n in res["notes"])
