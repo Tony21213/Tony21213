@@ -27,11 +27,26 @@ TEETH_MM2_PER_POINT = 0.05
 TEETH_POINTS = (20_000, 400_000)
 
 
+def vertex_colors(mesh) -> np.ndarray | None:
+    """Цвет вершин сетки (RGBA uint8) или None: нет цвета вершин или скан залит одним цветом (так trimesh
+    заполняет бесцветные сетки). Текстура OBJ — позже (запись владельца «цветные сканы», 13.10)."""
+    visual = getattr(mesh, "visual", None)
+    if visual is None or visual.kind != "vertex":
+        return None
+    colors = np.asarray(visual.vertex_colors, np.uint8)
+    if colors.ndim != 2 or len(colors) != len(mesh.vertices) or not (colors[:, :3] != colors[0, :3]).any():
+        return None
+    return colors.copy()
+
+
 @dataclass
 class Scan:
     name: str
     vertices: np.ndarray
     faces: np.ndarray
+    # Цвет вершин со сканера (RGBA uint8, по вершине; PLY с цветом): идёт с вершинами через совмещение и прикус
+    # (transform сканов не меняет вершины) и в выгрузку — PLY с цветом. None — скан без цвета (или одной заливкой).
+    colors: np.ndarray | None = None
 
     @classmethod
     def load(cls, path: str) -> "Scan":
@@ -39,7 +54,7 @@ class Scan:
         if isinstance(mesh, trimesh.Scene):
             mesh = mesh.dump(concatenate=True)
         name = os.path.splitext(os.path.basename(path))[0]
-        return cls(name, np.asarray(mesh.vertices, float), np.asarray(mesh.faces, np.int64))
+        return cls(name, np.asarray(mesh.vertices, float), np.asarray(mesh.faces, np.int64), vertex_colors(mesh))
 
     @property
     def normals(self) -> np.ndarray:
@@ -570,7 +585,8 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
     scans = {}
     for reg in registrations:
         M = placement[id(reg)]
-        write(reg.scan.name, [(reg.scan.vertices, reg.scan.faces, M)])
+        colors = getattr(reg.scan, "colors", None)  # цветной скан — PLY с цветом (заголовок исходного не переносится)
+        write(reg.scan.name, [(reg.scan.vertices, reg.scan.faces, M)], colors, ".stl" if colors is None else ".ply")
         if not without_ct or reg.jaw == BITE:  # карта отклонений от КТ (у скана прикуса — от сканов челюстей)
             write(reg.scan.name + "_deviation", [(reg.scan.vertices, reg.scan.faces, M)],
                   deviation_colors(reg.deviation), suffix=".ply")

@@ -351,6 +351,9 @@ def case_from_session(session) -> ArticulatorCase:
     lower_T = jaw.lower_fix @ bite
 
     def scan(item, T):
+        own = item["scan"]
+        if getattr(own, "colors", None) is not None:  # цвет уже в скане (Scan.load) — файл перечитывать не нужно
+            return JawScan(apply(T, own.vertices), own.faces, own.colors)
         mesh = None
         path = item.get("path")
         if path and os.path.isfile(path):
