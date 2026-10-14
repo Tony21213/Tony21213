@@ -11,11 +11,11 @@
 
 | Задача | Исполнитель | Ветка | Занятые файлы | Состояние | Передача |
 |---|---|---|---|---|---|
-| 1. Выгрузка «Для exocad с артикулятором» — интерфейс | Codex | `follower/exocad-export-ui` | — | принято (`2195b03`, `f3b2e24`, `c67947f`; полный набор — 256 passed) | `docs/handoff/exocad-articulator-export.md` |
-| 2. Плоскость монтажа — интерфейс и настройка | Codex | `follower/mount-plane-ui` | `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css` | сдано (`c9ad90f`); приёмка ведущего — п. 0.3 | `docs/handoff/mount-plane.md` |
-| 3. Сустав отдельно: показ головок и скатов, заметка замены точки ALI | Codex | `follower/tmj-segments-ui` | те же | сдано (`8a12616`); приёмка ведущего — п. 0.3, конфликт с №2 в `session.py` | `docs/handoff/tmj-segments.md` |
-| Проверки выгрузки для exocad (HTTP-тесты, стили панели) — до №1 | Codex | `follower/export-checks` | — | решить при приёмке — п. 0.3 | — |
-| 5. Кнопка «Исправить прикус» в шаге «Сканы» + повтор проверки архива (кейсы 4 и 5 — уход челюсти) | Codex | `follower/bite-correction-ui` | `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css` (шаг «Сканы») | п. 0.4 — первая у Codex; начинать от общей ветки после приёмки №2–3 (те же файлы) | `docs/handoff/bite-correction.md` |
+| 1. Выгрузка «Для exocad с артикулятором» — интерфейс | Codex | `follower/exocad-export-ui` | — | принято (`2195b03`, `f3b2e24`, `c67947f`; 256 passed) | `docs/handoff/archive/exocad-articulator-export.md` |
+| 2. Плоскость монтажа — интерфейс и настройка | Codex | `follower/mount-plane-ui` | — | принято (`ffc3270`…`4a92578`); ведущий исправил монтаж «auto» без плоскости из настройки (`c3f76c2`) | `docs/handoff/archive/mount-plane.md` |
+| 3. Сустав отдельно: показ головок и скатов, заметка замены точки ALI | Codex | `follower/tmj-segments-ui` | — | принято (`ebf1d00`…`1d73736`, конфликт с №2 разрешён); ведущий исправил систему ската (`e16336f`); полный набор — 268 passed | `docs/handoff/archive/tmj-segments.md` |
+| Проверки выгрузки для exocad (HTTP-тесты, стили панели) — до №1 | Codex | `follower/export-checks` | — | принято частично: тесты вариантов (`825c1cb`) и порядок открытия копии (`3bfcffe`); HTTP-тесты и стили заменила №1 | — |
+| 5. Кнопка «Исправить прикус» в шаге «Сканы» + повтор проверки архива (кейсы 4 и 5 — уход челюсти) | Codex | `follower/bite-correction-ui` | `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css` (шаг «Сканы») | п. 0.4 — **к работе, первая у Codex** (№2–3 приняты, начинать от общей ветки) | `docs/handoff/bite-correction.md` |
 | 4. Проверка суставов на архиве КТ: головки против ALI, скаты, ССП | Codex | — (на ПК, вне репозитория) | только `docs/handoff/tmj-archive-check.md` | п. 0.4, после №5; 13.10 не выполнена — нет сохранённых кейсов с сегментацией | `docs/handoff/tmj-archive-check.md` |
 | Модульный артикулятор exocad с межмыщелковым расстоянием (один на всех, значения пациента — в проекте) | Claude | `lead/modular-articulator` | `exocad_articulator_export.py`, `exocad_facebow.py` | п. 0.5; углы из проекта exocad берёт (кейс 4, 13.10); МШР в exocad регулируется (входящие 13.10) — значение из проекта проверяется на копии K4i | — |
 | «Кривая» ось в exocad: шарнир точно + эстетические виды | Claude | `lead/exocad-aesthetic-views` | — | принято в общую ветку (`829fbb1`): «эстетическая через мыщелки» + «Вид Smile Design» из `.treatmentImages`; остаток к эстетике 0,9° (кейс 3) | `docs/exocad.md`, «Эстетический вид» |
@@ -25,8 +25,7 @@
 | Опись параметров exocad; порог перекоса; прикус на архиве | Codex | `follower/pc-checks` | — | принято (`bb6841b`, `424a79e`, `ba6c208`) | `docs/handoff/archive/` |
 | Ручная проверка и поправка мыщелков | Codex, Claude | — | — | принято (`bc0476b`) | `docs/handoff/archive/condyle-adjustment.md` |
 
-Очередь ведущего: приёмка №2 и №3, решение по `follower/export-checks` (п. 0.3) → модульный
-артикулятор с МШР (п. 0.5) → цветные сканы PLY — ядро и выгрузка (п. 6) → разделение файлов по
+Очередь ведущего: модульный артикулятор с МШР (п. 0.5; п. 0.3 — приёмка №2, №3 и `export-checks` — сделан) → цветные сканы PLY — ядро и выгрузка (п. 6) → разделение файлов по
 шагам (п. 7) → генератор отчётов: паспорт кейса, входной контроль — ядро (п. 9).
 
 Очередь Codex (интерфейс — по одной, одни файлы): №5 «Исправить прикус» + повтор проверки архива

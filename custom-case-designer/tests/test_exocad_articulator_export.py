@@ -1,4 +1,4 @@
-"""Контракт выгрузки «Для exocad с артикулятором» (casedesigner/exocad_articulator_export.py, docs/handoff/exocad-articulator-export.md).
+"""Контракт выгрузки «Для exocad с артикулятором» (casedesigner/exocad_articulator_export.py, docs/handoff/archive/exocad-articulator-export.md).
 
 Тесты с xfail(strict=True) — задачи ведомого: после реализации они проходят, и пометку нужно снять.
 """

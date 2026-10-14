@@ -23,7 +23,7 @@
 
 ## Контракт
 
-Источник истины — `docs/handoff/tmj-segments.md` («Контракт») и `tests/test_tmj_segments.py`.
+Источник истины — `docs/handoff/archive/tmj-segments.md` («Контракт») и `tests/test_tmj_segments.py`.
 Кейсы 3 и 4 (13.10) — опорные числа там же.
 
 ## Обратная передача
