@@ -55,7 +55,10 @@ POINTS = {
     "A": "A", "B": "B", "Pog": "Pog", "Gn": "Gn", "Me": "Me", "Go_R": "RGo", "Go_L": "LGo",
     "U1_tip": "UR1O", "U1_apex": "UR1R", "L1_tip": "LR1O", "L1_apex": "LR1R",
 }
-APPROXIMATE = {"IP": "по резцовому отверстию: сосочек лежит на несколько мм ниже, на слизистой"}
+APPROXIMATE = {"IP": "по резцовому отверстию: сосочек лежит на несколько мм ниже, на слизистой",
+               # архив КТ, 14.10: верхушку ALI-CBCT ставит у шейки (3,6–10 мм от края) или на соседнем зубе
+               "U1_apex": "верхушка корня по ALI-CBCT ненадёжна — проверьте на срезе",
+               "L1_apex": "верхушка корня по ALI-CBCT ненадёжна — проверьте на срезе"}
 LICENSE_NOTE = ("ALI-CBCT (Gillot M. et al., DCBIA-OrthoLab), веса из SlicerAutomatedDentalTools "
                 "(лицензия 3D Slicer, BSD-подобная)")
 

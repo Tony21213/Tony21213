@@ -13,7 +13,8 @@
   направленными отрезками a→b и c→d), ``lines`` (острый угол между прямыми ab и cd), ``distance`` (расстояние от
   точки до прямой, мм: плюс — точка впереди прямой, то есть по другую сторону от S, а без неё — от Ba, PNS или Po), ``difference`` (разность двух
   измерений). Норма — среднее и отклонение; итог — значение, отклонение в сигмах и вывод.
-* Нет точки — измерение пропускается с причиной («нет точек: A, B»).
+* Нет точки — измерение пропускается с причиной («нет точек: A, B»). Ось резца короче или длиннее TOOTH_AXIS_MM или
+  с верхушкой дальше TOOTH_AXIS_LATERAL_MM вбок от края — верхушка не годится: углы резца пропускаются с причиной.
 """
 
 from dataclasses import dataclass, field
@@ -24,6 +25,11 @@ import numpy as np
 # landmarks-v2 (auto_landmarks.POINTS); резцы — правые центральные.
 CEPH_POINTS = ("A", "B", "Pog", "Gn", "Me", "Go_R", "Go_L", "U1_tip", "U1_apex", "L1_tip", "L1_apex")
 BILATERAL = ("Go", "Po", "Or", "Co")
+# Ось резца (режущий край → верхушка корня): длина зуба и наклон вбок. ALI-CBCT находит верхушку ненадёжно
+# (архив КТ, 14.10: 3,6–10 мм от края вместо ~22, или на соседнем зубе) — такую ось углы не используют.
+TOOTH_AXES = {"U1": ("U1_tip", "U1_apex"), "L1": ("L1_tip", "L1_apex")}
+TOOTH_AXIS_MM = (15.0, 30.0)
+TOOTH_AXIS_LATERAL_MM = 6.0
 MIDLINE = ("N", "S", "ANS", "PNS", "Ba", "A", "B", "Pog", "Me")
 
 
@@ -151,6 +157,15 @@ def analyze(landmarks: dict, analysis: str = "steiner") -> dict:
     a = ANALYSES[analysis]
     raw = _points(landmarks)
     plane = midsagittal(landmarks)
+    doubtful = {}
+    for tip, apex in TOOTH_AXES.values():
+        if tip in raw and apex in raw:
+            d = raw[apex] - raw[tip]
+            length, lateral = float(np.linalg.norm(d)), abs(float(d @ plane[1]))
+            if not TOOTH_AXIS_MM[0] <= length <= TOOTH_AXIS_MM[1] or lateral > TOOTH_AXIS_LATERAL_MM:
+                doubtful[apex] = (f"верхушка сомнительна: ось {length:.1f} мм (ожидается {TOOTH_AXIS_MM[0]:g}–"
+                                  f"{TOOTH_AXIS_MM[1]:g}), вбок {lateral:.1f} мм — проверьте на срезе").replace(".", ",")
+                raw.pop(apex)
     P = {k: _project(v, plane) for k, v in raw.items()}
     done, results, skipped = {}, [], []
     for m in a.measures:
@@ -158,7 +173,8 @@ def analyze(landmarks: dict, analysis: str = "steiner") -> dict:
         if m.kind == "difference":
             need = [k for k in m.points if k not in done]
         if need:
-            skipped.append({"key": m.key, "name": m.name, "missing": need})
+            reason = "; ".join(doubtful[k] for k in need if k in doubtful)
+            skipped.append({"key": m.key, "name": m.name, "missing": need, **({"reason": reason} if reason else {})})
             continue
         value = _measure(m, P, done)
         done[m.key] = value
@@ -183,7 +199,8 @@ def report(analyses: list[dict], case_label: str):
         rows = [(r["name"], f"{num(r['value'])}{r['unit']} (норма {num(r['norm'])} ± {num(r['sd'])}) — {r['text']}")
                 for r in res["results"]]
         notes = ([res["note"]] if res.get("note") else []) + [
-            f"{s['name']}: нет точек {', '.join(s['missing'])}" for s in res["skipped"]]
+            f"{s['name']}: {s['reason'] if s.get('reason') else 'нет точек ' + ', '.join(s['missing'])}"
+            for s in res["skipped"]]
         level = "warn" if any(abs(r["z"]) > 2 for r in res["results"]) else "info"
         sections.append(reports.Section(res["name"], rows, notes, level))
     return reports.Report("Цефалометрия", case_label, sections)
