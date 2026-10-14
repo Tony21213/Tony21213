@@ -327,3 +327,23 @@ def test_session_and_api_contract(tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_auto_mount_with_condyles_uses_plane_setting(tmp_path, monkeypatch):
+    """Приёмка №2: «auto» с готовыми мыщелками — монтаж по КТ по плоскости из настройки, а не окклюзионная."""
+    from casedesigner.app.session import Session
+
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s._articulation_ready = True
+    hinge = {"right": np.array([50.0, 0, 0]), "left": np.array([-50.0, 0, 0])}
+    calls = {}
+    monkeypatch.setattr(s, "_mount_condyles", lambda: (hinge, hinge, None))
+    monkeypatch.setattr(s, "_face_points", lambda: np.zeros((3, 3)))
+    monkeypatch.setattr(s, "_condyle_signature", lambda: None)
+    monkeypatch.setattr(s.jaw, "mount", lambda method, **kw: calls.update(method=method, plane=kw["plane"]) or {})
+    s.articulation_mount("auto")
+    assert calls == {"method": "ct", "plane": "aesthetic_hinge"}
+
+    (tmp_path / "settings.json").write_text(json.dumps({"mount_plane": "bonwill"}), encoding="utf-8")
+    s.settings_path = str(tmp_path / "settings.json")
+    assert s._load_settings()["mount_plane"] == "aesthetic_hinge"  # испорченная настройка — к умолчанию владельца

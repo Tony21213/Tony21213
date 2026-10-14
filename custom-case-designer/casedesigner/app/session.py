@@ -42,6 +42,7 @@ SLICES = {
 SLICE_PIXELS = 512
 RECENT = 8  # недавних кейсов на стартовом экране
 CASE_EXT = ".ccdcase"
+MOUNT_PLANE_SETTING = "aesthetic_hinge"  # плоскость монтажа по умолчанию — решение владельца
 DEV_COLORS = ("#28aa46", "#e6be1e", "#d23228", "#8a8f99")  # ≤ 0.1, ≤ 0.2, > 0.2 мм, не коронки (как карта в 3D)
 MAX_SLICE_PIXELS = 2048  # сторона картинки видимой части среза
 UPPER_BONES, LOWER_BONES = ("skull", "maxilla"), ("mandible",)  # в exocad — бюгельными каркасами своей челюсти
@@ -214,15 +215,15 @@ class Session:
 
         known = [p for p, _t, _k in SEGMENT_PARTS]
         settings = {"segment_parts": known, "recent": [], "incognito": False,
-                    "mount_plane": "aesthetic_hinge"}
+                    "mount_plane": MOUNT_PLANE_SETTING}
         try:
             with open(self.settings_path, encoding="utf-8") as f:
                 saved = json.load(f)
             settings["segment_parts"] = [p for p in known if p in saved.get("segment_parts", [])]
             settings["recent"] = [r for r in saved.get("recent", []) if isinstance(r, str)][:RECENT]
             settings["incognito"] = saved.get("incognito") is True
-            plane = saved.get("mount_plane", "aesthetic_hinge")
-            settings["mount_plane"] = plane if plane in mplanes.PLANES else mplanes.DEFAULT
+            plane = saved.get("mount_plane", MOUNT_PLANE_SETTING)
+            settings["mount_plane"] = plane if plane in mplanes.PLANES else MOUNT_PLANE_SETTING
         except (OSError, ValueError, AttributeError):  # нет файла или он испорчен — всё по умолчанию
             pass
         return settings
@@ -939,7 +940,8 @@ class Session:
 
         Мыщелки — точки кейса Co_R, Co_L (condyles.py: подтверждённые врачом выше автоматических; недостающие
         предлагаются по нижней челюсти). Шарнир — в прикусе монтажа (в прикусе сканов точки едут с нижней
-        челюстью), бугорок — в соотношении КТ. Точки не готовы: auto монтирует без КТ, ct — ошибка."""
+        челюстью), бугорок — в соотношении КТ. Точки не готовы: auto монтирует без КТ, ct — ошибка.
+        auto с готовыми точками — монтаж по КТ по выбранной плоскости (как validate_articulation_mount)."""
         if not self._articulation_ready:
             self._prepare_jawcase()
         hinge, ct_points, why = self._mount_condyles()
@@ -947,6 +949,8 @@ class Session:
             if method == "ct":
                 raise ValueError(f"монтаж по КТ невозможен: {why}")
             method = "motion" if self.jaw._recorded() else "average"
+        elif method == "auto":
+            method = "ct"
         selected_plane, fallback_note, _selected_hinge = self._mount_plane_choice(method, plane)
         if method == "ct":
             self._case_mount_plane = selected_plane
