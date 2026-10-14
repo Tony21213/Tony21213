@@ -19,6 +19,7 @@ export const TRANSLUCENT = { mandible: 0.42, maxilla: 0.42, skull: 0.3, maxillar
   nasal_cavity: 0.45, pharynx: 0.4, nasopharynx: 0.4, oropharynx: 0.4, hypopharynx: 0.4, soft_palate: 0.7, hard_palate: 0.5 };
 
 export const state = {
+  scanColors: true, // цвет скана со сканера в окне 3D (переключатель «Цвет»)
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
   modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
   exocadProjectPath: null, exocadArticulatorResult: null,
@@ -243,11 +244,16 @@ export function updateScan(info) {
   if (i >= 0) state.scans[i] = info; else state.scans.push(info);
 }
 
+// Цвета скана в окне 3D: карта отклонений, если включена; иначе — цвет со сканера (переключатель «Цвет»), иначе ровный.
+export async function scanRgb(info) {
+  if (heatOn(info)) return new Uint8Array(await get(`scans/${info.id}/colors`));
+  if (state.scanColors && info.has_colors) return new Uint8Array(await get(`scans/${info.id}/texture`));
+  return null;
+}
 export async function showScan(info) {
   if (!viewer.objects.has(info.id)) viewer.setScan(info.id, await mesh(`scans/${info.id}/mesh`), info.color, null);
   if (info.transform) viewer.setTransform(info.id, info.transform);
-  const rgb = heatOn(info) ? new Uint8Array(await get(`scans/${info.id}/colors`)) : null;
-  viewer.setColors(info.id, rgb);
+  viewer.setColors(info.id, await scanRgb(info));
 }
 
 export async function loadStructures(list) {
@@ -333,5 +339,7 @@ export function render() {
     .map(([v, t]) => `<button class="btn" data-view="${v}" style="width:auto;padding:0 8px">${t}</button>`).join('') +
     (state.biteView?.available ? `<button class="btn ${state.biteView.on ? 'on' : ''}" data-bite style="width:auto;padding:0 8px"
       title="Прикус сканов: нижняя челюсть со всеми её структурами — в прикусе со сканов (врача), а не как на КТ (на КТ отличается на ${fmt(state.biteView.shift_mm, 1)} мм)">Прикус</button>` : '') +
+    (state.scans.some((s) => s.has_colors) ? `<button class="btn ${state.scanColors ? 'on' : ''}" data-scancolor style="width:auto;padding:0 8px"
+      title="Цвет скана со сканера (карта отклонений, если включена, — поверх)">Цвет</button>` : '') +
     (ct && state.scans.some((s) => s.registered) ? `<button class="btn ${state.heat ? 'on' : ''}" data-heat title="Карта отклонений скана от КТ">${icons.heat}</button>` : '');
 }
