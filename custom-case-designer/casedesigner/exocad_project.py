@@ -89,7 +89,8 @@ def find(folder: str) -> ExocadProject | None:
     return ExocadProject(folder, scans, np.eye(4), "нет (единичная)", stem=os.path.basename(stem))
 
 
-FRAMEWORK_STL = "{stem}-{jaw}jaw-partialframework_cad.stl"
+BONE_STL = "bone_{jaw}.stl"  # кость верхней / нижней челюсти (решение владельца 14.10: не «бюгельный каркас»)
+FRAMEWORK_STL = "{stem}-{jaw}jaw-partialframework_cad.stl"  # так кости назывались до 14.10
 FRAMEWORK_INFO = "{stem}-{jaw}jaw.partialInfo"
 BONE_MATERIAL = "Кость из КТ (KStom Case Designer)"
 
@@ -120,17 +121,18 @@ def _partial_info(file_name: str) -> bytes:
 
 
 def write_bone_frameworks(project: ExocadProject, bones: dict) -> tuple[list[str], list[str]]:
-    """Кости из КТ — бюгельными каркасами проекта: exocad подгружает каркасы сам и двигает каждый со своей
-    челюстью в артикуляторе (череп и верхняя челюсть — с ВЧ, нижняя челюсть — с НЧ).
+    """Кости из КТ — в папку проекта: bone_upper.stl (кость верхней челюсти: череп и ВЧ) и bone_lower.stl (кость
+    нижней челюсти). Чтобы exocad подгружал их сам и двигал каждую со своей челюстью в артикуляторе, к каждой —
+    список каркасов проекта …-upperjaw.partialInfo со ссылкой на файл кости (другого объекта, привязанного к
+    челюсти, exocad без SDK не даёт).
 
     bones — {"upper" | "lower": trimesh} в координатах файла скана своей челюсти: так exocad хранит результаты
-    моделировки (пример exocad с ModJaw: модели зубов лежат на скане в координатах файла, а не сцены). Пишутся
-    сетка …-upperjaw-partialframework_cad.stl и список каркасов …-upperjaw.partialInfo; состояние моделировки
-    (.partialCAD, закрытый формат) не пишется. Настоящий каркас в проекте не перезаписывается.
+    моделировки (пример exocad с ModJaw: модели зубов лежат на скане в координатах файла, а не сцены). Состояние
+    моделировки (.partialCAD, закрытый формат) не пишется. Настоящий каркас в проекте не перезаписывается.
     Возвращает (записанные файлы, заметки)."""
     files, notes = [], []
     for jaw, mesh in bones.items():
-        stl = FRAMEWORK_STL.format(stem=project.stem, jaw=jaw)
+        stl = BONE_STL.format(jaw=jaw)
         info = FRAMEWORK_INFO.format(stem=project.stem, jaw=jaw)
         stl_path, info_path = os.path.join(project.folder, stl), os.path.join(project.folder, info)
         owned = True

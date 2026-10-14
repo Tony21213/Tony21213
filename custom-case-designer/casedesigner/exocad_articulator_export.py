@@ -9,7 +9,7 @@
   кейса, кадров в секунду).
 * **Выход** — новая папка проекта рядом с исходной (исходная не меняется): копия ``.dentalProject`` с новым
   именем и флагами (тип антагониста — наш артикулятор, если его тип добавлен в DentalDB, иначе SAM 2P;
-  скан-маркер движения челюсти), сканы, прикусы, маркер, файл движений и кости-каркасы — **в координатах
+  скан-маркер движения челюсти), сканы, прикусы, маркер, файл движений и кости (bone_upper.stl, bone_lower.stl) — **в координатах
   артикулятора** (x вправо, y вперёд, z вверх, середина шарнирной оси (30, −80, 60)): так exocad ставит модели
   проекта «в артикуляторе» по координатам файлов (docs/exocad.md, «Лицевая дуга»). В подпапке
   ``KStomCaseDesigner`` — мыщелки для проверки, сводка ``articulator.json`` и папка общего артикулятора для
@@ -285,7 +285,7 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
         files, bone_notes = exocad_project.write_bone_frameworks(
             project, {jaw: bone.moved(to_art) for jaw, bone in case.bones.items()})
         notes += bone_notes
-        written["кости-каркасы"] = len([f for f in files if f.endswith(".stl")])
+        written["кости"] = [f for f in files if f.endswith(".stl")]
 
     sub = os.path.join(folder, SUBFOLDER)
     os.makedirs(sub, exist_ok=True)

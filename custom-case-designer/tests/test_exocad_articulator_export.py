@@ -97,8 +97,10 @@ def test_export_writes_exocad_project_copy_in_articulator_coordinates(case, proj
     assert {p.name: p.read_bytes() for p in project.iterdir()} == before  # исходный проект не тронут
     names = {p.name for p in out.iterdir()}
     for suffix in (".dentalProject", "-upperjaw.ply", "-lowerjaw.ply", "-TotalJaw0.ply", "-movementmarker.stl",
-                   ".jawmotion", "-upperjaw-partialframework_cad.stl", "-lowerjaw.partialInfo"):
+                   ".jawmotion", "-lowerjaw.partialInfo"):
         assert stem + suffix in names, suffix
+    assert {"bone_upper.stl", "bone_lower.stl"} <= names and res["files"]["кости"] == ["bone_upper.stl", "bone_lower.stl"]
+    assert not any("partialframework" in n for n in names)
     assert not any(n.endswith((".scanInfo", ".matrix4")) for n in names)  # сцена = файл
     # флаги проекта: наш тип антагониста, скан-маркер; остальное — как было
     proj = (out / f"{stem}.dentalProject").read_bytes()
@@ -176,7 +178,7 @@ def test_export_without_bones_or_skull_uses_standard_inserts(case, project, regi
     result = xa.export(case, str(project), str(out), register=register,
                        exocad_app=exocad_app(tmp_path, custom=True))
 
-    assert "кости-каркасы" not in result["files"]
+    assert "кости" not in result["files"]
     assert any("вставки ССП в артикуляторе стандартные" in note for note in result["notes"])
     values = ET.parse(out / xa.SUBFOLDER / "articulator" / "Custom Case Designer" /
                       "articulatorparameters.xml").getroot()
