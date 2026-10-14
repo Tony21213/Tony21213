@@ -1552,6 +1552,8 @@ class Session:
         for i, (sid, item) in enumerate(self.scans.items()):
             scan = item["scan"]
             arrays[f"scan{i}_v"], arrays[f"scan{i}_f"] = scan.vertices, scan.faces
+            if getattr(scan, "colors", None) is not None:
+                arrays[f"scan{i}_c"] = scan.colors
             auto = item["auto"]
             meta["scans"].append({
                 "name": scan.name, "path": item["path"], "color": item["color"], "jaw": item["jaw"],
@@ -1620,7 +1622,7 @@ class Session:
         for i, sm in enumerate(meta["scans"]):
             if progress:
                 progress(0.6 + 0.4 * i / max(len(meta["scans"]), 1), f"Сканы: {sm['name']}")
-            scan = Scan(sm["name"], arrays[f"scan{i}_v"], arrays[f"scan{i}_f"])
+            scan = Scan(sm["name"], arrays[f"scan{i}_v"], arrays[f"scan{i}_f"], arrays.get(f"scan{i}_c"))
             sid = uuid.uuid4().hex[:8]
             role = sm.get("role") or (BITE if is_bite_name(scan.name) else "jaw")
             item = {"scan": scan, "path": sm["path"], "color": sm["color"], "jaw": sm["jaw"], "reg": None, "auto": None,
