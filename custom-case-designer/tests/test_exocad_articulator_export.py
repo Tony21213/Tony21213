@@ -340,6 +340,14 @@ def test_http_export_creates_project_copy_with_aesthetic_role(case, project, reg
         assert (copied / "case-001-KStom.dentalProject").is_file()
         assert (copied / "case-001-KStom.jawmotion").is_file()
         assert (copied / "KStomCaseDesigner" / "articulator.json").is_file()
+        # модульный артикулятор (№6): сводка для шага «Экспорт» — значения в проекте, вставки, версия общего артикулятора
+        result = job["result"]
+        assert result["project_parameters"]["TiltCondylarGuideRight"] == result["articulator"]["TiltCondylarGuideRight"]
+        assert set(result["inserts"]) == {"right", "left"} and result["library_version"] == ef.LIBRARY_VERSION
+        from pathlib import Path
+        web = Path(__file__).parents[1] / "casedesigner" / "app" / "web" / "steps" / "export.js"
+        ui = web.read_text(encoding="utf-8")
+        assert "project_parameters" in ui and "library_installed" in ui and "Один раз (не на каждый кейс)" in ui
     finally:
         server.shutdown()
 

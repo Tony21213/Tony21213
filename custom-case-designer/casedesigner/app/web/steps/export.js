@@ -1,5 +1,5 @@
 // Шаг «Экспорт»: выгрузка в папку и для exocad с артикулятором, панель.
-import { $, busy, choose, hide, html, plural, render, state, toast } from '../core.js';
+import { $, busy, choose, fmt, hide, html, plural, render, state, toast } from '../core.js';
 import { get, run } from '../api.js';
 import { icons } from '../icons.js';
 import { condyleReason } from './articulation.js';
@@ -83,9 +83,25 @@ export function renderExport() {
     return `<div class="exocad-export-role"><b>${html(title)}</b><span>${count} ${plural(count, 'файл', 'файла', 'файлов')}</span></div>`;
   }).join('');
   const exportNotes = (exportResult?.notes || []).map((n) => `<div class="warning">${icons.warn}<span>${html(hide(n))}</span></div>`).join('');
+  // модульный артикулятор (docs/handoff/modular-articulator.md): значения пациента — в проекте, артикулятор — общий
+  const pp = exportResult?.project_parameters || {};
+  const sides = (key, unit) => (`${key}Right` in pp || `${key}Left` in pp
+    ? `справа ${fmt(pp[`${key}Right`], 1)}${unit} · слева ${fmt(pp[`${key}Left`], 1)}${unit}` : null);
+  const ins = exportResult?.inserts;
+  const insertText = ins ? ['right', 'left'].filter((s) => ins[s]).map((s) => `${s === 'right' ? 'справа' : 'слева'} «${html(ins[s].insert)}», ССП ${fmt(ins[s].tilt_deg, 1)}°`).join(' · ')
+    : 'стандартные (путей мыщелков по КТ нет)';
+  const projectRows = [['ССП', sides('TiltCondylarGuide', '°')], ['Беннетт', sides('BennettAngle', '°')],
+    ['Боковой сдвиг', sides('ImmediateSideshift', ' мм')], ['Резцовый столик', 'TiltFrontplate' in pp ? `${fmt(pp.TiltFrontplate, 0)}°` : null],
+    ['Межмыщелковое', 'IntercondylarDistance' in pp ? `${fmt(pp.IntercondylarDistance, 1)} мм` : `${fmt(exportResult?.icd_mm, 1)} мм — в проект не записано`],
+    ['Вставки ССП по пути мыщелка', insertText]].filter(([, v]) => v);
+  const installed = exportResult && exportResult.library_installed === exportResult.library_version;
+  const library = !exportResult ? '' : installed
+    ? `<div class="exocad-export-readiness ok"><i></i><span>Общий артикулятор установлен в exocad (версия ${exportResult.library_version}).</span></div>`
+    : `<div class="exocad-export-copy">Один раз (не на каждый кейс): скопируйте папку из <b>KStomCaseDesigner/articulator</b>
+      в <b>library/articulator</b> exocad — это общий артикулятор${exportResult.library_installed ? ` (в exocad сейчас версия ${exportResult.library_installed}, нужна ${exportResult.library_version})` : ''}.</div>`;
   const exocadResult = exportResult ? `<div class="exocad-export-summary">${exportRoles}</div>
-    <div class="exocad-export-copy">Скопируйте папку артикулятора из <b>KStomCaseDesigner/articulator</b>
-      в <b>library/articulator</b> exocad. Файлы программы exocad приложение не меняет.</div>${exportNotes}` : '';
+    <div class="label">В проекте exocad</div><div class="kv exocad-project-values">${projectRows.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join('')}</div>
+    ${library}${exportNotes}` : '';
   const exocadExport = `<div class="card exocad-export"><div class="card-head">${icons.export}<h3>Для exocad с артикулятором</h3></div>
     <p class="muted small">Создаёт копию проекта с моделями, движениями, костями и настройками артикулятора.
       При эстетическом монтаже добавляется роль «Вид Smile Design».</p>
