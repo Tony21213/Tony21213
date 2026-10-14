@@ -1,4 +1,4 @@
-"""Контракт кнопки «Исправить прикус» (шаг «Сканы», до монтажа; docs/handoff/bite-correction.md).
+"""Контракт кнопки «Исправить прикус» (шаг «Сканы», до монтажа; docs/handoff/archive/bite-correction.md).
 
 Ядро — bite.correct_bite (tests/test_bite.py: отказы без опоры и сверх предела). Реализовано 14.10 (ведущий,
 пока Codex недоступен): tests/test_bite_correction_ui.py.

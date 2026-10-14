@@ -158,7 +158,7 @@ class ScanSteps:
                     bitten - apply(np.linalg.inv(self.bite_fix), bitten), axis=1).mean()), 2)
         return info
 
-    # --- «Исправить прикус» (bite.correct_bite; docs/handoff/bite-correction.md) -------------------------------
+    # --- «Исправить прикус» (bite.correct_bite; docs/handoff/archive/bite-correction.md) -------------------------------
     def bite_correct(self, progress=None) -> dict:
         """Предложить поправку прикуса сканов: нижний скан садится в фиссурно-бугорковый контакт от прикуса сканера.
         Верх — в мм КТ, низ — в прикусе сканов, мыщелки — точки КТ, переехавшие с нижней челюстью (иначе — треугольник
