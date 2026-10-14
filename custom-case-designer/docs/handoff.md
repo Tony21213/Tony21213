@@ -27,6 +27,8 @@
 | 9. Кнопка «Входной контроль» и отчёт для клиники | Codex | `follower/intake-ui` | `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css` | очередь Codex, после №8 | `docs/handoff/intake.md` |
 | «Эстетика», часть 1 (ядро): фото в Smile Design по камере, монтаж по фото, размеры зубов | Claude | `lead/aesthetics` | — | каркас готов (`fad455c`) | `docs/handoff/aesthetics-photo.md` |
 | 10. Шаг «Эстетика» (часть 1): фото с улыбкой и с ретрактором, пары точек, камера, монтаж и выгрузка по фото | Codex | `follower/aesthetics-ui` | те же | п. 8 — после разделения файлов по шагам (п. 7) | `docs/handoff/aesthetics-photo.md` |
+| Кости КТ в exocad: `bone_upper.stl`, `bone_lower.stl` (решение владельца 14.10) | Claude | `lead/bone-names` | — | готово (`499c2d5`, `4f4af99`); `.partialInfo` ссылается на них — проверить в exocad, что кости подгружаются и двигаются с челюстями | `docs/exocad.md`, «Кости КТ в проекте exocad» |
+| Цефалометрия (ядро): Steiner и Ricketts как данные, отчёт | Claude | `lead/cephalometry` | — | каркас готов (`7eb97e1`); дальше — сети ALI-CBCT новых точек и `landmarks-v2` (нужно разрешение владельца на загрузку весов) | — |
 | «Кривая» ось в exocad: шарнир точно + эстетические виды | Claude | `lead/exocad-aesthetic-views` | — | принято в общую ветку (`829fbb1`): «эстетическая через мыщелки» + «Вид Smile Design» из `.treatmentImages`; остаток к эстетике 0,9° (кейс 3) | `docs/exocad.md`, «Эстетический вид» |
 | Сустав отдельно: головки и скаты (ядро) | Claude | `lead/tmj-segments` | — | каркас готов (идея владельца): головки по связности сетки, ALI > 4 мм → головка, скаты, ССП 5–75° | `docs/handoff/tmj-segments.md` |
 | Каркас «Исправить прикус» (отказ без контактной опоры, предел поправки) | Claude | `lead/bite-correction` | — | каркас готов (`e0ff418`, `676129a`): отказ «нет опоры» (меньше 50 точек ближе 2 мм), смыкание до 1 мм, поправка до 1,5 мм | `docs/handoff/bite-correction.md` |
@@ -49,3 +51,7 @@
 
 Владельцу (п. 0.1–0.2): выпуски `models-v1` и `landmarks-v1` (`kstom-release.ps1`); работу по
 межмыщелковому расстоянию в exocad — запушить (в репозитории её пока нет).
+
+Вопрос владельцу (п. 10): скачать веса ALI-CBCT для точек цефалометрии (A, B, Pog, Gn, Me, Go, резцы) —
+релиз SlicerAutomatedDentalTools `v0.1-v2.0_models`, по HTTP Range только нужные сети (~1,3 ГБ, лицензия
+— как у `landmarks-v1`, THIRD_PARTY_NOTICES) — и выпустить `landmarks-v2`?
