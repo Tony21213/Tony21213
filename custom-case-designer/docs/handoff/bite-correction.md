@@ -25,8 +25,9 @@
 7. Повторить проверку архива Б.3 (`docs/handoff/archive/bite-archive-check.md`): кейсы 4 и 5 — отказ
    («нет опоры» или «предел»), остальные — как было; итог — в обратной передаче.
 
-Можно менять: `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css` (шаг «Сканы»),
-новые тесты. Не трогать: `bite.py`, `jawcase.py`, `condyles.py`.
+Можно менять: `app/steps/scans.py` (методы и `route`), `app/steps/casefile.py` (`bite_fix` в файле кейса),
+`app/session.py` (только `__init__`: `bite_fix`), `app/web/steps/scans.js`, `app/web/app.js` (действия),
+`app/web/style.css`, новые тесты. Не трогать: `bite.py`, `jawcase.py`, `condyles.py`.
 
 Готово, когда: `pytest tests/test_bite.py tests/test_bite_correction_contract.py -q` — без xfail; полный
 набор проходит; `git diff --check` чисто; кнопка работает в браузере на фантоме; архив — по пункту 7.

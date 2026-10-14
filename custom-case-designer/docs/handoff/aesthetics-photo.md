@@ -30,7 +30,10 @@
    инкогнито лицо на фото размывать; путь к фото в журнале ошибок скрывать (`errorlog.private`).
 5. Браузер на фантоме: синтетическое фото (проекция скана), пары, камера, монтаж, выгрузка.
 
-Можно менять: `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css`, новые тесты.
+Можно менять: новый шаг — `app/steps/aesthetics.py` (методы и `route`), `app/web/steps/aesthetics.js` (панель и
+действия), подключение шага — `app/session.py` (примесь в `Session`), `app/server.py` (`STEP_ROUTES`),
+`app/web/core.js` (`STEPS`), `app/web/app.js` (действия, `RENDER`); выгрузка фото — `app/steps/export.py`;
+`app/web/style.css`, новые тесты.
 Не трогать: `aesthetic.py`, `exocad_views.py`, `jawcase.py`, `exocad_articulator_export.py`.
 
 Готово, когда: новые тесты проходят; полный набор проходит; `git diff --check` чисто; на фантоме фото

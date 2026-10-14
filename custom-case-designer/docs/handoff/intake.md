@@ -20,7 +20,8 @@
    хватает» с уровнями, «Открыть отчёт» и «Открыть папку». В инкогнито — без путей.
 4. Тесты: HTTP «кейс → входной контроль → intake.pdf и .png»; кейс без КТ — только сканы и фото.
 
-Можно менять: `app/session.py`, `app/server.py`, `app/web/app.js`, `app/web/style.css`, новые тесты.
+Можно менять: `app/steps/ct.py` (метод и `route`), `app/web/steps/ct.js` (кнопка и отчёт; без КТ — в
+`app/web/steps/scans.js`), `app/web/app.js` (действия), `app/web/style.css`, новые тесты.
 Не трогать: `intake.py`, `reports.py`.
 
 Готово, когда: новые тесты проходят; полный набор проходит; `git diff --check` чисто; отчёт
