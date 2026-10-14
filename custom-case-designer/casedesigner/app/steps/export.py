@@ -187,3 +187,21 @@ class ExportSteps:
                       ensure_ascii=False, indent=1)
         return {"out_dir": out_dir, "files": sorted(files + ["case.json"]),
                 "notes": ["сканов нет — структуры КТ в координатах КТ (DICOM)"], "bite": None, "frame": "dicom"}
+
+
+def route(h, s, p, method, q):
+    """HTTP-маршруты шага (вызывает server.Handler.api): h — обработчик запроса, s — сессия; True — запрос обработан."""
+    if p == ["export", "open"] and method == "POST":
+        s.open_export_folder()
+        return h.json({"ok": True})
+    if p == ["export"] and method == "POST":
+        b = h.body()
+        return h.job("Экспорт", lambda progress: s.export(b["out_dir"], b.get("bite", "scan"),
+                                                              b.get("frame", "exocad"), b.get("include"),
+                                                              b.get("reference")))
+    if p == ["export", "exocad-articulator"] and method == "POST":
+        b = h.body()
+        project, out_dir = b.get("project"), b.get("out")
+        s.validate_exocad_articulator(project, out_dir)
+        return h.job("Экспорт для exocad с артикулятором",
+                        lambda progress: s.export_exocad_articulator(project, out_dir, progress))

@@ -16,7 +16,7 @@ def test_session_and_api_contract():
 
     for name in ("bite_correct", "bite_accept", "bite_reject", "bite_reset"):
         assert callable(getattr(Session, name, None)), name
-    src = inspect.getsource(server)
+    src = server.routes_source()
     for route in ("/api/bite/correct", "/api/bite/accept", "/api/bite/reject", "/api/bite/reset"):
         assert route in src, route
     assert "bite_fix" in inspect.getsource(Session.save_case) and "bite_fix" in inspect.getsource(Session.open_case)

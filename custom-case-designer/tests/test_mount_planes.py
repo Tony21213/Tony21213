@@ -287,7 +287,7 @@ def test_session_and_api_contract(tmp_path):
     with pytest.raises(ValueError):
         s.set_default_mount_plane("bonwill")
     assert set(s.articulation_planes()) >= {"planes", "current", "selected", "default", "tilt"}
-    src = inspect.getsource(app_server)
+    src = app_server.routes_source()
     assert '"planes"' in src and "mount_plane" in src
     ui = (Path(__file__).parents[1] / "casedesigner" / "app" / "web" / "app.js").read_text(encoding="utf-8")
     assert "data-mount-plane" in ui and "defaultMountPlane" in ui

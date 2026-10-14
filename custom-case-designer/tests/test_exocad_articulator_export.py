@@ -275,7 +275,7 @@ def test_session_and_api_contract():
 
     sig = inspect.signature(Session.export_exocad_articulator)
     assert list(sig.parameters)[1:3] == ["project_dir", "out_dir"]
-    assert '"exocad-articulator"' in inspect.getsource(server)
+    assert '"exocad-articulator"' in server.routes_source()
 
 
 def _http_export(server, body):
