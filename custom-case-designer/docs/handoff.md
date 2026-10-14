@@ -28,7 +28,7 @@
 | «Эстетика», часть 1 (ядро): фото в Smile Design по камере, монтаж по фото, размеры зубов | Claude | `lead/aesthetics` | — | каркас готов (`fad455c`) | `docs/handoff/aesthetics-photo.md` |
 | 10. Шаг «Эстетика» (часть 1): фото с улыбкой и с ретрактором, пары точек, камера, монтаж и выгрузка по фото | Codex | `follower/aesthetics-ui` | те же | п. 8 — после разделения файлов по шагам (п. 7) | `docs/handoff/aesthetics-photo.md` |
 | Кости КТ в exocad: `bone_upper.stl`, `bone_lower.stl` (решение владельца 14.10) | Claude | `lead/bone-names` | — | готово (`499c2d5`, `4f4af99`); `.partialInfo` ссылается на них — проверить в exocad, что кости подгружаются и двигаются с челюстями | `docs/exocad.md`, «Кости КТ в проекте exocad» |
-| Цефалометрия (ядро): Steiner и Ricketts как данные, отчёт; точки ALI-CBCT `landmarks-v2` | Claude | `lead/cephalometry`, `lead/landmarks-v2` | — | каркас готов (`7eb97e1`, `867f7c9`…`66bfa2f`): 23 точки, на архиве — 23 из 23; верхушки резцов ненадёжны — проверка оси; релиз ждёт `gh auth login` владельца | — |
+| Цефалометрия (ядро): Steiner и Ricketts как данные, отчёт; точки ALI-CBCT `landmarks-v2` | Claude | `lead/cephalometry`, `lead/landmarks-v2` | — | каркас готов (`7eb97e1`, `867f7c9`…`66bfa2f`): 23 точки, на архиве — 23 из 23; верхушки резцов ненадёжны — проверка оси; релиз `landmarks-v2` опубликован 14.10 | — |
 | «Кривая» ось в exocad: шарнир точно + эстетические виды | Claude | `lead/exocad-aesthetic-views` | — | принято в общую ветку (`829fbb1`): «эстетическая через мыщелки» + «Вид Smile Design» из `.treatmentImages`; остаток к эстетике 0,9° (кейс 3) | `docs/exocad.md`, «Эстетический вид» |
 | Сустав отдельно: головки и скаты (ядро) | Claude | `lead/tmj-segments` | — | каркас готов (идея владельца): головки по связности сетки, ALI > 4 мм → головка, скаты, ССП 5–75° | `docs/handoff/tmj-segments.md` |
 | Каркас «Исправить прикус» (отказ без контактной опоры, предел поправки) | Claude | `lead/bite-correction` | — | каркас готов (`e0ff418`, `676129a`): отказ «нет опоры» (меньше 50 точек ближе 2 мм), смыкание до 1 мм, поправка до 1,5 мм | `docs/handoff/bite-correction.md` |
@@ -52,6 +52,5 @@
 Владельцу (п. 0.1–0.2): выпуски `models-v1` и `landmarks-v2` (`kstom-release.ps1`); работу по
 межмыщелковому расстоянию в exocad — запушить (в репозитории её пока нет).
 
-`landmarks-v2` (решение владельца 14.10: качать и выпускать): веса скачаны, переведены и сверены
-(46 файлов, 1,35 ГБ, `models/landmarks-v2-release`); `gh` на ПК не вошёл в GitHub — выпуск после
-`gh auth login`: `.tools\gh\bin\gh.exe release create landmarks-v2 custom-case-designer\models\landmarks-v2-release\*.onnx --repo Tony21213/Tony21213 --title "Автоматические ориентиры на КТ (ALI-CBCT), v2" --notes-file .tools\release-landmarks-v2.md` (из `C:\CAI\Custom Case Designer`, после `gh auth login`).
+`landmarks-v2` опубликован владельцем 14.10 (46 файлов, размеры и SHA-256 совпали с таблицей программы):
+https://github.com/Tony21213/Tony21213/releases/tag/landmarks-v2. Осталось владельцу: `models-v1`.
