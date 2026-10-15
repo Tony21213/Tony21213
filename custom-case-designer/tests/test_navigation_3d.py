@@ -10,6 +10,7 @@ def test_buttons_like_exocad():
     v = (WEB / "viewer3d.js").read_text(encoding="utf-8")
     assert "this.controls.mouseButtons = { LEFT: null, MIDDLE: null, RIGHT: THREE.MOUSE.ROTATE };" in v
     assert "this.controls.enableDamping = false;" in v  # без инерции: отпустили кнопку — вид стоит
+    assert "setTimeout(step" not in v  # щелчок колесом — сразу, без переезда (решение владельца 15.10)
     assert "(e.buttons & 3) === 3" in v  # левая и правая вместе — сдвиг
     assert "this.centerAt(e.clientX, e.clientY)" in v  # щелчок колесом
     assert v.count("}, true);") >= 3  # слушатели — в фазе захвата, раньше OrbitControls
@@ -29,7 +30,7 @@ def test_slices_like_3d_right_button_scrolls():
     assert "this.step(n * (ev.shiftKey ? 5 : 1));" in s and "PX_PER_SLICE" in s
     assert s.index("this.onChord(e)") < s.index("this.onHover(e)")
     assert "(e.buttons & 3) === 3" in s and "e.stopImmediatePropagation()" in s
-    assert "this.centerAt(ev.offsetX, ev.offsetY)" in s
+    assert "this.centerAt(ev.offsetX, ev.offsetY)" in s and "CENTER_STEPS" not in s  # точка в центр — сразу
     assert "!mode && !g.chord" in s  # после сдвига двумя кнопками перекрестие не ставится
     case = (WEB / "steps" / "case.js").read_text(encoding="utf-8")
     assert "['Правая кнопка', 'листать срезы: вверх-вниз (Shift — по 5)']" in case

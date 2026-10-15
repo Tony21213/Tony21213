@@ -152,20 +152,13 @@ export class Viewer3D {
     return this.raycaster.intersectObjects(meshes, false)[0]?.point ?? null;
   }
 
-  // Щелчок колесом: точка под курсором — в центр окна и центр вращения; переезд плавный, расстояние то же.
+  // Щелчок колесом: точка под курсором — сразу в центр окна и центр вращения (без переезда), расстояние то же.
   centerAt(clientX, clientY) {
     const hit = this.hitAt(clientX, clientY);
     if (!hit) return false;
     const shift = hit.clone().sub(this.controls.target);
-    const steps = 12;
-    let i = 0;
-    const step = () => {
-      const part = shift.clone().multiplyScalar(1 / steps);
-      this.camera.position.add(part);
-      this.controls.target.add(part);
-      if (++i < steps) setTimeout(step, 16); // не кадрами: в свёрнутом окне requestAnimationFrame стоит
-    };
-    step();
+    this.camera.position.add(shift);
+    this.controls.target.add(shift);
     return true;
   }
 
