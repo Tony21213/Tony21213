@@ -9,6 +9,7 @@ from ..common import (  # noqa: F401
     errorlog,
     exocad_project,
     export_case,
+    mplanes,
     np,
     open_folder,
     os,
@@ -92,8 +93,11 @@ class ExportSteps:
             raise FileExistsError("папка для копии проекта уже существует и не пуста — выберите другую")
         return folder, stem
 
-    def export_exocad_articulator(self, project_dir: str, out_dir: str | None = None, progress=None) -> dict:
-        """Выгрузить копию проекта exocad после проверки готовых и применённых точек мыщелков."""
+    def export_exocad_articulator(self, project_dir: str, out_dir: str | None = None, progress=None,
+                                  screens: list | None = None) -> dict:
+        """Выгрузить копию проекта exocad после проверки готовых и применённых точек мыщелков; в подпапку
+        KStomCaseDesigner — паспорт кейса (reports.passport, PDF и PNG) со снимками окна 3D screens
+        ([{"caption", "png": base64 или data URL}], до трёх)."""
         from ... import exocad_articulator_export as xa
 
         self.validate_exocad_articulator(project_dir, out_dir)
@@ -104,8 +108,77 @@ class ExportSteps:
             progress(0.35, "Создаю копию проекта exocad")
         result = xa.export(case, project_dir, out_dir)
         if progress:
+            progress(0.9, "Паспорт кейса")
+        names = self._write_passport(result, screens or [])
+        result["files"]["паспорт кейса"] = names
+        self.last_passport = os.path.join(result["folder"], xa.SUBFOLDER, names[1])
+        if progress:
             progress(1.0, "Выгрузка готова")
         return result
+
+    def _passport_info(self) -> dict:
+        """Что сделано на выходе — для паспорта: плоскость монтажа и расхождение с эстетикой, источник мыщелков,
+        поправка прикуса. Подпись кейса — дата (номера кейса пока нет; имя файла кейса и проекта не берём: в них
+        бывает имя пациента)."""
+        import re
+        from datetime import date
+
+        from ... import condyles as cnd
+
+        jaw = getattr(self, "jaw", None)
+        plane = mplanes.PLANES.get(getattr(jaw, "plane", None) or "", {}).get("name")
+        aesthetic = next((float(m.group(1)) for n in (getattr(jaw, "notes", None) or [])
+                          for m in [re.search(r"отличаются на ([\d.]+)°", str(n))] if m), None)
+        condyles = None
+        try:
+            points = self.articulation_condyles()["points"]
+            condyles = {side: (f"{p.get('source_label') or '—'}, {'подтверждён врачом' if p.get('confirmed') else 'не подтверждён'}"
+                               if p.get("ct") is not None else "нет точки") for side, p in points.items()}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+        bite = None
+        try:
+            info = self.bite_info()
+            if info.get("fixed"):
+                bite = {"shift_mm": info.get("fix_mm"), "rotation_deg": None}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+        return {"case_label": f"Кейс · {date.today().strftime('%d.%m.%Y')}",
+                "mount": {"plane": plane, "aesthetic_deg": aesthetic} if plane else None,
+                "condyles": condyles, "bite": bite}
+
+    def _write_passport(self, result: dict, screens: list) -> list[str]:
+        import base64
+        import io as _io
+
+        from PIL import Image
+
+        from ... import exocad_articulator_export as xa
+        from ... import reports
+
+        figures = []
+        for shot in screens[:3]:
+            data = str(shot.get("png") or "")
+            data = data.split(",", 1)[1] if data.startswith("data:") else data
+            raw = base64.b64decode(data, validate=False) if data else b""
+            if not raw or len(raw) > 16 * 1024 * 1024:
+                continue
+            try:
+                image = Image.open(_io.BytesIO(raw)).convert("RGB")
+            except OSError:
+                continue
+            figures.append(reports.Figure(str(shot.get("caption") or "")[:80], image))
+        info = self._passport_info()
+        report = reports.passport(result, info["case_label"], mount=info["mount"], condyles=info["condyles"],
+                                  bite=info["bite"], figures=figures)
+        return reports.save(report, os.path.join(result["folder"], xa.SUBFOLDER), "passport")
+
+    def open_passport(self):
+        """Открыть паспорт последней выгрузки для exocad (только его — путь не приходит снаружи)."""
+        path = getattr(self, "last_passport", None)
+        if not path or not os.path.isfile(path):
+            raise ValueError("паспорта ещё нет — сначала выгрузите кейс для exocad")
+        open_folder(path)
 
     def open_export_folder(self):
         """Показать папку последнего экспорта в проводнике (только её — путь не приходит снаружи)."""
@@ -203,5 +276,9 @@ def route(h, s, p, method, q):
         b = h.body()
         project, out_dir = b.get("project"), b.get("out")
         s.validate_exocad_articulator(project, out_dir)
+        screens = b.get("screens") if isinstance(b.get("screens"), list) else []
         return h.job("Экспорт для exocad с артикулятором",
-                        lambda progress: s.export_exocad_articulator(project, out_dir, progress))
+                        lambda progress: s.export_exocad_articulator(project, out_dir, progress, screens))
+    if p == ["export", "passport", "open"] and method == "POST":
+        s.open_passport()
+        return h.json({"ok": True})
