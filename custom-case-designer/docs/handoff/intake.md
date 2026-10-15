@@ -30,7 +30,7 @@
 ## Контракт
 
 Источник истины — docstring `casedesigner/intake.py`, `tests/test_intake.py`, генератор —
-`casedesigner/reports.py` (`docs/handoff/passport.md`).
+`casedesigner/reports.py` (`docs/handoff/archive/passport.md`).
 Сверх кода:
 - Пороги (воксель 0,3 / 0,4 мм, край поля 5 мм, дыра от 3 мм, обрывок до 200 граней) подобраны на
   синтетике: на фантоме сканов края зубов у десны считаются дырами — уточнить на реальных сканах
