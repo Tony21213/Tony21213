@@ -57,7 +57,7 @@ export const app = {
   placeLandmark: () => {},
   overlayVersion: () => overlayVersion,
   overlayHeat: () => heatOn() && state.scans.some((x) => x.registered), // контур скана — по цвету отклонения
-  // Окно КТ (яркость и контраст): наборы по уровням плотности этого снимка и ручная настройка правой кнопкой.
+  // Окно КТ (яркость и контраст): наборы по уровням плотности этого снимка и ручная настройка Ctrl + правой кнопкой.
   windowPresets: () => [...windowPresets(), ...(state.windowName ? [] : [{ id: '', title: 'Вручную' }])],
   windowName: () => state.windowName,
   setWindowPreset(id) {
