@@ -93,26 +93,36 @@ BONE_STL = "bone_{jaw}.stl"  # кость верхней / нижней челю
 FRAMEWORK_STL = "{stem}-{jaw}jaw-partialframework_cad.stl"  # так кости назывались до 14.10
 FRAMEWORK_INFO = "{stem}-{jaw}jaw.partialInfo"
 BONE_MATERIAL = "Кость из КТ (KStom Case Designer)"
+# Корни зубов из КТ под коронками сканов и оси зубов (casedesigner/roots.py) — тем же списком каркасов челюсти.
+ROOTS_STL = "roots_{jaw}.stl"
+AXES_STL = "tooth_axes_{jaw}.stl"
+ROOTS_MATERIAL = "Корни из КТ (KStom Case Designer)"
+AXES_MATERIAL = "Оси зубов (KStom Case Designer)"
 
 
-def _partial_info(file_name: str) -> bytes:
-    """Список каркасов в формате exocad (.partialInfo): сетка и её положение (единичное — сетка уже на месте)."""
+def _partial_info(items) -> bytes:
+    """Список каркасов в формате exocad (.partialInfo): сетки и их положение (единичное — сетка уже на месте).
+    items — [(имя файла сетки, название материала)] или одно имя (кость)."""
     from datetime import datetime
 
+    if isinstance(items, str):
+        items = [(items, BONE_MATERIAL)]
     root = ET.Element("PartialInfo")
-    item = ET.SubElement(ET.SubElement(root, "PartialFileList"), "PartialFile")
-    ET.SubElement(item, "FileName").text = file_name
-    m = ET.SubElement(item, "TransformationMatrix")
-    for r in range(4):
-        for c in range(4):
-            ET.SubElement(m, f"_{r}{c}").text = f"{1.0 if r == c else 0.0:.16f}"
-    ET.SubElement(item, "MaterialName").text = BONE_MATERIAL
-    ET.SubElement(item, "Material").text = "NP_L"
-    ET.SubElement(item, "Optimization").text = "Mill"
-    axis = ET.SubElement(item, "Axis")
-    for k, v in zip("xyz", (0.0, 0.0, 1.0)):
-        ET.SubElement(axis, k).text = f"{v:.16f}"
-    ET.SubElement(item, "MillingDiameter").text = "0.1000000000000000"
+    files = ET.SubElement(root, "PartialFileList")
+    for file_name, material in items:
+        item = ET.SubElement(files, "PartialFile")
+        ET.SubElement(item, "FileName").text = file_name
+        m = ET.SubElement(item, "TransformationMatrix")
+        for r in range(4):
+            for c in range(4):
+                ET.SubElement(m, f"_{r}{c}").text = f"{1.0 if r == c else 0.0:.16f}"
+        ET.SubElement(item, "MaterialName").text = material
+        ET.SubElement(item, "Material").text = "NP_L"
+        ET.SubElement(item, "Optimization").text = "Mill"
+        axis = ET.SubElement(item, "Axis")
+        for k, v in zip("xyz", (0.0, 0.0, 1.0)):
+            ET.SubElement(axis, k).text = f"{v:.16f}"
+        ET.SubElement(item, "MillingDiameter").text = "0.1000000000000000"
     ET.SubElement(root, "UsedReconstructionFileList")
     ET.SubElement(root, "ProductName").text = "KStom Case Designer"
     ET.SubElement(root, "SaveTime").text = datetime.now().strftime("%Y-%m-%d-%H-%M")
@@ -120,21 +130,27 @@ def _partial_info(file_name: str) -> bytes:
     return ET.tostring(root, encoding="utf-8")
 
 
-def write_bone_frameworks(project: ExocadProject, bones: dict) -> tuple[list[str], list[str]]:
+def write_bone_frameworks(project: ExocadProject, bones: dict, roots: dict | None = None,
+                          axes: dict | None = None) -> tuple[list[str], list[str]]:
     """Кости из КТ — в папку проекта: bone_upper.stl (кость верхней челюсти: череп и ВЧ) и bone_lower.stl (кость
     нижней челюсти). Чтобы exocad подгружал их сам и двигал каждую со своей челюстью в артикуляторе, к каждой —
     список каркасов проекта …-upperjaw.partialInfo со ссылкой на файл кости (другого объекта, привязанного к
-    челюсти, exocad без SDK не даёт).
+    челюсти, exocad без SDK не даёт). Тем же списком — корни зубов из КТ (roots_upper.stl, roots_lower.stl) и оси
+    зубов (tooth_axes_….stl), если есть: кость первой, затем корни и оси.
 
-    bones — {"upper" | "lower": trimesh} в координатах файла скана своей челюсти: так exocad хранит результаты
-    моделировки (пример exocad с ModJaw: модели зубов лежат на скане в координатах файла, а не сцены). Состояние
-    моделировки (.partialCAD, закрытый формат) не пишется. Настоящий каркас в проекте не перезаписывается.
-    Возвращает (записанные файлы, заметки)."""
+    bones, roots, axes — {"upper" | "lower": trimesh} в координатах файла скана своей челюсти: так exocad хранит
+    результаты моделировки (пример exocad с ModJaw: модели зубов лежат на скане в координатах файла, а не сцены).
+    Состояние моделировки (.partialCAD, закрытый формат) не пишется. Настоящий каркас в проекте не
+    перезаписывается. Возвращает (записанные файлы, заметки)."""
+    objects = {}
+    for meshes, name, material in ((bones, BONE_STL, BONE_MATERIAL), (roots or {}, ROOTS_STL, ROOTS_MATERIAL),
+                                   (axes or {}, AXES_STL, AXES_MATERIAL)):
+        for jaw, mesh in meshes.items():
+            objects.setdefault(jaw, []).append((name.format(jaw=jaw), mesh, material))
     files, notes = [], []
-    for jaw, mesh in bones.items():
-        stl = BONE_STL.format(jaw=jaw)
+    for jaw, items in objects.items():
         info = FRAMEWORK_INFO.format(stem=project.stem, jaw=jaw)
-        stl_path, info_path = os.path.join(project.folder, stl), os.path.join(project.folder, info)
+        info_path = os.path.join(project.folder, info)
         owned = True
         if os.path.exists(info_path):
             with open(info_path, "rb") as f:
@@ -142,10 +158,12 @@ def write_bone_frameworks(project: ExocadProject, bones: dict) -> tuple[list[str
             owned = any(name in info_data for name in (b"KStom Case Designer", b"Custom Case Designer"))
         if not owned:
             notes.append(f"В проекте уже есть бюгельный каркас {'верхней' if jaw == 'upper' else 'нижней'} "
-                         "челюсти — кость не записана, каркас не тронут.")
+                         "челюсти — кость и корни не записаны, каркас не тронут.")
             continue
-        mesh.export(stl_path)
+        for stl, mesh, _material in items:
+            mesh.export(os.path.join(project.folder, stl))
+            files.append(stl)
         with open(info_path, "wb") as f:
-            f.write(_partial_info(stl))
-        files += [stl, info]
+            f.write(_partial_info([(stl, material) for stl, _mesh, material in items]))
+        files.append(info)
     return files, notes

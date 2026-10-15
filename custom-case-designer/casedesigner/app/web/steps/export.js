@@ -1,6 +1,6 @@
 // Шаг «Экспорт»: выгрузка в папку и для exocad с артикулятором, панель.
 import { $, busy, choose, fmt, hide, html, plural, render, state, toast, viewer } from '../core.js';
-import { get, run } from '../api.js';
+import { get, mesh, run } from '../api.js';
 import { icons } from '../icons.js';
 import { condyleReason } from './articulation.js';
 
@@ -62,7 +62,47 @@ export async function doExportExocadArticulator() {
 export async function prepareExport() {
   try { state.articulationCondyles = await get('articulation/condyles'); }
   catch (e) { toast(e.message); }
+  // корни зубов из КТ (roots.py) — когда есть сегментация зубов
+  if (state.structures.some((s) => s.key.startsWith('teeth/tooth_'))) {
+    try { state.roots = await get('export/roots'); } catch (e) { toast(e.message); }
+  } else state.roots = null;
   render();
+}
+
+// ---------- корни зубов из КТ: показать в 3D (корни и оси обеих челюстей), сканы — полупрозрачные ----------
+export const ROOT_KEYS = ['roots:upper', 'roots:lower', 'axes:upper', 'axes:lower'];
+export async function toggleRoots() {
+  if (state.rootsShown) {
+    ROOT_KEYS.forEach((k) => viewer.remove(k));
+    state.rootsShown = false;
+    return render();
+  }
+  await busy('Корни из КТ', async () => {
+    for (const key of ROOT_KEYS) {
+      const [part, jaw] = key.split(':');
+      try {
+        const m = await mesh(`export/roots?jaw=${jaw}&part=${part}`);
+        viewer.setMesh(key, m, { color: part === 'roots' ? '#f1d9a6' : '#ff8a3d', order: 3 });
+      } catch { /* корней этой челюсти нет */ }
+    }
+    for (const s of state.scans.filter((x) => x.registered)) { // корни — под коронками: сканы прозрачнее
+      state.opacity[s.id] = Math.min(state.opacity[s.id] ?? 1, 0.45);
+      viewer.setOpacity(s.id, state.opacity[s.id]);
+    }
+    state.rootsShown = true;
+  });
+}
+
+function rootsCard() {
+  const r = state.roots;
+  if (!r || (!r.teeth.length && !r.notes.length)) return '';
+  const list = r.teeth.map((t) => `${t.fdi} — ${fmt(t.root_mm, 1)}`).join(' · ');
+  return `<div class="card roots-card"><div class="card-head">${icons.tooth}<h3>Корни из КТ</h3><span class="badge">${r.teeth.length}</span></div>
+    <p class="muted small" style="margin-top:0">Целый зуб в exocad: коронка — со скана, корень и ось зуба — с КТ. Выгружаются
+      вместе с костями (roots_…, tooth_axes_…) и двигаются с челюстями.</p>
+    ${list ? `<p class="small roots-list" title="Номер зуба — длина корня вдоль оси, мм">${list}</p>` : ''}
+    ${r.notes.map((n) => `<div class="warning">${icons.warn}<span>${html(n)}</span></div>`).join('')}
+    ${r.teeth.length ? `<button class="btn ghost wide sm" data-a="roots">${state.rootsShown ? 'Скрыть корни в 3D' : 'Показать корни в 3D'}</button>` : ''}</div>`;
 }
 
 export function renderExport() {
@@ -131,5 +171,5 @@ export function renderExport() {
   return `<h2>Экспорт</h2><p class="lead">STL всех видимых объектов в единой системе координат и case.json с матрицами.</p>
     <div class="label">Система координат</div>${frames}
     <button class="btn primary wide" data-a="export" ${ready ? '' : 'disabled'}>${icons.export}Экспортировать в папку…</button>
-    ${ready ? '' : `<p class="muted small">${state.ct ? 'Сегментируйте КТ или совместите сканы.' : 'Добавьте сканы.'}</p>`}${result}${exocadExport}`;
+    ${ready ? '' : `<p class="muted small">${state.ct ? 'Сегментируйте КТ или совместите сканы.' : 'Добавьте сканы.'}</p>`}${result}${exocadExport}${rootsCard()}`;
 }

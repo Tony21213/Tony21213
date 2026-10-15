@@ -90,6 +90,11 @@ class ArticulatorCase:
     # Фото пациента («Эстетика», часть 1): [{"kind": "smile" | "retracted", "image": RGB, "camera": aesthetic.Camera}]
     # в координатах кейса — в набор Smile Design настоящие снимки по камере совмещения вместо снимка-сетки.
     photos: list = field(default_factory=list)
+    # Корни зубов из КТ под коронками сканов и оси зубов (roots.py): {"upper" | "lower": JawScan} в координатах
+    # кейса (нижние — в прикусе выгрузки, как кости); roots_info — по зубам и заметки для сводки.
+    roots: dict = field(default_factory=dict)
+    tooth_axes: dict = field(default_factory=dict)
+    roots_info: dict = field(default_factory=dict)
 
 
 def articulator_values(anatomy: mo.Anatomy, settings: kin.Settings) -> dict:
@@ -280,12 +285,21 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
         f.write(ef.jawmotion_xml(fb, f"{ef.ARTICULATOR_NAME}: шарнир на мыщелках пациента, гипсовка по горизонтали "
                                      "монтажа", case.movements or None))
     written["файл движений"] = f"{stem}.jawmotion"
-    if case.bones:
+    if case.bones or case.roots:
         project = exocad_project.find(folder)
         files, bone_notes = exocad_project.write_bone_frameworks(
-            project, {jaw: bone.moved(to_art) for jaw, bone in case.bones.items()})
+            project, {jaw: bone.moved(to_art) for jaw, bone in case.bones.items()},
+            {jaw: r.moved(to_art) for jaw, r in case.roots.items()},
+            {jaw: ax.moved(to_art) for jaw, ax in case.tooth_axes.items()})
         notes += bone_notes
-        written["кости"] = [f for f in files if f.endswith(".stl")]
+        for role, prefix in (("кости", "bone_"), ("корни", "roots_"), ("оси зубов", "tooth_axes_")):
+            names = [f for f in files if f.startswith(prefix) and f.endswith(".stl")]
+            if names:
+                written[role] = names
+        if "корни" in written:
+            notes.append(f"корни зубов из КТ ({len(case.roots_info.get('teeth', []))} зубов) и оси зубов — тем же "
+                         "списком каркасов, что кости: двигаются с челюстями; коронки — со сканов")
+    notes += list(case.roots_info.get("notes", []))
 
     sub = os.path.join(folder, SUBFOLDER)
     os.makedirs(sub, exist_ok=True)
@@ -334,7 +348,7 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
                "plane_height_mm": round(float(incisal_art[2]), 2),
                "condyles_articulator": {s: apply(to_art, fb.condyles[s][None])[0].round(3).tolist() for s in SIDES},
                "case_to_articulator": to_art.round(6).tolist(), "movements": len(case.movements),
-               "articulator_files": art_files}
+               "articulator_files": art_files, "roots": case.roots_info.get("teeth", [])}
     with open(os.path.join(sub, "articulator.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
     summary["folder"] = folder
@@ -416,5 +430,21 @@ def case_from_session(session) -> ArticulatorCase:
     for rec in recs:
         fps = (len(rec.transforms) - 1) / rec.duration if getattr(rec, "timed", False) and rec.duration else 60.0
         movements.append((rec.name, np.asarray(rec.transforms, float), float(fps)))
-    return ArticulatorCase(upper, lower, jaw.anatomy, jaw.settings.copy(), bites, bones, paths, movements,
+    case = ArticulatorCase(upper, lower, jaw.anatomy, jaw.settings.copy(), bites, bones, paths, movements,
                            getattr(jaw, "mounting", None), getattr(jaw, "aesthetic_axes", None))
+    # корни зубов из КТ: разделены по сканам в соотношении КТ, нижние — в прикус выгрузки, как кость НЧ
+    from . import roots as rt
+
+    teeth = {k: m for k, m in session.structures.items() if k.startswith(rt.TOOTH_PREFIX)}
+    if teeth:
+        found, root_notes = rt.split_teeth(teeth, {
+            "upper": apply(np.asarray(up["reg"].transform, float), up["scan"].vertices),
+            "lower": apply(np.asarray(lo["reg"].transform, float), lo["scan"].vertices)})
+        for jaw, T in (("upper", np.eye(4)), ("lower", lower_T)):
+            mesh, axes = rt.jaw_mesh(found, jaw), rt.axes_mesh(found, jaw)
+            if mesh is not None:
+                case.roots[jaw] = JawScan(apply(T, mesh[0]), mesh[1])
+            if axes is not None:
+                case.tooth_axes[jaw] = JawScan(apply(T, axes[0]), axes[1])
+        case.roots_info = {"teeth": rt.summary(found), "notes": root_notes}
+    return case

@@ -5,7 +5,7 @@ import { SliceView } from './slices.js';
 import { articulationAction, editCondyle, endCondyleEdit, handleCondylePick, mountWithPlane, nudgeCondyle, playArticulation, prepareArticulation, rememberPointerDown, remountCondyles, renderArticulation, selectMountPlane, toggleJoints, updateCondyles } from './steps/articulation.js';
 import { helpDialog, openCase, saveCase, settingsDialog } from './steps/case.js';
 import { downloadModels, intakeCheck, intakeSave, openCt, partsDialog, renderCt, segment } from './steps/ct.js';
-import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport } from './steps/export.js';
+import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport, toggleRoots } from './steps/export.js';
 import { aestheticAction, aestheticPick, aestheticPointerDown, endAesthetics, prepareAesthetics, renderAesthetics } from './steps/aesthetics.js';
 import { renderObjectBar } from './objectbar.js';
 import { accept, addScans, biteCorrect, biteDecide, endCorrection, refine, register, removeScan, renderScans, resetAuto, revertCorrection, startCorrection, stepHistory, toggleBite } from './steps/scans.js';
@@ -95,7 +95,7 @@ document.addEventListener('click', async (e) => {
     'exocad-project': chooseExocadProject, 'exocad-articulator': doExportExocadArticulator,
     getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog,
     openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog, incognito: toggleIncognito,
-    settings: settingsDialog, intake: intakeCheck, intakesave: intakeSave,
+    settings: settingsDialog, intake: intakeCheck, intakesave: intakeSave, roots: toggleRoots,
     intakeopen: () => post('intake/open').catch((err) => toast(err.message)), openpassport: () => post('export/passport/open').catch((err) => toast(err.message)), bitefix: biteCorrect, biteaccept: () => biteDecide('accept'),
     bitereject: () => biteDecide('reject'), bitereset: () => biteDecide('reset'),
     scansonly: () => { state.step = 'scans'; render(); } }[d.a];
