@@ -56,15 +56,18 @@ export class Viewer3D {
     this.camera.add(rim);
     this.scene.add(this.camera);
 
-    // Левая кнопка — вращение, колесо — масштаб к точке под курсором, нажатое колесо или правая — сдвиг.
+    // Мышь как в exocad: правая — вращение, левая + правая — сдвиг, щелчок колесом — центр вращения в точку под
+    // курсором (нажатое колесо с движением — тоже сдвиг), колесо — масштаб к точке под курсором. Левая одна — для
+    // точек и манипулятора. Вращение и масштаб — OrbitControls, сдвиг и центр — navigation().
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
     this.controls.rotateSpeed = 0.8;
     this.controls.screenSpacePanning = true;
     this.controls.zoomToCursor = true;
-    this.controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
+    this.controls.mouseButtons = { LEFT: null, MIDDLE: null, RIGHT: THREE.MOUSE.ROTATE };
     this.radius = 100; // размер сцены, мм (fit)
+    this.navigation(el);
 
     this.gizmo = new TransformControls(this.camera, this.renderer.domElement);
     this.gizmo.setSpace('world');
@@ -84,6 +87,87 @@ export class Viewer3D {
       requestAnimationFrame(loop);
     };
     loop();
+  }
+
+  // Сдвиг (левая + правая или нажатое колесо) и центр вращения (щелчок колесом). Слушаем на окне в фазе захвата —
+  // раньше OrbitControls: пока идёт сдвиг, его движения мыши до OrbitControls не доходят (иначе вращал бы).
+  navigation(el) {
+    let nav = null; // { x, y, mode: 'pan' | 'middle', moved }
+    const onCanvas = (e) => e.target === this.renderer.domElement;
+    el.addEventListener('pointerdown', (e) => {
+      if (!onCanvas(e) || e.pointerType !== 'mouse' || this.gizmo.dragging) return;
+      if (e.button === 1) {
+        e.preventDefault(); // без автопрокрутки браузера
+        nav = { x: e.clientX, y: e.clientY, mode: 'middle', moved: false };
+      }
+    }, true);
+    el.addEventListener('pointermove', (e) => {
+      if (e.pointerType !== 'mouse' || this.gizmo.dragging) return;
+      const chord = (e.buttons & 3) === 3; // левая и правая вместе
+      if (chord && nav?.mode !== 'pan') nav = { x: e.clientX, y: e.clientY, mode: 'pan', moved: false };
+      if (!nav) return;
+      e.stopPropagation();
+      if (nav.mode === 'pan' && !chord) { // отпустили одну из кнопок
+        if (e.buttons === 2) { // осталась правая — дальше вращение, без скачка
+          this.controls._rotateStart?.set(e.clientX, e.clientY);
+          nav = null;
+        } else {
+          nav.x = e.clientX; // осталась левая — ждём: нажмут правую снова — сдвиг отсюда
+          nav.y = e.clientY;
+        }
+        return;
+      }
+      const dx = e.clientX - nav.x, dy = e.clientY - nav.y;
+      if (!nav.moved && Math.hypot(dx, dy) < 3) return;
+      nav.moved = true;
+      nav.x = e.clientX;
+      nav.y = e.clientY;
+      this.pan(dx, dy);
+    }, true);
+    el.addEventListener('pointerup', (e) => {
+      if (nav?.mode === 'middle' && e.button === 1 && !nav.moved && onCanvas(e)) this.centerAt(e.clientX, e.clientY);
+      if (!e.buttons) nav = null;
+    }, true);
+    el.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
+  }
+
+  // Сдвиг вида на (dx, dy) пикселей экрана: камера и центр вращения вместе, точка под курсором идёт за мышью.
+  pan(dx, dy) {
+    const h = this.renderer.domElement.clientHeight || 1;
+    const dist = this.camera.position.distanceTo(this.controls.target) * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0);
+    const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 1);
+    const move = right.multiplyScalar(-2 * dx * dist / h).addScaledVector(up, 2 * dy * dist / h);
+    this.camera.position.add(move);
+    this.controls.target.add(move);
+  }
+
+  // Видимая поверхность под курсором (координаты сцены) или null.
+  hitAt(clientX, clientY) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const mouse = new THREE.Vector2(2 * (clientX - rect.left) / rect.width - 1, 1 - 2 * (clientY - rect.top) / rect.height);
+    this.camera.updateMatrixWorld();
+    this.raycaster.setFromCamera(mouse, this.camera);
+    const meshes = [...this.objects.values()].filter((m) => m.visible && m.material?.opacity > 0.05);
+    return this.raycaster.intersectObjects(meshes, false)[0]?.point ?? null;
+  }
+
+  // Щелчок колесом: точка под курсором — в центр окна и центр вращения; переезд плавный, расстояние то же.
+  centerAt(clientX, clientY) {
+    const hit = this.hitAt(clientX, clientY);
+    if (!hit) return false;
+    const shift = hit.clone().sub(this.controls.target);
+    const steps = 12;
+    let i = 0;
+    const step = () => {
+      const part = shift.clone().multiplyScalar(1 / steps);
+      this.camera.position.add(part);
+      this.controls.target.add(part);
+      if (++i < steps) setTimeout(step, 16); // не кадрами: в свёрнутом окне requestAnimationFrame стоит
+    };
+    step();
+    return true;
   }
 
   // Ближняя и дальняя плоскости — по расстоянию до цели: при приближении колесом модель не срезается.
