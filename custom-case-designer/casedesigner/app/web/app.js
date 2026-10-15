@@ -6,27 +6,34 @@ import { articulationAction, editCondyle, endCondyleEdit, handleCondylePick, mou
 import { helpDialog, openCase, saveCase, settingsDialog } from './steps/case.js';
 import { downloadModels, intakeCheck, intakeSave, openCt, partsDialog, renderCt, segment } from './steps/ct.js';
 import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport } from './steps/export.js';
+import { aestheticAction, aestheticPick, aestheticPointerDown, endAesthetics, prepareAesthetics, renderAesthetics } from './steps/aesthetics.js';
 import { accept, addScans, biteCorrect, biteDecide, endCorrection, refine, register, removeScan, renderScans, resetAuto, revertCorrection, startCorrection, stepHistory, toggleBite } from './steps/scans.js';
 
 // панели шагов и мышь в окне 3D — здесь: шаги исполняются при загрузке раньше core.js (циклические импорты)
 RENDER.ct = renderCt;
 RENDER.scans = renderScans;
+RENDER.aesthetics = renderAesthetics;
 RENDER.articulation = renderArticulation;
 RENDER.export = renderExport;
 $('#view3d').addEventListener('pointerdown', rememberPointerDown);
 $('#view3d').addEventListener('pointerup', handleCondylePick);
+$('#view3d').addEventListener('pointerdown', aestheticPointerDown); // «Эстетика»: точка пары на скане
+$('#view3d').addEventListener('pointerup', aestheticPick);
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints],[data-aes]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) {
     state.step = d.step;
     endCondyleEdit();
+    endAesthetics();
     slices.forEach((v) => v.draw());
-    return d.step === 'articulation' ? prepareArticulation() : d.step === 'export' ? prepareExport() : render();
+    return d.step === 'articulation' ? prepareArticulation() : d.step === 'export' ? prepareExport()
+      : d.step === 'aesthetics' ? prepareAesthetics() : render();
   }
+  if (d.aes) return aestheticAction(d.aes, d.arg);
   if (d.condyleConfirm) return updateCondyles('/confirm', { side: d.condyleConfirm });
   if (d.condyleReset) return updateCondyles('/reset', { side: d.condyleReset });
   if (d.condyleEdit) return editCondyle(d.condyleEdit);
@@ -110,6 +117,10 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('.modal-back.help')) return $('.modal-back.help').remove();
   if (e.key === 'Escape' && state.condyleEditing) {
     endCondyleEdit();
+    return render();
+  }
+  if (e.key === 'Escape' && state.step === 'aesthetics') {
+    endAesthetics();
     return render();
   }
   if (state.step === 'articulation' && state.condyleEditing

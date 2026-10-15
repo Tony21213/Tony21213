@@ -10,6 +10,7 @@ import { moveScan } from './steps/scans.js';
 export const STEPS = [
   { id: 'ct', title: 'КТ', icon: 'ct' },
   { id: 'scans', title: 'Сканы', icon: 'tooth' },
+  { id: 'aesthetics', title: 'Эстетика', icon: 'eye' },
   { id: 'articulation', title: 'Артикулятор', icon: 'move' },
   { id: 'export', title: 'Экспорт', icon: 'export' },
 ];
@@ -23,6 +24,7 @@ export const state = {
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
   modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
   exocadProjectPath: null, exocadArticulatorResult: null,
+  aesthetics: null, // шаг «Эстетика»: фото, пары, камеры (GET aesthetics)
   models: null, download: null, downloadError: null, articulation: null, articulationAnalysis: null,
   articulationContacts: [], articulationGuides: null, articulationCondyles: null,
   articulationPlanes: null, mountPlaneDefault: 'aesthetic_hinge',
@@ -313,11 +315,13 @@ export function render() {
   const done = {
     ct: state.structures.length > 0,
     scans: state.scans.length > 0 && state.scans.every((s) => s.registered),
+    aesthetics: !!state.aesthetics?.mount_kind,
     articulation: !!state.articulation?.mounting,
     export: !!state.exported,
   };
   $('#rail').innerHTML = STEPS.map((s) => `<button class="step ${s.id === state.step ? 'active' : ''} ${done[s.id] ? 'done' : ''}" data-step="${s.id}">
     ${icons[s.icon]}<span>${s.title}</span><i class="dot"></i></button>`).join('');
+  $('.main').classList.toggle('photo-mode', state.step === 'aesthetics'); // фото — вместо срезов КТ
   panel.innerHTML = RENDER[state.step]();
   const ct = state.ct;
   const caseName = state.incognito ? 'Кейс' : state.caseInfo?.name || ct?.name || 'Без КТ';

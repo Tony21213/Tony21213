@@ -104,6 +104,9 @@ class ExportSteps:
         if progress:
             progress(0.1, "Собираю сканы, кости и движения")
         case = xa.case_from_session(self)
+        photos = self._export_photos()  # «Эстетика»: фото с камерами — в набор Smile Design
+        if photos:
+            case.photos = photos
         if progress:
             progress(0.35, "Создаю копию проекта exocad")
         result = xa.export(case, project_dir, out_dir)

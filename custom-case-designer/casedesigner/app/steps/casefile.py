@@ -40,7 +40,8 @@ class CaseFileSteps:
                 "landmark_sources": {k: v for k, v in self.landmark_sources.items() if k in self.landmarks},
                 "landmark_notes": {k: v for k, v in self.landmark_notes.items() if k in self.landmarks},
                 "window": list(self.window), "scans": [], "structures": [],
-                "guide": [], "bite_fix": np.asarray(self.bite_fix, float).tolist()}
+                "guide": [], "bite_fix": np.asarray(self.bite_fix, float).tolist(),
+                "photos": self._photos_meta()}
         for i, (sid, item) in enumerate(self.scans.items()):
             scan = item["scan"]
             arrays[f"scan{i}_v"], arrays[f"scan{i}_f"] = scan.vertices, scan.faces
@@ -87,6 +88,8 @@ class CaseFileSteps:
         for sm in meta.get("scans", []):
             errorlog.private(sm.get("path"), "скан")
             errorlog.private(sm.get("name"), "скан")
+        for ph in (meta.get("photos") or {}).values():
+            errorlog.private(ph.get("path") if isinstance(ph, dict) else None, "фото")
         ct = ct_path or meta["ct_path"]
         if ct is None:  # кейс только со сканами
             self.close_ct()
@@ -135,6 +138,7 @@ class CaseFileSteps:
         if meta.get("bite_fix") is not None:  # «Исправить прикус»; старые кейсы — без поправки
             self.bite_fix = np.asarray(meta["bite_fix"], float)
             self._update_bite_motion()
+        self._load_photos_meta(meta.get("photos"))  # «Эстетика»: фото — по путям, пары — в координатах скана
         self.case_path = path
         self._remember(path)
         return self.state()

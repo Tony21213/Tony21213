@@ -74,9 +74,10 @@ from .steps.articulation import ArticulationSteps
 from .steps.landmarks import LandmarkSteps
 from .steps.export import ExportSteps
 from .steps.casefile import CaseFileSteps
+from .steps.aesthetics import AestheticsSteps
 
 
-class Session(CtSteps, ScanSteps, ArticulationSteps, LandmarkSteps, ExportSteps, CaseFileSteps):
+class Session(CtSteps, ScanSteps, AestheticsSteps, ArticulationSteps, LandmarkSteps, ExportSteps, CaseFileSteps):
     def __init__(self, memory_path: str | None = None, models_dir: str | None = None):
         self.lock = threading.RLock()
         self.memory = AlignmentMemory(memory_path or os.path.join(os.path.expanduser("~"), ".casedesigner",
@@ -95,6 +96,10 @@ class Session(CtSteps, ScanSteps, ArticulationSteps, LandmarkSteps, ExportSteps,
         self.bite_fix = np.eye(4)
         self._bite_proposal = None
         self._bite_meshes = {}
+        # «Эстетика»: фото с улыбкой и с ретрактором — {вид: фото, пары «фото — скан», горизонт, средняя линия, точки
+        # лица} (steps/aesthetics.py); photo_missing — фото кейса, файлов которых нет на месте.
+        self.photos: dict[str, dict] = {}
+        self.photo_missing: list[str] = []
         self.structures: dict[str, trimesh.Trimesh] = {}
         self._sections = {}
         self.landmarks: dict[str, np.ndarray] = {}
