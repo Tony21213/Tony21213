@@ -158,6 +158,43 @@ export function renderModels() {
   else if (state.step === 'ct') render();
 }
 
+// ---------- входной контроль кейса (casedesigner/intake.py) ----------
+export async function intakeCheck() {
+  await busy('Входной контроль', async (progress) => {
+    state.intake = await run('intake', {}, progress);
+  });
+}
+
+export async function intakeSave() {
+  const paths = await choose('out', 'Папка для отчёта входного контроля');
+  if (!paths) return;
+  const r = await post('intake/save', { out_dir: paths[0] }).catch((e) => toast(e.message));
+  if (!r) return;
+  state.intakeSaved = r;
+  render();
+}
+
+export function intakeCard() {
+  if (!state.ct && !state.scans.length) return '';
+  const res = state.intake;
+  const head = `<div class="card intake"><div class="card-head">${icons.check}<h3>Входной контроль</h3></div>`;
+  if (!res) {
+    return `${head}<p class="muted small" style="margin-top:0">Чего не хватает в кейсе: поле и воксель КТ, дыры в сканах,
+      скан прикуса, фото — со снимками, чтобы сразу отправить клинике.</p>
+      <button class="btn wide" data-a="intake">${icons.check}Проверить кейс</button></div>`;
+  }
+  const missing = res.findings.filter((f) => f.level !== 'ok');
+  const mark = { error: 'нет / плохо', warn: 'проверить' };
+  const list = missing.length ? missing.map((f) => `<div class="warning ${f.level}">${icons.warn}<span><b>${hide(f.section)} · ${hide(f.title)}</b>: ${hide(f.text)}
+      <i class="muted"> — ${mark[f.level]}${f.image ? ', снимок в отчёте' : ''}</i></span></div>`).join('')
+    : '<p class="muted small">Всего хватает: КТ, сканы, прикус и фото в порядке.</p>';
+  const saved = state.intakeSaved ? `<div class="path" ${state.incognito ? '' : `title="${state.intakeSaved.out_dir}"`}>${hide(state.intakeSaved.out_dir)}</div>
+      <button class="btn ghost wide sm" data-a="intakeopen">Открыть отчёт</button>` : '';
+  return `${head}${list}
+    <div class="row" style="margin-top:8px"><button class="btn ghost" data-a="intake">Проверить ещё раз</button>
+      <button class="btn grow" data-a="intakesave">${icons.folder}Сохранить отчёт…</button></div>${saved}</div>`;
+}
+
 export function renderCt() {
   const ct = state.ct;
   if (!ct) {
@@ -180,7 +217,7 @@ export function renderCt() {
     const chosen = (state.parts?.parts || []).filter((p) => state.parts.selected.includes(p.id)).map((p) => p.title);
     return `<h2>КТ</h2>${info}${jointNotes}
       <button class="btn primary wide" data-a="segment" ${ready ? '' : 'disabled'}>${icons.play}Сегментировать</button>${partsButton}
-      <p class="muted small">${!state.models?.ready ? 'Сначала скачайте модели сегментации.' : chosen.length ? `${chosen.join(', ')}.` : 'Не выбрано, что сегментировать.'}</p>${modelsCard()}`;
+      <p class="muted small">${!state.models?.ready ? 'Сначала скачайте модели сегментации.' : chosen.length ? `${chosen.join(', ')}.` : 'Не выбрано, что сегментировать.'}</p>${modelsCard()}${intakeCard()}`;
   }
   const groups = {};
   for (const s of state.structures) (groups[s.group] ??= []).push(s);
@@ -194,5 +231,5 @@ export function renderCt() {
         <span class="check ${state.visible.has(s.key) ? 'on' : ''}"></span><i class="dot" style="background:${s.color}"></i><span class="grow">${s.name}</span>${opacityButton([s.key], `data-opacity="${s.key}"`)}</div>`).join('') : ''}</div>`;
   }).join('');
   return `<h2>КТ</h2>${info}${jointNotes}<div class="label">Структуры — ${state.structures.length}; видимые попадут в экспорт</div>
-    <div class="card tree">${tree}</div>${partsButton}`;
+    <div class="card tree">${tree}</div>${partsButton}${intakeCard()}`;
 }

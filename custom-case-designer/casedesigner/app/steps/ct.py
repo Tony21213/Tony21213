@@ -1,6 +1,7 @@
 """КТ: загрузка, серии, срезы и сечения, модели сегментации, структуры — методы Session (разделено из session.py; контракты — там же, где были)."""
 
 from ..common import (  # noqa: F401
+    BITE,
     CaseCT,
     DEV_COLORS,
     GUIDE_KEYS,
@@ -13,11 +14,13 @@ from ..common import (  # noqa: F401
     apply,
     errorlog,
     group_of,
+    in_occlusion,
     io,
     load_volume,
     mesh_bytes,
     model_store,
     np,
+    open_folder,
     os,
     part_of,
     structure,
@@ -321,6 +324,61 @@ class CtSteps:
         return mesh_bytes(v, f)
 
 
+    # --- входной контроль кейса (casedesigner/intake.py; docs/handoff/intake.md) ------------------------------
+    def _intake_findings(self) -> list:
+        """Что проверить: КТ (воксель, поле — по точкам кейса; точек нет — один пункт «ориентиры не найдены»),
+        сканы челюстей (дыры), прикус (скан прикуса или челюсти в прикусе), фото (пока нет — «Эстетика»)."""
+        from ... import intake
+
+        findings = []
+        if self.case is not None:
+            ct = intake.ct_findings(self.case.vol, self.landmarks)
+            if not self.landmarks:
+                ct = [f for f in ct if f.title == "Размер вокселя"] + [intake.Finding(
+                    "warn", "КТ", "Ориентиры", "точки ещё не найдены — запустите поиск ориентиров (ALI-CBCT): без них "
+                    "не проверить, попали ли в поле КТ мыщелки, уши и глазницы")]
+            findings += ct
+        up, lo = self._jaw_items()
+        scans = {jaw: (item["scan"].vertices, item["scan"].faces) for jaw, item in (("upper", up), ("lower", lo))
+                 if item is not None}
+        bites = any(item["role"] == BITE for item in self.scans.values())
+        occluded = up is not None and lo is not None and (in_occlusion(up["scan"], lo["scan"])
+                                                           or in_occlusion(lo["scan"], up["scan"]))
+        findings += intake.scan_findings(scans, bites or occluded)
+        findings += intake.photo_findings(False, False)
+        return findings
+
+    def intake_check(self, progress=None) -> dict:
+        """Входной контроль: находки (уровень, раздел, что, текст, есть ли картинка) — для окна."""
+        if self.case is None and not self.scans:
+            raise ValueError("откройте КТ или добавьте сканы")
+        if progress:
+            progress(0.2, "Проверяю КТ и сканы")
+        self._intake = self._intake_findings()
+        return {"findings": [{"level": f.level, "section": f.section, "title": f.title, "text": f.text,
+                              "image": f.image is not None} for f in self._intake]}
+
+    def intake_save(self, out_dir: str) -> dict:
+        """Отчёт входного контроля (PDF и PNG) в папку; подпись — дата (имён файлов кейса не берём)."""
+        from datetime import date
+
+        from ... import intake, reports
+
+        errorlog.private(out_dir, "папка отчёта")
+        if not out_dir:
+            raise ValueError("выберите папку для отчёта")
+        findings = getattr(self, "_intake", None) or self._intake_findings()
+        names = reports.save(intake.report(findings, f"Кейс · {date.today().strftime('%d.%m.%Y')}"), out_dir, "intake")
+        self.last_intake = os.path.join(out_dir, names[1])
+        return {"files": names, "out_dir": out_dir}
+
+    def open_intake(self):
+        """Открыть отчёт входного контроля (последний сохранённый — путь не приходит снаружи)."""
+        path = getattr(self, "last_intake", None)
+        if not path or not os.path.isfile(path):
+            raise ValueError("отчёта ещё нет — сначала сохраните его")
+        open_folder(path)
+
 def route(h, s, p, method, q):
     """HTTP-маршруты шага (вызывает server.Handler.api): h — обработчик запроса, s — сессия; True — запрос обработан."""
     if p == ["ct"] and method == "POST":
@@ -358,3 +416,10 @@ def route(h, s, p, method, q):
                                                                    progress))
     if len(p) >= 3 and p[0] == "structures" and p[-1] == "mesh":
         return h.binary(s.structure_mesh("/".join(p[1:-1])))
+    if p == ["intake"] and method == "POST":
+        return h.job("Входной контроль", lambda progress: s.intake_check(progress))
+    if p == ["intake", "save"] and method == "POST":
+        return h.json(s.intake_save(h.body().get("out_dir")))
+    if p == ["intake", "open"] and method == "POST":
+        s.open_intake()
+        return h.json({"ok": True})

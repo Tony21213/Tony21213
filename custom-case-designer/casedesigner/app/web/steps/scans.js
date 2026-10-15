@@ -3,6 +3,7 @@ import { $, JAWS, TRANSLUCENT, app, bumpOverlay, busy, choose, fmt, heatOn, hide
 import { get, mesh, post, run } from '../api.js';
 import { icons } from '../icons.js';
 import { drawArticulationGuides, refreshJointParts } from './articulation.js';
+import { intakeCard } from './ct.js';
 
 export async function addScans() {
   const paths = await choose('scan', 'Скан челюсти (STL, PLY, OBJ)');
@@ -314,5 +315,5 @@ export function renderScans() {
   const lead = ct ? 'STL, PLY или OBJ как есть со сканера. Совмещение — по коронкам зубов, сразу после загрузки; сканы прикуса (bite, TotalJaw) ставятся на сканы челюстей и задают прикус.'
     : 'Без КТ: STL, PLY или OBJ как есть со сканера — сканы стоят в его координатах, сканы прикуса (bite, TotalJaw) ставят нижний скан в прикус. Откройте КТ — сканы совместятся с ним.';
   return `<h2>Сканы</h2><p class="lead">${lead}</p>
-    ${cards}<button class="btn ${state.scans.length ? '' : 'primary'} wide" data-a="scan">${icons.plus}Добавить сканы</button>${tools}${biteCard()}`;
+    ${cards}<button class="btn ${state.scans.length ? '' : 'primary'} wide" data-a="scan">${icons.plus}Добавить сканы</button>${tools}${biteCard()}${ct ? '' : intakeCard()}`;
 }
