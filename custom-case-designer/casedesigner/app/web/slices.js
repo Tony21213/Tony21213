@@ -1,7 +1,8 @@
 // Срез КТ: картинка с сервера, контуры сканов и структур поверх, перекрестие других срезов.
-// Колесо — масштаб к точке под курсором (назад до конца — вписать), нажатое колесо — сдвиг,
-// правая кнопка — яркость и контраст (вбок — контраст, вверх-вниз — яркость), двойной щелчок —
-// развернуть срез на всё окно; ползунок внизу — срезы (колесо над ползунком тоже листает срезы).
+// Мышь как в окне 3D (exocad): колесо — масштаб к точке под курсором (назад до конца — вписать), правая кнопка —
+// листать срезы (вверх-вниз, Shift — по 5), левая + правая или нажатое колесо — сдвиг, щелчок колесом — точку в
+// центр, Ctrl + правая — яркость и контраст (вбок — контраст, вверх-вниз — яркость), двойной щелчок — развернуть
+// срез на всё окно; ползунок внизу — срезы (колесо над ползунком тоже листает срезы).
 // Ручная поправка выбранного скана — манипулятор на срезе (кольцо с центром на скане): тянуть внутри
 // кольца — сдвиг в плоскости среза, за кольцо — поворот вокруг центра; стрелки — точный сдвиг,
 // Ctrl+←/→ — точный поворот (с Shift — крупнее). Контур скана двигается сразу, без ожидания сервера.
@@ -14,6 +15,8 @@ export const AXES = {
 };
 const NORMAL_AXIS = { axial: 2, coronal: 1, sagittal: 0 };
 const MAX_ZOOM = 40;
+const PX_PER_SLICE = 4; // правая кнопка: столько пикселей мыши вверх-вниз — на один срез
+const CENTER_STEPS = 8; // щелчок колесом: точка в центр за столько шагов
 const MAX_PIXELS = 2048; // сторона картинки видимой части среза (как на сервере)
 const CACHE = 48; // столько последних картинок срезов держится в памяти
 const STEP_MM = [0.05, 0.25]; // стрелки: сдвиг, мм (с Shift — второе)
@@ -45,7 +48,7 @@ export class SliceView {
     el.innerHTML = `<div class="view-label"><i class="dot" style="background:${AXES[axis].color}"></i><b>${AXES[axis].title}</b><span class="pos"></span></div>
       <div class="empty"><span>КТ не открыт</span></div>
       <input type="range" class="slice-slider" title="Срез" hidden style="accent-color:${AXES[axis].color}">
-      <select class="wl-preset" title="Окно КТ: яркость и контраст (правая кнопка мыши — вручную)" hidden></select>`;
+      <select class="wl-preset" title="Окно КТ: яркость и контраст (Ctrl + правая кнопка мыши — вручную)" hidden></select>`;
     el.appendChild(this.canvas);
     this.posLabel = el.querySelector('.pos');
     this.emptyEl = el.querySelector('.empty');
@@ -63,6 +66,7 @@ export class SliceView {
     this.zoom = 1;
     this.pan = [0, 0]; // сдвиг изображения, пиксели холста
     this.drag = null; // перетаскивание манипулятора: { id, mode, start, now, centre }
+    this.gesture = null; // нажатие мыши: { kind: left | middle | right, last, chord — были левая и правая вместе }
     this.pending = null; // { id, m } — поправка, которую сервер ещё не вернул контуром
     new ResizeObserver(() => { this.draw(); this.refreshSoon(); }).observe(el);
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
@@ -71,6 +75,7 @@ export class SliceView {
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     this.canvas.addEventListener('pointerenter', () => { hovered = this; });
     this.canvas.addEventListener('pointerleave', () => { if (hovered === this) hovered = null; });
+    this.canvas.addEventListener('pointermove', (e) => this.onChord(e)); // первым: раньше обработчиков нажатия
     this.canvas.addEventListener('pointermove', (e) => this.onHover(e));
     this.canvas.addEventListener('dblclick', (e) => {
       if (this.manipulator() && this.hit(this.manipulator(), e.offsetX, e.offsetY)) return; // на манипуляторе — нет
@@ -134,27 +139,83 @@ export class SliceView {
     if (e.button !== 1 && e.button !== 2) return;
     e.preventDefault();
     try { this.canvas.setPointerCapture(e.pointerId); } catch { /* указатель уже отпущен */ }
-    const start = [e.clientX, e.clientY], pan = [...this.pan], [level, width] = this.app.window;
-    const windowing = e.button === 2;
+    const start = [e.clientX, e.clientY], [level, width] = this.app.window;
+    const windowing = e.button === 2 && (e.ctrlKey || e.metaKey);
+    const g = this.gesture = { kind: e.button === 1 ? 'middle' : 'right', last: [...start], moved: false, chord: false, acc: 0 };
     const move = (ev) => {
-      const dx = ev.clientX - start[0], dy = ev.clientY - start[1];
+      if (!g.moved && Math.hypot(ev.clientX - start[0], ev.clientY - start[1]) < 3) return;
+      g.moved = true;
+      const dx = ev.clientX - g.last[0], dy = ev.clientY - g.last[1];
+      g.last = [ev.clientX, ev.clientY];
       if (windowing) { // вбок — шире или уже окно, вверх-вниз — светлее или темнее
         const k = width / 300;
-        this.app.setWindow?.([level - dy * k, Math.max(1, width + dx * k)]);
-        return;
+        this.app.setWindow?.([level - (ev.clientY - start[1]) * k, Math.max(1, width + (ev.clientX - start[0]) * k)]);
+      } else if (g.kind === 'right') { // вверх — дальше, вниз — назад
+        g.acc -= dy;
+        const n = Math.trunc(g.acc / PX_PER_SLICE);
+        if (n) {
+          g.acc -= n * PX_PER_SLICE;
+          this.step(n * (ev.shiftKey ? 5 : 1));
+        }
+      } else {
+        this.panBy(dx, dy);
       }
-      this.pan = [pan[0] + dx, pan[1] + dy];
-      this.draw();
-      this.refreshSoon();
     };
-    const up = () => {
+    const up = (ev) => {
       this.canvas.removeEventListener('pointermove', move);
       this.canvas.removeEventListener('pointerup', up);
       this.canvas.style.cursor = '';
+      this.gesture = null;
+      if (g.kind === 'middle' && !g.moved && !g.chord) this.centerAt(ev.offsetX, ev.offsetY);
     };
     this.canvas.addEventListener('pointermove', move);
     this.canvas.addEventListener('pointerup', up);
-    this.canvas.style.cursor = windowing ? 'ns-resize' : 'grabbing';
+    this.canvas.style.cursor = windowing ? 'ns-resize' : g.kind === 'right' ? 'row-resize' : 'grabbing';
+  }
+
+  // Левая и правая вместе — сдвиг (браузер присылает вторую кнопку движением мыши, не нажатием). Потом осталась
+  // правая — листаем дальше с этого места; осталась левая — ничего, и перекрестие при отпускании не ставится.
+  onChord(e) {
+    const g = this.gesture;
+    if (!g || !e.buttons || !this.geometry || e.pointerType !== 'mouse') return;
+    if ((e.buttons & 3) === 3 && !this.drag) {
+      if (!g.chord || g.after) { // начало сдвига: от этой точки
+        g.chord = true;
+        g.after = false;
+        g.last = [e.clientX, e.clientY];
+      }
+      this.panBy(e.clientX - g.last[0], e.clientY - g.last[1]);
+      g.last = [e.clientX, e.clientY];
+      g.moved = true;
+      e.stopImmediatePropagation();
+    } else if (g.chord) {
+      if (!g.after) { // кнопку отпустили: дальше — от этой точки, без скачка
+        g.after = true;
+        g.last = [e.clientX, e.clientY];
+      }
+      if (!(e.buttons === 2 && g.kind === 'right')) e.stopImmediatePropagation();
+    }
+  }
+
+  panBy(dx, dy) {
+    if (!dx && !dy) return;
+    this.pan = [this.pan[0] + dx, this.pan[1] + dy];
+    this.draw();
+    this.refreshSoon();
+  }
+
+  // Щелчок колесом: точка под курсором — в центр среза, плавно.
+  centerAt(cx, cy) {
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+    const dx = (w / 2 - cx) / CENTER_STEPS, dy = (h / 2 - cy) / CENTER_STEPS;
+    let i = 0;
+    const step = () => {
+      this.pan = [this.pan[0] + dx, this.pan[1] + dy];
+      this.draw();
+      if (++i < CENTER_STEPS) setTimeout(step, 16);
+      else this.refreshSoon();
+    };
+    step();
   }
 
   // Центр манипулятора на срезе (мм по осям среза) и что под точкой холста: сдвиг, поворот или ничего.
@@ -177,6 +238,7 @@ export class SliceView {
     const mode = t && this.hit(t, e.offsetX, e.offsetY);
     try { this.canvas.setPointerCapture(e.pointerId); } catch { /* указатель уже отпущен */ }
     const start = this.toPlane(e.offsetX, e.offsetY);
+    const g = this.gesture = { kind: 'left', last: [e.clientX, e.clientY], moved: false, chord: false };
     const move = (ev) => {
       if (!mode) return;
       const r = this.canvas.getBoundingClientRect();
@@ -186,11 +248,12 @@ export class SliceView {
     const up = (ev) => {
       this.canvas.removeEventListener('pointermove', move);
       this.canvas.removeEventListener('pointerup', up);
+      this.gesture = null;
       if (this.drag) {
         const m = this.dragMatrix(this.drag);
         this.drag = null;
         this.commit(t.id, m);
-      } else if (!mode) {
+      } else if (!mode && !g.chord) { // после сдвига двумя кнопками перекрестие не ставится
         const p = this.toWorld(ev.offsetX, ev.offsetY);
         if (p) this.app.setCursor(p);
       }
