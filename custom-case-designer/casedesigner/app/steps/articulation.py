@@ -57,14 +57,14 @@ class ArticulationSteps:
         hinge, _ct_points, why = self._mount_condyles()
         if hinge is None:
             raise ValueError(f"монтаж по КТ невозможен: {why}")
-        face = self._face_points()
-        available = mplanes.available(self.landmarks, hinge, face is not None)
+        face = self._face_points() is not None or self.photo_aesthetic() is not None  # кости лица или фото
+        available = mplanes.available(self.landmarks, hinge, face)
         if plane is not None:
             info = available[plane]
             if not info["available"]:
                 raise ValueError(f"плоскость «{info['name']}» недоступна: не хватает {', '.join(info['missing'])}")
             return plane, None, hinge
-        resolved, note = mplanes.resolve(preferred, self.landmarks, hinge, face is not None)
+        resolved, note = mplanes.resolve(preferred, self.landmarks, hinge, face)
         return resolved, note, hinge
 
     def validate_articulation_mount(self, method: str = "auto", plane: str | None = None) -> dict:
@@ -90,7 +90,8 @@ class ArticulationSteps:
         if self.case is not None:
             hinge, _ct_points, _why = self._mount_condyles()
         face = self._face_points()
-        planes = mplanes.available(self.landmarks, hinge, face is not None)
+        photo = self.photo_aesthetic()  # «Эстетика»: совмещённое фото — эстетическая система без костей лица
+        planes = mplanes.available(self.landmarks, hinge, face is not None or photo is not None)
         tilt = {}
         if self._articulation_ready and self.jaw.upper is not None and self.jaw.lower_vertices is not None:
             up = mo.occlusal_up(self.jaw.upper.vertices, self.jaw.lower_vertices)
@@ -100,12 +101,14 @@ class ArticulationSteps:
                     continue
                 try:
                     if key in ("aesthetic", "aesthetic_hinge"):
-                        if face is None:
+                        if face is None and photo is None:
                             continue
                         base = mplanes.base_for_aesthetic(self.landmarks, hinge)
                         base_R = mplanes.rotation(base, up, anterior, self.landmarks, hinge)
                         from ... import aesthetic as ae
-                        aesthetic_frame = ae.aesthetic_frame_ct(rigid(base_R, np.zeros(3)), face).frame
+                        base_frame = rigid(base_R, np.zeros(3))
+                        aesthetic_frame = (photo(base_frame) if photo is not None
+                                           else ae.aesthetic_frame_ct(base_frame, face)).frame
                         if key == "aesthetic":
                             rotation = aesthetic_frame[:3, :3]
                         else:
@@ -198,8 +201,9 @@ class ArticulationSteps:
         if method == "ct":
             self._case_mount_plane = selected_plane
         face = self._face_points() if method == "ct" else None
+        photo = self.photo_aesthetic() if method == "ct" else None  # «Эстетика»: по фото, если оно совмещено
         result = self.jaw.mount(method, condyles=hinge, ct_condyles=ct_points, plane=selected_plane,
-                                landmarks=self.landmarks, face_points=face)
+                                landmarks=self.landmarks, face_points=face, photo_aesthetic=photo)
         if fallback_note:
             self.jaw.notes = [*self.jaw.notes, fallback_note]
             result = self.jaw.state()

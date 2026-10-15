@@ -16,13 +16,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import errorlog
 from .session import Session, mesh_bytes  # noqa: F401 — mesh_bytes: прежний импорт для тестов
-from .steps import articulation, casefile, ct, export, landmarks, scans
+from .steps import aesthetics, articulation, casefile, ct, export, landmarks, scans
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 USER_ERRORS = (ValueError, FileNotFoundError, FileExistsError, KeyError, RuntimeError)
 
 # Маршруты шагов (порядок — как раньше в одном списке).
-STEP_ROUTES = [ct.route, export.route, scans.route, casefile.route, articulation.route, landmarks.route]
+STEP_ROUTES = [ct.route, export.route, scans.route, aesthetics.route, casefile.route, articulation.route,
+               landmarks.route]
 
 
 def routes_source() -> str:

@@ -394,3 +394,13 @@ button.badge:hover { color: var(--text); }
 .exocad-export-role span { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
 .exocad-export-copy { margin: 9px 0 0; padding: 7px 8px; border-left: 2px solid var(--accent); background: var(--accent-soft); color: var(--muted); font-size: 11.5px; }
 .exocad-export-copy b { color: var(--text); font-weight: 500; }
+
+/* --- шаг «Эстетика»: фото вместо срезов КТ --- */
+.view.photo { display: none; grid-column: 2; grid-row: 1 / span 3; }
+.main.photo-mode .view[data-axis] { display: none; }
+.main.photo-mode .view.photo { display: block; }
+.main.one-max.photo-mode .view.photo:not(.max) { display: none; }
+.view.photo canvas { touch-action: none; }
+.aes-row { display: flex; justify-content: space-between; gap: 12px; margin: 3px 2px; color: var(--muted); font-size: 12px; }
+.aes-row b { color: var(--text); font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.view.photo .view-hint { white-space: normal; max-width: calc(100% - 24px); width: max-content; text-align: center; border-radius: 12px; }

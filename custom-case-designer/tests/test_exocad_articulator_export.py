@@ -366,6 +366,43 @@ def test_http_export_creates_project_copy_with_aesthetic_role(case, project, reg
         server.shutdown()
 
 
+def test_http_export_takes_photos_from_aesthetics_step(case, project, register, tmp_path, monkeypatch):
+    """Шаг «Эстетика»: фото с камерами из сессии (Session._export_photos) — в набор Smile Design выгрузки."""
+    import time
+    import urllib.request
+
+    from casedesigner import aesthetic as ae
+    from casedesigner.app.server import serve
+
+    R = np.array([[-1.0, 0, 0], [0, 0, -1.0], [0, -1.0, 0]])
+    centre = case.anatomy.points["incisal"] + [0, 300.0, 0]
+    cam = ae.Camera(np.array([[900.0, 0, 60], [0, 900.0, 40], [0, 0, 1]]), R, -R @ centre, 0.4, size=(120, 80))
+    image = np.full((80, 120, 3), 180, np.uint8)
+    app = exocad_app(tmp_path, custom=True)
+    monkeypatch.setattr(ef, "find_exocad", lambda: app)
+    monkeypatch.setattr(ef, "load_register", lambda _path: register)
+    case.aesthetic = np.eye(3)
+    monkeypatch.setattr(xa, "case_from_session", lambda _session: case)
+    session = _export_session()
+    session._export_photos = lambda: [{"kind": "smile", "image": image, "camera": cam},
+                                      {"kind": "retracted", "image": image, "camera": cam}]
+    server = serve(session)
+    try:
+        status, answer = _http_export(server, {"project": str(project), "out": None})
+        assert status == 200
+        for _ in range(200):
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/jobs/{answer['job']}") as r:
+                job = json.loads(r.read())
+            if job["status"] != "running":
+                break
+            time.sleep(0.02)
+        assert job["status"] == "done", job["error"]
+        assert job["result"]["files"]["эстетический вид"] == ["case-001-KStom.treatmentImages",
+                                                                "case-001-KStom-smile.jpg", "case-001-KStom-retracted.jpg"]
+    finally:
+        server.shutdown()
+
+
 @pytest.mark.parametrize(("body", "ready", "applied", "message"), [
     ({}, True, True, "выберите папку проекта"),
     ({"project": "project"}, False, False, "точки мыщелков не готовы"),

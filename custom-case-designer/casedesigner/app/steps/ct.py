@@ -345,7 +345,7 @@ class CtSteps:
         occluded = up is not None and lo is not None and (in_occlusion(up["scan"], lo["scan"])
                                                            or in_occlusion(lo["scan"], up["scan"]))
         findings += intake.scan_findings(scans, bites or occluded)
-        findings += intake.photo_findings(False, False)
+        findings += intake.photo_findings("smile" in self.photos, "retracted" in self.photos)
         return findings
 
     def intake_check(self, progress=None) -> dict:
