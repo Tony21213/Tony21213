@@ -1,4 +1,4 @@
-"""Кнопка «Входной контроль» (docs/handoff/intake.md): сессия, HTTP, отчёт PDF и PNG; кейс без КТ."""
+"""Кнопка «Входной контроль» (docs/handoff/archive/intake.md): сессия, HTTP, отчёт PDF и PNG; кейс без КТ."""
 
 import json
 import time
