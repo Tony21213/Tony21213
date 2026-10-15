@@ -404,3 +404,40 @@ button.badge:hover { color: var(--text); }
 .aes-row { display: flex; justify-content: space-between; gap: 12px; margin: 3px 2px; color: var(--muted); font-size: 12px; }
 .aes-row b { color: var(--text); font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .view.photo .view-hint { white-space: normal; max-width: calc(100% - 24px); width: max-content; text-align: center; border-radius: 12px; }
+
+/* --- панель объектов окна 3D (как в exocad): видимость и прозрачность на любом шаге; компактно --- */
+.objbar {
+  position: absolute; left: 8px; top: 44px; z-index: 3; width: 184px; max-height: calc(100% - 100px);
+  display: flex; flex-direction: column; border-radius: 6px; background: rgba(16, 19, 26, .86);
+  border: 1px solid var(--line); backdrop-filter: blur(6px); font-size: 11px; line-height: 1.2; user-select: none;
+}
+.objbar.collapsed { width: auto; }
+.ob-title { display: flex; align-items: center; gap: 4px; padding: 3px 4px 3px 7px; cursor: pointer; color: var(--muted); }
+.ob-title b { flex: 1; color: var(--muted); font-weight: 500; font-size: 10.5px; letter-spacing: .3px; text-transform: uppercase; }
+.ob-list { overflow: auto; padding: 0 3px 3px; }
+.ob-row { display: grid; grid-template-columns: 16px 10px minmax(0, 1fr) 52px; align-items: center; gap: 3px; height: 18px; }
+.ob-row.head .ob-name { color: var(--text); font-weight: 500; cursor: pointer; }
+.ob-sub .ob-row { padding-left: 9px; }
+.ob-row.off .ob-name { color: var(--faint); }
+.ob-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.ob-row .dot { width: 6px; height: 6px; border-radius: 50%; justify-self: center; }
+.ob-chev { display: flex; justify-content: center; color: var(--muted); transition: transform .12s; }
+.ob-chev svg { width: 9px; height: 9px; }
+.ob-eye {
+  width: 16px; height: 16px; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--text);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.ob-eye:hover { background: var(--panel-3); }
+.ob-eye svg { width: 12px; height: 12px; opacity: .28; }
+.ob-eye.on svg { opacity: 1; }
+.ob-eye.mixed svg { opacity: .6; }
+.objbar input[type=range] { -webkit-appearance: none; appearance: none; width: 52px; height: 12px; margin: 0; background: none; cursor: pointer; }
+.objbar input[type=range]::-webkit-slider-runnable-track {
+  height: 3px; border-radius: 2px; background: linear-gradient(to right, var(--accent) var(--v, 100%), var(--line) var(--v, 100%));
+}
+.objbar input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 8px; height: 8px; margin-top: -2.5px; border-radius: 50%; background: var(--text); border: 0;
+}
+.objbar input[type=range]::-moz-range-track { height: 3px; border-radius: 2px; background: var(--line); }
+.objbar input[type=range]::-moz-range-progress { height: 3px; border-radius: 2px; background: var(--accent); }
+.objbar input[type=range]::-moz-range-thumb { width: 8px; height: 8px; border-radius: 50%; background: var(--text); border: 0; }
