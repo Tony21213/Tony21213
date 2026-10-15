@@ -33,4 +33,3 @@ def test_slices_like_3d_right_button_scrolls():
     case = (WEB / "steps" / "case.js").read_text(encoding="utf-8")
     assert "['Правая кнопка', 'листать срезы: вверх-вниз (Shift — по 5)']" in case
     assert "['Ctrl + правая', 'яркость и контраст КТ']" in case
-
