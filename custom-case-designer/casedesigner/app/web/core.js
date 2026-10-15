@@ -52,7 +52,7 @@ export const app = {
     this.cursor = p;
     slices.forEach((s) => s.refresh());
   },
-  visibleKeys: () => [...state.scans.filter((s) => s.transform).map((s) => s.id), ...state.visible],
+  visibleKeys: () => [...state.scans.filter((s) => s.transform && !viewer.userHidden.has(s.id)).map((s) => s.id), ...state.visible],
   landmarkPoints: () => [],
   placeLandmark: () => {},
   overlayVersion: () => overlayVersion,
@@ -104,8 +104,8 @@ export const panel = $('#panel');
 export const viewer = new Viewer3D($('#view3d'));
 export const slices = [...document.querySelectorAll('.view[data-axis]')].map((el) => new SliceView(el, el.dataset.axis, app));
 window.ccd = { app, slices, viewer, state }; // для проверки интерфейса в браузере
-$('#view3d').addEventListener('dblclick', () => {
-  if (!state.condyleEditing) app.toggleMax($('#view3d'));
+$('#view3d').addEventListener('dblclick', (e) => {
+  if (!state.condyleEditing && !e.target.closest('.objbar')) app.toggleMax($('#view3d'));
 }); // развернуть 3D (Esc — обратно)
 
 // ---------- общие помощники ----------
@@ -263,9 +263,9 @@ export async function loadStructures(list) {
   state.structures = list;
   state.visible = new Set(list.map((s) => s.key).filter((k) => !k.startsWith('pulp/') && !HIDDEN_BY_DEFAULT.includes(k)));
   await Promise.all(list.map(async (s) => {
-    const m = viewer.setMesh(s.key, await mesh(`structures/${encodeURIComponent(s.key).replace(/%2F/g, '/')}/mesh`),
+    viewer.setMesh(s.key, await mesh(`structures/${encodeURIComponent(s.key).replace(/%2F/g, '/')}/mesh`),
       { color: s.color, opacity: TRANSLUCENT[s.key] ?? 1, order: TRANSLUCENT[s.key] ? 1 : 0 });
-    m.visible = state.visible.has(s.key);
+    viewer.setVisible(s.key, state.visible.has(s.key));
   }));
   viewer.setVisible('ct_teeth', !list.length);
 }
@@ -323,6 +323,7 @@ export function render() {
     ${icons[s.icon]}<span>${s.title}</span><i class="dot"></i></button>`).join('');
   $('.main').classList.toggle('photo-mode', state.step === 'aesthetics'); // фото — вместо срезов КТ
   panel.innerHTML = RENDER[state.step]();
+  RENDER.objectBar?.(); // панель объектов окна 3D — на всех шагах
   const ct = state.ct;
   const caseName = state.incognito ? 'Кейс' : state.caseInfo?.name || ct?.name || 'Без КТ';
   $('#caseChip').textContent = ct || state.scans.length ? `${caseName}${state.scans.length ? ` · сканов: ${state.scans.length}` : ''}` : '';

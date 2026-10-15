@@ -51,9 +51,9 @@ export async function reloadStructureMeshes() {
     const old = viewer.objects.get(s.key);
     const opacity = old ? old.material.opacity : (TRANSLUCENT[s.key] ?? 1);
     const visible = old ? old.visible : state.visible.has(s.key);
-    const m = viewer.setMesh(s.key, await mesh(`structures/${encodeURIComponent(s.key).replace(/%2F/g, '/')}/mesh`),
+    viewer.setMesh(s.key, await mesh(`structures/${encodeURIComponent(s.key).replace(/%2F/g, '/')}/mesh`),
       { color: s.color, opacity, order: opacity < 1 ? 1 : 0 });
-    m.visible = visible;
+    viewer.setVisible(s.key, visible);
   }));
 }
 

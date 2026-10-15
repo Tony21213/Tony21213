@@ -7,11 +7,13 @@ import { helpDialog, openCase, saveCase, settingsDialog } from './steps/case.js'
 import { downloadModels, intakeCheck, intakeSave, openCt, partsDialog, renderCt, segment } from './steps/ct.js';
 import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport } from './steps/export.js';
 import { aestheticAction, aestheticPick, aestheticPointerDown, endAesthetics, prepareAesthetics, renderAesthetics } from './steps/aesthetics.js';
+import { renderObjectBar } from './objectbar.js';
 import { accept, addScans, biteCorrect, biteDecide, endCorrection, refine, register, removeScan, renderScans, resetAuto, revertCorrection, startCorrection, stepHistory, toggleBite } from './steps/scans.js';
 
 // панели шагов и мышь в окне 3D — здесь: шаги исполняются при загрузке раньше core.js (циклические импорты)
 RENDER.ct = renderCt;
 RENDER.scans = renderScans;
+RENDER.objectBar = renderObjectBar; // панель объектов окна 3D
 RENDER.aesthetics = renderAesthetics;
 RENDER.articulation = renderArticulation;
 RENDER.export = renderExport;

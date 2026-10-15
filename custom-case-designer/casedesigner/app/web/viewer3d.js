@@ -31,6 +31,12 @@ export class Viewer3D {
     this.el = el;
     this.onTransformEnd = onTransformEnd;
     this.objects = new Map();
+    // Видимость: wanted — что показывает шаг программы, userHidden — что скрыл врач в панели объектов (на всех шагах);
+    // на экране — пересечение. userOpacity — прозрачность из панели: переживает пересоздание сетки.
+    this.wanted = new Map();
+    this.userHidden = new Set();
+    this.userOpacity = new Map();
+    this.onObjects = null; // панель объектов: сетки добавились, убрались или сменили видимость
     this.raycaster = new THREE.Raycaster();
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -115,11 +121,32 @@ export class Viewer3D {
     g.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
     g.setIndex(new THREE.BufferAttribute(outward(vertices, faces), 1)); // наружу: прозрачность включается кнопкой
     g.computeVertexNormals();
-    const mesh = new THREE.Mesh(g, this.material(color, opacity));
+    const mesh = new THREE.Mesh(g, this.material(color, this.userOpacity.get(key) ?? opacity));
     mesh.renderOrder = order;
     this.scene.add(mesh);
     this.objects.set(key, mesh);
+    this.show(key, mesh, true);
     return mesh;
+  }
+
+  // Видимость, которую задаёт программа; скрытое врачом в панели объектов остаётся скрытым.
+  show(key, mesh, on) {
+    this.wanted.set(key, on);
+    mesh.visible = on && !this.userHidden.has(key);
+    this.objectsChanged();
+  }
+
+  objectsChanged() {
+    clearTimeout(this.objectsTimer);
+    this.objectsTimer = setTimeout(() => this.onObjects?.(), 30);
+  }
+
+  // Панель объектов: скрыть или показать объект на всех шагах.
+  setUserHidden(key, hidden) {
+    if (hidden) this.userHidden.add(key); else this.userHidden.delete(key);
+    const mesh = this.objects.get(key);
+    if (mesh) mesh.visible = (this.wanted.get(key) ?? true) && !hidden;
+    this.objectsChanged();
   }
 
   // Скан: геометрия сдвинута к своему центру, чтобы гизмо вращало скан вокруг него.
@@ -134,7 +161,7 @@ export class Viewer3D {
     }
     const mesh = this.setMesh(id, { vertices: centred, faces }, { color, order: 2 });
     mesh.userData = { centre: c, color, scan: true };
-    mesh.visible = !!transform;
+    this.show(id, mesh, !!transform);
     if (transform) this.setTransform(id, transform);
     return mesh;
   }
@@ -146,7 +173,7 @@ export class Viewer3D {
     const T = new THREE.Matrix4().set(...transform.flat());
     const M = T.multiply(new THREE.Matrix4().makeTranslation(mesh.userData.centre));
     M.decompose(mesh.position, mesh.quaternion, mesh.scale);
-    mesh.visible = true;
+    if (!this.wanted.get(id)) this.show(id, mesh, true);
   }
 
   // Матрица движения для структуры, чья геометрия уже лежит в координатах КТ.
@@ -231,10 +258,11 @@ export class Viewer3D {
 
   setVisible(key, on) {
     const mesh = this.objects.get(key);
-    if (mesh) mesh.visible = on;
+    if (mesh) this.show(key, mesh, on);
   }
 
   setOpacity(key, opacity) {
+    this.userOpacity.set(key, opacity);
     const mesh = this.objects.get(key);
     if (!mesh) return;
     mesh.material.opacity = opacity;
@@ -252,6 +280,8 @@ export class Viewer3D {
     mesh.geometry.dispose();
     mesh.material.dispose();
     this.objects.delete(key);
+    this.wanted.delete(key);
+    this.objectsChanged();
   }
 
   attach(id, mode) {
