@@ -6,6 +6,8 @@ import { icons } from './icons.js';
 
 const EXTRA = { ct_teeth: 'Поверхность КТ', ct_bone: 'Кость по КТ' };
 const JOINT = { head: ['Головка', 'правая', 'левая'], slope: ['Скат бугорка', 'правый', 'левый'] };
+const ROOTS = { 'roots:upper': ['Корни верхних зубов', '#f1d9a6'], 'roots:lower': ['Корни нижних зубов', '#f1d9a6'],
+  'axes:upper': ['Оси верхних зубов', '#ff8a3d'], 'axes:lower': ['Оси нижних зубов', '#ff8a3d'] };
 const STORE = 'ccd.objectBar';
 
 const bar = { open: new Set(['Сканы']), collapsed: false, dragging: false, el: null };
@@ -42,6 +44,8 @@ function groups() {
     if (shown(key)) joints.push({ key, name: `${JOINT[part][0]}, ${JOINT[part][i]}`, color: part === 'head' ? '#48d597' : '#f4c34e' });
   }
   if (joints.length) out.push({ title: 'Суставы', items: joints });
+  const roots = Object.entries(ROOTS).filter(([k]) => shown(k)).map(([key, [name, color]]) => ({ key, name, color }));
+  if (roots.length) out.push({ title: 'Корни из КТ', items: roots });
   return out;
 }
 

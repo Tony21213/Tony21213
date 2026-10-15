@@ -441,3 +441,6 @@ button.badge:hover { color: var(--text); }
 .objbar input[type=range]::-moz-range-track { height: 3px; border-radius: 2px; background: var(--line); }
 .objbar input[type=range]::-moz-range-progress { height: 3px; border-radius: 2px; background: var(--accent); }
 .objbar input[type=range]::-moz-range-thumb { width: 8px; height: 8px; border-radius: 50%; background: var(--text); border: 0; }
+
+/* --- корни зубов из КТ (шаг «Экспорт») --- */
+.roots-list { color: var(--muted); line-height: 1.6; margin: 0 0 8px; font-variant-numeric: tabular-nums; }

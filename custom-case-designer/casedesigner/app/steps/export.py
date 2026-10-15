@@ -5,10 +5,12 @@ from ..common import (  # noqa: F401
     EXOCAD_SUBFOLDER,
     LOWER_BONES,
     UPPER_BONES,
+    apply,
     dataclasses,
     errorlog,
     exocad_project,
     export_case,
+    mesh_bytes,
     mplanes,
     np,
     open_folder,
@@ -216,9 +218,12 @@ class ExportSteps:
         notes = [f"Проект exocad: файлы в подпапке {EXOCAD_SUBFOLDER}, в координатах сцены проекта (матрица — "
                  f"{project.source}). В exocad: «Load mesh as …»; копии сканов там же должны совпасть со сканами проекта."]
         bone_files, bone_notes = self._bones_as_frameworks(project, jaws)
-        if bone_files:
+        if any(f.startswith("bone_") for f in bone_files):
             notes.append("Кости — bone_upper.stl (кость верхней челюсти: череп и верхняя челюсть) и bone_lower.stl "
                          "(кость нижней челюсти); exocad подгрузит их сам и будет двигать с челюстями в артикуляторе.")
+        if any(f.startswith("roots_") for f in bone_files):
+            notes.append("Корни зубов из КТ — roots_upper.stl, roots_lower.stl, оси зубов — tooth_axes_….stl: тем же "
+                         "списком каркасов, что кости; коронки — со сканов.")
         notes += bone_notes
         if frame == "dicom" and self.case is not None:
             notes.append("Для проекта exocad выгрузка всегда в координатах его сцены, а не КТ.")
@@ -229,23 +234,75 @@ class ExportSteps:
                 "bite": report["ct_bite_vs_scans"], "frame": report["frame"], "frameworks": bone_files}
 
     def _bones_as_frameworks(self, project, jaws) -> tuple[list, list]:
-        """Кости КТ — в координаты файла скана своей челюсти и в папку проекта (bone_upper.stl, bone_lower.stl)."""
-        bones, notes = {}, []
+        """Кости КТ, корни зубов из КТ и оси зубов — в координаты файла скана своей челюсти и в папку проекта
+        (bone_….stl, roots_….stl, tooth_axes_….stl и список каркасов челюсти)."""
+        from ... import roots as rt
+
+        found, notes = self.tooth_roots()
+        bones, roots, axes = {}, {}, {}
         for jaw, keys in (("upper", UPPER_BONES), ("lower", LOWER_BONES)):
             reg = next((r for r in jaws if r.jaw == jaw), None)
             parts = [self.structures[k] for k in keys if k in self.structures]
-            if reg is None or not parts:
+            root_mesh, axes_mesh = rt.jaw_mesh(found, jaw), rt.axes_mesh(found, jaw)
+            if reg is None or not (parts or root_mesh is not None):
                 continue
             if project.match(reg.scan.vertices) is None:
-                notes.append(f"{'Верхний' if jaw == 'upper' else 'Нижний'} скан не из этого проекта — кость "
-                             "каркасом не записана.")
+                notes.append(f"{'Верхний' if jaw == 'upper' else 'Нижний'} скан не из этого проекта — кость и корни "
+                             "каркасом не записаны.")
                 continue
-            mesh = trimesh.util.concatenate([trimesh.Trimesh(np.asarray(m.vertices), np.asarray(m.faces), process=False)
-                                             for m in parts])
-            mesh.apply_transform(np.linalg.inv(reg.transform))  # КТ → координаты файла скана этой челюсти
-            bones[jaw] = mesh
-        files, more = exocad_project.write_bone_frameworks(project, bones)
+            to_file = np.linalg.inv(reg.transform)  # КТ → координаты файла скана этой челюсти
+            if parts:
+                mesh = trimesh.util.concatenate([trimesh.Trimesh(np.asarray(m.vertices), np.asarray(m.faces),
+                                                                 process=False) for m in parts])
+                bones[jaw] = mesh.apply_transform(to_file)
+            if root_mesh is not None:
+                roots[jaw] = trimesh.Trimesh(*root_mesh, process=False).apply_transform(to_file)
+            if axes_mesh is not None:
+                axes[jaw] = trimesh.Trimesh(*axes_mesh, process=False).apply_transform(to_file)
+        files, more = exocad_project.write_bone_frameworks(project, bones, roots, axes)
         return files, notes + more
+
+    def tooth_roots(self) -> tuple[dict, list]:
+        """Корни зубов из КТ под коронками сканов (roots.split_teeth): {FDI: Root} и заметки. Сканы — в соотношении
+        КТ (совмещение); кэш — по сеткам зубов и положениям сканов."""
+        from ... import roots as rt
+
+        teeth = {k: m for k, m in self.structures.items() if k.startswith(rt.TOOTH_PREFIX)}
+        up, lo = self._jaw_items()
+        jaws = {jaw: item for jaw, item in (("upper", up), ("lower", lo)) if item is not None}
+        if not teeth or not jaws:
+            return {}, []
+        key = (tuple((k, id(m)) for k, m in sorted(teeth.items())),
+               tuple((jaw, id(item["scan"]), np.asarray(item["reg"].transform, float).tobytes())
+                     for jaw, item in sorted(jaws.items())))
+        cached = getattr(self, "_roots_cache", None)
+        if cached is None or cached[0] != key:
+            scans = {jaw: apply(np.asarray(item["reg"].transform, float), item["scan"].vertices)
+                     for jaw, item in jaws.items()}
+            cached = self._roots_cache = (key, rt.split_teeth(teeth, scans))
+        return cached[1]
+
+    def roots_info(self) -> dict:
+        """Для окна: по зубам (FDI, корень и коронка вдоль оси, мм) и заметки."""
+        from ... import roots as rt
+
+        found, notes = self.tooth_roots()
+        return {"teeth": rt.summary(found), "notes": notes}
+
+    def roots_mesh(self, jaw: str, part: str = "roots") -> bytes:
+        """Корни или оси зубов челюсти для окна 3D: координаты КТ, нижние — в прикусе сканов, если он включён."""
+        from ... import roots as rt
+
+        if jaw not in ("upper", "lower") or part not in ("roots", "axes"):
+            raise ValueError("корни: jaw=upper|lower, part=roots|axes")
+        found, _notes = self.tooth_roots()
+        mesh = rt.jaw_mesh(found, jaw) if part == "roots" else rt.axes_mesh(found, jaw)
+        if mesh is None:
+            raise ValueError("корней этой челюсти нет")
+        v = mesh[0]
+        if jaw == "lower" and self.bite_view and self.bite_motion is not None:
+            v = apply(np.asarray(self.bite_motion, float), v)
+        return mesh_bytes(v, mesh[1])
 
     def _export_ct_only(self, out_dir: str, meshes: dict) -> dict:
         import json
@@ -282,6 +339,10 @@ def route(h, s, p, method, q):
         screens = b.get("screens") if isinstance(b.get("screens"), list) else []
         return h.job("Экспорт для exocad с артикулятором",
                         lambda progress: s.export_exocad_articulator(project, out_dir, progress, screens))
+    if p == ["export", "roots"] and method == "GET":  # корни зубов из КТ (roots.py): по зубам и сетки для 3D
+        if "jaw" in q:
+            return h.binary(s.roots_mesh(q["jaw"], q.get("part", "roots")))
+        return h.json(s.roots_info())
     if p == ["export", "passport", "open"] and method == "POST":
         s.open_passport()
         return h.json({"ok": True})
