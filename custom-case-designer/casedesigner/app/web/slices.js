@@ -16,7 +16,6 @@ export const AXES = {
 const NORMAL_AXIS = { axial: 2, coronal: 1, sagittal: 0 };
 const MAX_ZOOM = 40;
 const PX_PER_SLICE = 4; // правая кнопка: столько пикселей мыши вверх-вниз — на один срез
-const CENTER_STEPS = 8; // щелчок колесом: точка в центр за столько шагов
 const MAX_PIXELS = 2048; // сторона картинки видимой части среза (как на сервере)
 const CACHE = 48; // столько последних картинок срезов держится в памяти
 const STEP_MM = [0.05, 0.25]; // стрелки: сдвиг, мм (с Shift — второе)
@@ -204,18 +203,9 @@ export class SliceView {
     this.refreshSoon();
   }
 
-  // Щелчок колесом: точка под курсором — в центр среза, плавно.
+  // Щелчок колесом: точка под курсором — сразу в центр среза.
   centerAt(cx, cy) {
-    const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
-    const dx = (w / 2 - cx) / CENTER_STEPS, dy = (h / 2 - cy) / CENTER_STEPS;
-    let i = 0;
-    const step = () => {
-      this.pan = [this.pan[0] + dx, this.pan[1] + dy];
-      this.draw();
-      if (++i < CENTER_STEPS) setTimeout(step, 16);
-      else this.refreshSoon();
-    };
-    step();
+    this.panBy(this.canvas.clientWidth / 2 - cx, this.canvas.clientHeight / 2 - cy);
   }
 
   // Центр манипулятора на срезе (мм по осям среза) и что под точкой холста: сдвиг, поворот или ничего.
