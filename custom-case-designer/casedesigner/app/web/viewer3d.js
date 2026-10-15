@@ -60,8 +60,7 @@ export class Viewer3D {
     // курсором (нажатое колесо с движением — тоже сдвиг), колесо — масштаб к точке под курсором. Левая одна — для
     // точек и манипулятора. Вращение и масштаб — OrbitControls, сдвиг и центр — navigation().
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.12;
+    this.controls.enableDamping = false; // без инерции: отпустили кнопку — вид стоит (решение владельца 15.10)
     this.controls.rotateSpeed = 0.8;
     this.controls.screenSpacePanning = true;
     this.controls.zoomToCursor = true;
