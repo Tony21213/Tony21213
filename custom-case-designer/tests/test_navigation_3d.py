@@ -9,6 +9,7 @@ WEB = Path(__file__).parents[1] / "casedesigner" / "app" / "web"
 def test_buttons_like_exocad():
     v = (WEB / "viewer3d.js").read_text(encoding="utf-8")
     assert "this.controls.mouseButtons = { LEFT: null, MIDDLE: null, RIGHT: THREE.MOUSE.ROTATE };" in v
+    assert "this.controls.enableDamping = false;" in v  # без инерции: отпустили кнопку — вид стоит
     assert "(e.buttons & 3) === 3" in v  # левая и правая вместе — сдвиг
     assert "this.centerAt(e.clientX, e.clientY)" in v  # щелчок колесом
     assert v.count("}, true);") >= 3  # слушатели — в фазе захвата, раньше OrbitControls
