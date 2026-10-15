@@ -1,5 +1,5 @@
 // Шаг «Экспорт»: выгрузка в папку и для exocad с артикулятором, панель.
-import { $, busy, choose, fmt, hide, html, plural, render, state, toast } from '../core.js';
+import { $, busy, choose, fmt, hide, html, plural, render, state, toast, viewer } from '../core.js';
 import { get, run } from '../api.js';
 import { icons } from '../icons.js';
 import { condyleReason } from './articulation.js';
@@ -33,13 +33,29 @@ export async function chooseExocadProject() {
   render();
 }
 
+// Снимки окна 3D для паспорта кейса (reports.passport): спереди и справа, без подписей с именем.
+export async function captureScreens() {
+  // кадр рисуется сразу: в скрытом или свёрнутом окне requestAnimationFrame не срабатывает
+  const draw = () => { viewer.controls.update(); viewer.clip?.(); viewer.renderer.render(viewer.scene, viewer.camera); };
+  const shots = [];
+  for (const [view, caption] of [['front', 'Модели спереди'], ['right', 'Справа: шарнир и плоскость монтажа']]) {
+    viewer.fit(view);
+    draw();
+    shots.push({ caption, png: viewer.renderer.domElement.toDataURL('image/png') });
+  }
+  viewer.fit('front');
+  draw();
+  return shots;
+}
+
 export async function doExportExocadArticulator() {
   if (!state.exocadProjectPath) return toast('Выберите папку проекта exocad');
   const c = state.articulationCondyles;
   if (!c?.available || !c.ready || !c.applied) return toast('Сначала подготовьте и примените монтаж по мыщелкам');
+  const screens = await captureScreens();
   await busy('Выгрузка для exocad с артикулятором', async (progress) => {
     state.exocadArticulatorResult = await run('export/exocad-articulator',
-      { project: state.exocadProjectPath, out: null }, progress);
+      { project: state.exocadProjectPath, out: null, screens }, progress);
   });
 }
 
@@ -101,7 +117,7 @@ export function renderExport() {
       в <b>library/articulator</b> exocad — это общий артикулятор${exportResult.library_installed ? ` (в exocad сейчас версия ${exportResult.library_installed}, нужна ${exportResult.library_version})` : ''}.</div>`;
   const exocadResult = exportResult ? `<div class="exocad-export-summary">${exportRoles}</div>
     <div class="label">В проекте exocad</div><div class="kv exocad-project-values">${projectRows.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join('')}</div>
-    ${library}${exportNotes}` : '';
+    ${library}${exportResult.files?.['паспорт кейса'] ? '<button class="btn ghost wide sm" data-a="openpassport">Открыть паспорт кейса</button>' : ''}${exportNotes}` : '';
   const exocadExport = `<div class="card exocad-export"><div class="card-head">${icons.export}<h3>Для exocad с артикулятором</h3></div>
     <p class="muted small">Создаёт копию проекта с моделями, движениями, костями и настройками артикулятора.
       При эстетическом монтаже добавляется роль «Вид Smile Design».</p>

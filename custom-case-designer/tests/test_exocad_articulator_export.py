@@ -321,7 +321,16 @@ def test_http_export_creates_project_copy_with_aesthetic_role(case, project, reg
     monkeypatch.setattr(xa, "case_from_session", lambda _session: case)
     server = serve(_export_session())
     try:
-        status, answer = _http_export(server, {"project": str(project), "out": None})
+        import base64
+        import io
+
+        from PIL import Image
+
+        png = io.BytesIO()
+        Image.new("RGB", (64, 40), (120, 160, 200)).save(png, "PNG")
+        shot = "data:image/png;base64," + base64.b64encode(png.getvalue()).decode()
+        status, answer = _http_export(server, {"project": str(project), "out": None,
+                                               "screens": [{"caption": "Модели спереди", "png": shot}]})
         assert status == 200 and set(answer) == {"job"}
         for _ in range(200):
             with __import__("urllib.request").request.urlopen(
@@ -348,6 +357,11 @@ def test_http_export_creates_project_copy_with_aesthetic_role(case, project, reg
         web = Path(__file__).parents[1] / "casedesigner" / "app" / "web" / "steps" / "export.js"
         ui = web.read_text(encoding="utf-8")
         assert "project_parameters" in ui and "library_installed" in ui and "Один раз (не на каждый кейс)" in ui
+        # паспорт кейса (№8): PDF и PNG в подпапке копии, роль в сводке, снимок окна 3D — в паспорте
+        assert result["files"]["паспорт кейса"] == ["passport.png", "passport.pdf"]
+        sub = copied / "KStomCaseDesigner"
+        assert (sub / "passport.pdf").read_bytes().startswith(b"%PDF") and (sub / "passport.png").is_file()
+        assert "captureScreens" in ui and "openpassport" in ui
     finally:
         server.shutdown()
 

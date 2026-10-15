@@ -86,7 +86,7 @@ document.addEventListener('click', async (e) => {
     'exocad-project': chooseExocadProject, 'exocad-articulator': doExportExocadArticulator,
     getmodels: downloadModels, stopmodels: () => post('models/cancel'), parts: partsDialog,
     openout: () => post('export/open').catch((err) => toast(err.message)), help: helpDialog, incognito: toggleIncognito,
-    settings: settingsDialog, bitefix: biteCorrect, biteaccept: () => biteDecide('accept'),
+    settings: settingsDialog, openpassport: () => post('export/passport/open').catch((err) => toast(err.message)), bitefix: biteCorrect, biteaccept: () => biteDecide('accept'),
     bitereject: () => biteDecide('reject'), bitereset: () => biteDecide('reset'),
     scansonly: () => { state.step = 'scans'; render(); } }[d.a];
   action?.();
