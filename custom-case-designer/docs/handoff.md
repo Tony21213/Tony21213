@@ -10,7 +10,7 @@
 (13.10): `docs/roadmap.md`, «Очередь работ — Порядок работ»; номера «п. …» ниже — оттуда.
 
 Файлы интерфейса — по шагам (п. 7, 14.10): сессия — `app/steps/<шаг>.py` (методы `Session` и HTTP-маршруты
-`route`), окно — `app/web/steps/<шаг>.js` (действия и панель). Шаги: `ct`, `scans`, `articulation`, `landmarks`
+`route`), окно — `app/web/steps/<шаг>.js` (действия и панель). Шаги: `ct`, `scans`, `aesthetics` (15.10), `articulation`, `landmarks`
 (только сессия), `export`, `casefile` / `case` (кейс, настройки, подсказка). Общее: `app/common.py`, `app/session.py`
 (`__init__`, настройки), `app/server.py` (общие маршруты, `STEP_ROUTES`), `app/web/core.js` (состояние, окна КТ и 3D,
 помощники, `render`), `app/web/app.js` (события, старт, регистрация панелей); `style.css` — общий. Задача шага трогает
