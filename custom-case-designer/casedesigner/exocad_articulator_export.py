@@ -98,6 +98,10 @@ class ArticulatorCase:
     # Толщина десны над костью и корнями (gingiva.py): {"upper" | "lower": JawScan с цветами} — сканы в положении
     # выгрузки, цвета по толщине; пишутся в подпапку цветным PLY (в exocad — «Load mesh», как карта отклонений).
     gingiva: dict = field(default_factory=dict)
+    # Полная реабилитация (rehab.py): подъём прикуса — уже в положении нижней челюсти и всего, что с ней (сводка —
+    # rehab_info); шаблон окклюзионной плоскости — {"surface", "curves": JawScan} с верхней челюстью.
+    rehab_info: dict = field(default_factory=dict)
+    occlusal_template: dict = field(default_factory=dict)
 
 
 def articulator_values(anatomy: mo.Anatomy, settings: kin.Settings) -> dict:
@@ -288,12 +292,17 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
         f.write(ef.jawmotion_xml(fb, f"{ef.ARTICULATOR_NAME}: шарнир на мыщелках пациента, гипсовка по горизонтали "
                                      "монтажа", case.movements or None))
     written["файл движений"] = f"{stem}.jawmotion"
-    if case.bones or case.roots:
+    if case.bones or case.roots or case.occlusal_template:
         project = exocad_project.find(folder)
+        extra = {"upper": [(name, case.occlusal_template[part].moved(to_art), exocad_project.TEMPLATE_MATERIAL)
+                           for part, name in (("surface", exocad_project.TEMPLATE_STL),
+                                              ("curves", exocad_project.CURVES_STL))]} if case.occlusal_template else None
         files, bone_notes = exocad_project.write_bone_frameworks(
             project, {jaw: bone.moved(to_art) for jaw, bone in case.bones.items()},
             {jaw: r.moved(to_art) for jaw, r in case.roots.items()},
-            {jaw: ax.moved(to_art) for jaw, ax in case.tooth_axes.items()})
+            {jaw: ax.moved(to_art) for jaw, ax in case.tooth_axes.items()}, extra)
+        if case.occlusal_template:
+            written["шаблон окклюзионной плоскости"] = [f for f in files if f.startswith("occlusal_")]
         notes += bone_notes
         for role, prefix in (("кости", "bone_"), ("корни", "roots_"), ("оси зубов", "tooth_axes_")):
             names = [f for f in files if f.startswith(prefix) and f.endswith(".stl")]
@@ -304,6 +313,19 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
                          "списком каркасов, что кости: двигаются с челюстями; коронки — со сканов")
     notes += list(case.roots_info.get("notes", []))
 
+    r = case.rehab_info
+    if r.get("raise_mm"):
+        molars = r.get("report", {}).get("molars", {})
+        notes.append(f"высота прикуса поднята на {r['raise_mm']:g} мм по резцам ({r.get('angle_deg', 0):g}° вокруг оси "
+                     "мыщелков пациента" + (f"; на молярах справа {molars['right']:g}, слева {molars['left']:g} мм"
+                                           if {"right", "left"} <= set(molars) else "") +
+                     "): нижняя челюсть, её кость, корни и карта десны — в поднятом положении; движения в exocad — от "
+                     "него (проверить в exocad)")
+    if r.get("template_info"):
+        t = r["template_info"]
+        notes.append(f"шаблон окклюзионной плоскости — сфера {t['radius']:g} мм через мыщелки и резцы, кривая Шпее "
+                     f"{t['spee_depth_mm']:g} мм: occlusal_template.stl и occlusal_curves.stl — списком каркасов верхней "
+                     "челюсти")
     sub = os.path.join(folder, SUBFOLDER)
     os.makedirs(sub, exist_ok=True)
     if case.gingiva:
@@ -360,7 +382,7 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
                "plane_height_mm": round(float(incisal_art[2]), 2),
                "condyles_articulator": {s: apply(to_art, fb.condyles[s][None])[0].round(3).tolist() for s in SIDES},
                "case_to_articulator": to_art.round(6).tolist(), "movements": len(case.movements),
-               "articulator_files": art_files, "roots": case.roots_info.get("teeth", [])}
+               "articulator_files": art_files, "roots": case.roots_info.get("teeth", []), "rehab": case.rehab_info}
     with open(os.path.join(sub, "articulator.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
     summary["folder"] = folder
@@ -384,6 +406,9 @@ def case_from_session(session) -> ArticulatorCase:
         raise ValueError("нужны совмещённые сканы обеих челюстей")
     bite = np.eye(4) if session.bite_motion is None else np.asarray(session.bite_motion, float)
     lower_T = jaw.lower_fix @ bite
+    raise_T = getattr(session, "rehab_transform", lambda: None)()  # подъём прикуса по оси пациента (rehab.py)
+    if raise_T is not None:
+        lower_T = raise_T @ lower_T
 
     def scan(item, T):
         own = item["scan"]
@@ -459,6 +484,15 @@ def case_from_session(session) -> ArticulatorCase:
             if axes is not None:
                 case.tooth_axes[jaw] = JawScan(apply(T, axes[0]), axes[1])
         case.roots_info = {"teeth": rt.summary(found), "notes": root_notes}
+    # полная реабилитация: сводка подъёма и шаблон окклюзионной плоскости (с верхней челюстью)
+    if hasattr(session, "rehab_info"):
+        info = session.rehab_info()
+        if info.get("raise_mm") or info.get("template_info"):
+            case.rehab_info = info
+        tpl = session.rehab_template()
+        if tpl is not None:
+            case.occlusal_template = {part: JawScan(np.asarray(tpl[part].vertices), np.asarray(tpl[part].faces))
+                                      for part in ("surface", "curves")}
     # толщина десны: карта — у сессии (кэш); сетка — скан челюсти из сессии в положении выгрузки
     gum_map = getattr(session, "gum_map", None)
     if gum_map is not None:

@@ -492,3 +492,17 @@ def test_patient_photos_go_to_smile_design_by_camera(case, project, register, tm
     to_art = np.array(res["case_to_articulator"])
     assert view == pytest.approx(to_art[:3, :3] @ [0, -1.0, 0], abs=1e-6)  # взгляд — назад, в мм артикулятора
     assert any("фото пациента" in n for n in res["notes"])
+
+
+def test_rehab_template_and_raise_in_export(case, project, register, tmp_path):
+    """Полная реабилитация: шаблон окклюзионной плоскости — списком каркасов верхней челюсти, подъём — в заметках."""
+    box = trimesh.creation.box((10, 10, 1))
+    case.occlusal_template = {part: xa.JawScan(np.asarray(box.vertices), np.asarray(box.faces)) for part in ("surface", "curves")}
+    case.rehab_info = {"raise_mm": 3.0, "angle_deg": 2.2, "report": {"incisal_mm": 3.0, "molars": {"right": 1.9, "left": 2.0}},
+                       "template_info": {"radius": 101.6, "spee_depth_mm": 3.1, "tilt": {}}}
+    res = xa.export(case, str(project), str(tmp_path / "rh"), register=register, exocad_app=exocad_app(tmp_path, custom=True))
+    assert res["files"]["шаблон окклюзионной плоскости"] == ["occlusal_template.stl", "occlusal_curves.stl"]
+    names = [i.findtext("FileName") for i in ET.parse(tmp_path / "rh" / "rh-upperjaw.partialInfo").getroot().iter("PartialFile")]
+    assert names[0] == "bone_upper.stl" and names[-2:] == ["occlusal_template.stl", "occlusal_curves.stl"]
+    assert any("поднята на 3 мм" in n and "справа 1.9" in n for n in res["notes"])
+    assert any("шаблон окклюзионной плоскости" in n for n in res["notes"]) and res["rehab"]["raise_mm"] == 3.0

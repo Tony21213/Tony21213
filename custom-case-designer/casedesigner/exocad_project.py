@@ -130,8 +130,12 @@ def _partial_info(items) -> bytes:
     return ET.tostring(root, encoding="utf-8")
 
 
+TEMPLATE_STL, CURVES_STL = "occlusal_template.stl", "occlusal_curves.stl"  # шаблон окклюзионной плоскости
+TEMPLATE_MATERIAL = "Шаблон окклюзионной плоскости (KStom Case Designer)"
+
+
 def write_bone_frameworks(project: ExocadProject, bones: dict, roots: dict | None = None,
-                          axes: dict | None = None) -> tuple[list[str], list[str]]:
+                          axes: dict | None = None, extra: dict | None = None) -> tuple[list[str], list[str]]:
     """Кости из КТ — в папку проекта: bone_upper.stl (кость верхней челюсти: череп и ВЧ) и bone_lower.stl (кость
     нижней челюсти). Чтобы exocad подгружал их сам и двигал каждую со своей челюстью в артикуляторе, к каждой —
     список каркасов проекта …-upperjaw.partialInfo со ссылкой на файл кости (другого объекта, привязанного к
@@ -147,6 +151,8 @@ def write_bone_frameworks(project: ExocadProject, bones: dict, roots: dict | Non
                                    (axes or {}, AXES_STL, AXES_MATERIAL)):
         for jaw, mesh in meshes.items():
             objects.setdefault(jaw, []).append((name.format(jaw=jaw), mesh, material))
+    for jaw, items in (extra or {}).items():  # {"upper": [(имя .stl, сетка, материал)]} — например, шаблон плоскости
+        objects.setdefault(jaw, []).extend(items)
     files, notes = [], []
     for jaw, items in objects.items():
         info = FRAMEWORK_INFO.format(stem=project.stem, jaw=jaw)
