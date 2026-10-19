@@ -2,7 +2,7 @@
 import { $, NEXT_JAW, RENDER, app, bumpOverlay, busy, loadStructures, render, scanById, showScan, shownRecent, slices, state, toast, toggleIncognito, toggleOpacity, toggleStructures, updateScan, viewer } from './core.js';
 import { get, mesh, post, run } from './api.js';
 import { SliceView } from './slices.js';
-import { articulationAction, editCondyle, endCondyleEdit, endRehab, handleCondylePick, mountWithPlane, nudgeCondyle, playArticulation, prepareArticulation, rehabAction, rememberPointerDown, remountCondyles, renderArticulation, selectMountPlane, toggleJoints, updateCondyles } from './steps/articulation.js';
+import { articulationAction, editCondyle, endCondyleEdit, endRehab, handleCondylePick, loadJoint3d, mountWithPlane, nudgeCondyle, playArticulation, prepareArticulation, rehabAction, rememberPointerDown, remountCondyles, renderArticulation, selectMountPlane, toggleJoints, updateCondyles } from './steps/articulation.js';
 import { helpDialog, openCase, saveCase, settingsDialog } from './steps/case.js';
 import { downloadModels, intakeCheck, intakeSave, openCt, partsDialog, renderCt, segment } from './steps/ct.js';
 import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport, toggleGum, toggleRoots } from './steps/export.js';
@@ -28,7 +28,7 @@ $('#view3d').addEventListener('pointerup', aestheticPick);
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints],[data-aes],[data-gum],[data-lm],[data-rehab-radius],[data-otherjaw]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints],[data-aes],[data-gum],[data-lm],[data-rehab-radius],[data-otherjaw],[data-joint3d-details]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) {
@@ -53,6 +53,7 @@ document.addEventListener('click', async (e) => {
     });
   }
   if (d.rehabRadius) return rehabAction('radius', d.rehabRadius);
+  if (d.joint3dDetails) return loadJoint3d(true);
   if (d.condyleConfirm) return updateCondyles('/confirm', { side: d.condyleConfirm });
   if (d.condyleReset) return updateCondyles('/reset', { side: d.condyleReset });
   if (d.condyleEdit) return editCondyle(d.condyleEdit);

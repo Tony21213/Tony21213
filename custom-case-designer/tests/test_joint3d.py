@@ -1,11 +1,17 @@
 """Суставной путь в 3D (casedesigner/joint3d.py) на искусственном суставе известной формы: головка — эллипсоид,
 крыша ямки — плоская, скат бугорка — под ALPHA, внутренняя стенка — в W0 от головки и уходит внутрь под BETA."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import trimesh
 
+from casedesigner import exocad_articulator_export as xa
 from casedesigner import joint3d as j3
+from casedesigner import kinematics as kin
+from casedesigner.app.session import Session
+from casedesigner.register import rigid
 
 ALPHA, BETA, GAP, W0 = 40.0, 12.0, 1.0, 1.0
 HEAD = (9.0, 4.0, 5.0)  # полуоси головки: вбок, вперёд, вверх
@@ -56,9 +62,9 @@ def fossa(slope=ALPHA, beta=BETA, wall=True):
     return np.asarray(m.vertices), np.asarray(m.faces)
 
 
-def joint(**kw):
+def joint(bite=None, **kw):
     v, f = fossa(**kw)
-    return j3.joint(v, f, head_points(), np.eye(4), np.zeros(3), "right")
+    return j3.joint(v, f, head_points(), np.eye(4), np.zeros(3), "right", bite=bite)
 
 
 def test_known_slope_and_medial_wall():
@@ -79,3 +85,83 @@ def test_no_medial_wall_and_anatomic_disc():
     assert r["anatomic"]["sagittal_deg"] is not None
     with pytest.raises(ValueError, match="кости ямки"):
         j3.joint(*fossa(), head_points() + [0, 0, -60.0], np.eye(4), np.array([0, 0, -60.0]) + [0, 0, 80.0], "right")
+
+
+def test_rest_is_the_bite_not_the_ct():
+    """Покой — головка в прикусе: ниже на КТ-снимке или чуть «в кости» — путь всё равно от неё и по тому же скату."""
+    lower = j3.protrusion(joint(bite=rigid(np.eye(3), [0.0, 0.0, -0.5])))  # в прикусе ниже — щель больше
+    assert lower["rest_gap_mm"] == pytest.approx(GAP + 0.5, abs=0.15)
+    assert tuple(lower["path"][0]) == (0.0, 0.0) and lower["sagittal_deg"] == pytest.approx(ALPHA, abs=5.0)
+    inside = j3.protrusion(joint(bite=rigid(np.eye(3), [0.0, 0.0, GAP + 0.3])))  # прикус по сканам неточен
+    assert inside["rest_gap_mm"] == 0.0 and inside["sagittal_deg"] == pytest.approx(ALPHA, abs=5.0)
+    assert not inside["notes"]  # 0,3 мм — в пределах точности
+    deep = j3.protrusion(joint(bite=rigid(np.eye(3), [0.0, 0.0, GAP + 0.8])))
+    assert any("заходит в кость" in n for n in deep["notes"])
+
+
+def _session(tmp_path, monkeypatch, left="головка мыщелка на нижней челюсти не найдена"):
+    v, f = fossa()
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s.case = SimpleNamespace()
+    s.structures = {"skull": trimesh.Trimesh(v, f, process=False), "mandible": trimesh.creation.box((1, 1, 1))}
+    s.landmarks = {"Co_R": np.zeros(3), "Co_L": np.array([-100.0, 0.0, 0.0])}
+    s.jaw.anatomy = SimpleNamespace(frame=np.eye(4))
+    s.bite_motion = rigid(np.eye(3), [0.0, -0.2, 0.0])  # в прикусе мыщелок на 0,2 мм назад
+    calls = []
+
+    def case_joints(skull, mandible, frame, condyles, bite):
+        calls.append(bite)
+        return {"right": j3.joint(skull.vertices, skull.faces, head_points(), frame, condyles["right"], "right", bite),
+                "left": left}
+    monkeypatch.setattr(j3, "case_joints", case_joints)
+    return s, calls
+
+
+def test_session_applies_3d_sagittal_and_keeps_manual(tmp_path, monkeypatch):
+    s, calls = _session(tmp_path, monkeypatch)
+    st = s.jaw.settings
+    st.sources["sagittal_right_deg"] = "КТ: суставной бугорок"
+    st.sources["sagittal_left_deg"] = "КТ: суставной бугорок"
+    left_before = st.sagittal_left_deg
+    assert s._apply_joint3d()
+    assert st.sagittal_right_deg == pytest.approx(ALPHA, abs=5.0) and st.sources["sagittal_right_deg"] == s.JOINT3D_SOURCE
+    assert st.bennett_right_deg == pytest.approx(st.sagittal_right_deg / 8 + 12, abs=0.1)
+    assert st.sagittal_left_deg == left_before and st.sources["sagittal_left_deg"] == "КТ: суставной бугорок"
+    assert np.allclose(calls[0], s.bite_motion)  # от прикуса
+    assert s.joint3d_paths() is None  # левой стороны в 3D нет — вставки по плоскому профилю
+    info = s.articulation_joint3d()
+    r = info["sides"]["right"]
+    assert info["available"] and not info["applied"] and r["applied"] and "error" in info["sides"]["left"]
+    assert np.allclose(r["path"][0], [0.0, -0.2, 0.0])  # путь в окне — от мыщелка в прикусе
+    assert r["flat_deg"] is not None
+    st.sources["sagittal_right_deg"] = "вручную"
+    st.sagittal_right_deg = 22.0
+    s._apply_joint3d()
+    assert st.sagittal_right_deg == 22.0  # поставленное врачом не трогается
+    assert len(calls) == 1  # суставы — из кэша
+
+
+def test_export_takes_3d_paths(tmp_path, monkeypatch):
+    s, _calls = _session(tmp_path, monkeypatch, left=None)
+    monkeypatch.setattr(j3, "case_joints", lambda skull, mandible, frame, condyles, bite: {
+        side: j3.joint(skull.vertices, skull.faces, head_points(), frame, np.zeros(3), "right", bite)
+        for side in ("right", "left")})
+    s._apply_joint3d()
+    paths = s.joint3d_paths()
+    assert set(paths) == {"right", "left"} and paths["right"].shape[1] == 2
+    info = s.articulation_joint3d(details=True)
+    assert info["applied"] and info["sides"]["right"]["bennett_deg"] == pytest.approx(BETA, abs=3.0)
+    assert info["sides"]["right"]["anatomic_deg"] is not None
+    # выгрузка: пути из 3D, плоский профиль не считается
+    box = trimesh.creation.box((10, 10, 10))
+    item = {"role": "jaw", "path": None, "reg": SimpleNamespace(jaw="upper", transform=np.eye(4)),
+            "scan": SimpleNamespace(vertices=box.vertices, faces=box.faces)}
+    lo = dict(item, reg=SimpleNamespace(jaw="lower", transform=np.eye(4)))
+    session = SimpleNamespace(jaw=SimpleNamespace(anatomy=SimpleNamespace(frame=np.eye(4)), lower_fix=np.eye(4),
+                                                  settings=kin.Settings(), movements={}, mounting="ct"),
+                              bite_motion=None, scans={"u": item, "l": lo}, structures={}, landmarks={},
+                              suggested=set(), landmark_sources={}, _jaw_items=lambda: (item, lo),
+                              joint3d_paths=lambda: paths)
+    monkeypatch.setattr(xa, "ArticulatorCase", lambda *a, **k: SimpleNamespace(args=a, kwargs=k))
+    got = xa.case_from_session(session)
+    assert got.args[6] is paths

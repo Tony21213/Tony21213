@@ -29,6 +29,41 @@ export async function prepareArticulation() {
   } catch (e) { toast(e.message); }
   await loadRehab();
   render();
+  loadJoint3d(); // секунды — без ожидания: карточка появится сама
+}
+
+// Сустав в 3D (joint3d.py): головка по ямке от прикуса; details — Беннетт по стенке ямки, анатомический диск.
+export async function loadJoint3d(details = false) {
+  const fetch3d = async (progress) => { state.joint3d = await run('articulation/joint3d', { details }, progress); };
+  try {
+    if (details) await busy('Суставы в 3D: латеротрузия и диск', fetch3d);
+    else await fetch3d();
+  } catch (e) {
+    if (details) toast(e.message);
+  }
+  drawArticulationGuides();
+  render();
+}
+
+function joint3dCard(mounted) {
+  const j = state.joint3d;
+  if (!mounted || !j?.available) return '';
+  const rows = Object.entries(CONDYLE_SIDES).map(([side, meta]) => {
+    const r = j.sides?.[side] || {};
+    const flat = r.flat_deg == null ? '—' : `${fmt(r.flat_deg, 1)}°`;
+    if (r.error) {
+      return `<div class="aes-row"><span><i class="dot" style="background:${meta.color}"></i>${meta.title}</span><b>—</b></div>
+        <p class="muted small">${hide(r.error)}; плоский расчёт: ${flat}.</p>`;
+    }
+    const extra = r.bennett_deg !== undefined || r.balancing_notes
+      ? `<p class="muted small">Анатомический диск: ССП ${r.anatomic_deg == null ? '—' : `${fmt(r.anatomic_deg, 1)}°`}. По стенке ямки (справочно): Беннетт ${r.bennett_deg == null ? '—' : `${fmt(r.bennett_deg, 1)}°`}, немедленный сдвиг ${r.side_shift_mm == null ? '—' : `${fmt(r.side_shift_mm, 1)} мм`}${(r.balancing_notes || []).length ? `; ${hide(r.balancing_notes.join('; '))}` : ''}.</p>` : '';
+    return `<div class="aes-row"><span><i class="dot" style="background:${meta.color}"></i>${meta.title}: ССП 3D</span><b>${fmt(r.sagittal_deg, 1)}°${r.applied ? ' ✓' : ''}</b></div>
+      <p class="muted small">Плоский срез: ${flat} · щель над головкой ${fmt(r.rest_gap_mm, 1)} мм${r.applied ? ' · применён в монтаже' : r.plausible ? '' : ' · вне 5–75°, не применён'}${(r.notes || []).length ? ` · ${hide(r.notes.join('; '))}` : ''}.</p>${extra}`;
+  }).join('');
+  const detailed = Object.values(j.sides || {}).some((r) => r.bennett_deg !== undefined || r.balancing_notes);
+  return `<div class="card joint3d-card"><div class="card-head">${icons.target}<h3>Сустав в 3D</h3></div>
+    <p class="muted small">Головка мыщелка скользит по ямке черепа с диском (щель в покое), от прикуса. Путь — во вставки exocad; Беннетт — по Ханау.</p>
+    ${rows}${detailed ? '' : '<button class="btn ghost wide" data-joint3d-details="1">Беннетт по стенке ямки и анатомический диск</button>'}</div>`;
 }
 
 export async function articulationAction(kind, body = {}, title = 'Артикулятор') {
@@ -41,6 +76,7 @@ export async function articulationAction(kind, body = {}, title = 'Артику�
     await refreshJointParts();
     await loadRehab(); // система монтажа сменилась — подъём и шаблон заново
   });
+  if (kind === 'mount') { state.joint3d = null; loadJoint3d(); }
 }
 
 export async function selectMountPlane(plane) {
@@ -60,6 +96,8 @@ export async function remountPlane() {
     drawArticulationGuides();
     await refreshJointParts();
   });
+  state.joint3d = null;
+  loadJoint3d();
 }
 
 export async function mountWithPlane(method) {
@@ -100,6 +138,7 @@ export async function refreshJointParts() {
 export async function toggleJoints() {
   state.jointsVisible = !state.jointsVisible;
   render();
+  drawArticulationGuides(); // пути мыщелков в 3D — вместе с суставами
   await drawJointParts();
 }
 
@@ -112,6 +151,16 @@ export function endCondyleEdit() {
   state.condyleEditing = null;
   viewer.remove('ct_bone');
   drawArticulationGuides();
+}
+
+function drawJoint3dPaths() {
+  const j = state.joint3d;
+  if (!state.jointsVisible || !j?.available) return;
+  for (const [side, meta] of Object.entries(CONDYLE_SIDES)) {
+    const r = j.sides?.[side];
+    if (r?.path?.length > 1) viewer.setPath(`art:joint3d:${side}`, r.path, meta.color);
+    if (r?.balancing_path?.length > 1) viewer.setPath(`art:joint3d:${side}:balancing`, r.balancing_path, '#c58bff');
+  }
 }
 
 export function drawArticulationGuides() {
@@ -128,6 +177,7 @@ export function drawArticulationGuides() {
   if (right && left) viewer.setPath('art:hinge', [right, left], '#ffffff');
   if ((space === 'ct' && state.articulationCondyles?.bite === 'scan') || !g?.available
       || (state.articulationCondyles?.available && !state.articulationCondyles.applied)) return;
+  drawJoint3dPaths(); // путь головки от прикуса — по черепу КТ
   const colors = { condyle_right: '#ff6b6b', condyle_left: '#6ba8ff', incisal: '#f5d76e' };
   for (const path of g.paths || []) for (const key of Object.keys(colors))
     viewer.setPath(`art:path:${path.id}:${key}`, path[key], colors[key]);
@@ -438,5 +488,5 @@ export function renderArticulation() {
       + movementCards + analysisText;
   }
   return '<h2>Артикулятор</h2><p class="lead">Здесь выполняется предварительная гипсовка, проигрываются движения и проверяются контакты до экспорта в exocad.</p>'
-    + jointsControl + renderCondylePanel(ready) + body + (ready ? rehabCard(mounted) : '');
+    + jointsControl + renderCondylePanel(ready) + body + (ready ? joint3dCard(mounted) + rehabCard(mounted) : '');
 }

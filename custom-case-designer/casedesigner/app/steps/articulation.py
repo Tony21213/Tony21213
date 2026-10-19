@@ -141,7 +141,7 @@ class ArticulationSteps:
 
         Головки следуют за нижней челюстью в прикусе сканов; скаты остаются на черепе.
         Все сетки возвращаются в координатах 3D-окна. Скат выбирается, как в ядре (JawCase.mount →
-        eminence_profile): череп и точка мыщелка — в соотношении КТ, система — монтажа (anatomy.frame).
+        eminence_profile): череп КТ, точка мыщелка — в прикусе, система — монтажа (anatomy.frame).
         """
         empty = {side: {"head": None, "slope": None} for side in cond.SIDES}
         if not self._articulation_ready or self.jaw.anatomy is None:
@@ -175,18 +175,157 @@ class ArticulationSteps:
                 point = points[side].point
                 if point is None:
                     continue
-                patch = gd.articular_surface(sv, sf, frame, point)
+                patch = gd.articular_surface(sv, sf, frame, cond.to_view(point, self.bite_motion))  # над головкой в прикусе
                 if patch is not None:
                     parts[side]["slope"] = self._compact_mesh(sv, sf[np.asarray(patch, int)])
         self._joint_parts_cache_key, self._joint_parts_cache = signature, parts
         return parts
+
+    # --- сустав в 3D (joint3d.py): настоящая головка по ямке черепа, от прикуса ---------------------------------
+    JOINT3D_SOURCE = "КТ 3D: головка по ямке, от прикуса"
+    JOINT2D_SOURCE = "КТ: суставной бугорок"
+
+    def _joint3d_frame(self):
+        """Система, от которой отсчитаны углы суставов: Settings.frame или система монтажа."""
+        st = self.jaw.settings
+        return np.asarray(st.frame if st.frame is not None else self.jaw.anatomy.frame, float)
+
+    def _joint3d_bite(self):
+        """Нижняя челюсть с КТ в прикус монтажа: прикус сканов и посадка прикуса (как в выгрузке артикулятора)."""
+        bite = np.eye(4) if self.bite_motion is None else np.asarray(self.bite_motion, float)
+        return np.asarray(self.jaw.lower_fix, float) @ bite
+
+    def _joints3d(self):
+        """{"joints": {сторона: Joint | текст ошибки}, "protrusion": {}, "balancing": {}} или None (нет КТ, черепа,
+        нижней челюсти, монтажа или точек мыщелков). Кэш — по сеткам, системе углов, точкам и прикусу."""
+        from ... import joint3d as j3
+
+        skull, mandible = self.structures.get("skull"), self.structures.get("mandible")
+        if self.case is None or skull is None or mandible is None or self.jaw.anatomy is None:
+            return None
+        points = self._condyle_points()
+        if any(points[side].point is None for side in cond.SIDES):
+            return None
+        frame, bite = self._joint3d_frame(), self._joint3d_bite()
+        key = (id(skull), id(mandible), frame.tobytes(), bite.tobytes(),
+               tuple(tuple(np.round(points[side].point, 4)) for side in cond.SIDES))
+        cached = getattr(self, "_joint3d_cache", None)
+        if cached is None or cached[0] != key:
+            joints = j3.case_joints(skull, mandible, frame, {side: points[side].point for side in cond.SIDES}, bite)
+            cached = self._joint3d_cache = (key, {"joints": joints, "protrusion": {}, "balancing": {}})
+        return cached[1]
+
+    def _joint3d_result(self, side: str, kind: str = "protrusion", disc: str = "rest") -> dict | None:
+        """Расчёт стороны (joint3d.protrusion / balancing) из кэша: dict или {"error": текст}; None — суставов нет."""
+        from ... import joint3d as j3
+
+        data = self._joints3d()
+        if data is None:
+            return None
+        store = data[kind]
+        if (side, disc) not in store:
+            j = data["joints"][side]
+            if isinstance(j, str):
+                store[(side, disc)] = {"error": j}
+            else:
+                try:
+                    store[(side, disc)] = (j3.protrusion if kind == "protrusion" else j3.balancing)(j, disc)
+                except ValueError as e:
+                    store[(side, disc)] = {"error": str(e)}
+        return store[(side, disc)]
+
+    def _apply_joint3d(self) -> bool:
+        """После монтажа по КТ: ССП стороны — по суставу в 3D (головка по ямке от прикуса), Беннетт — по Ханау от
+        него. Где 3D не вышел или угол неправдоподобен — остаётся плоский расчёт (или что было). Угол, поставленный
+        вручную или по записи движения, не трогается. True — что-то поменялось."""
+        s = self.jaw.settings
+        changed = False
+        for side in cond.SIDES:
+            key = f"sagittal_{side}_deg"
+            if s.sources.get(key) not in (None, self.JOINT2D_SOURCE, self.JOINT3D_SOURCE):
+                continue
+            r = self._joint3d_result(side)
+            if r is None or "error" in r or not gd.plausible_sagittal(r["sagittal_deg"]):
+                continue
+            setattr(s, key, r["sagittal_deg"])
+            s.sources[key] = self.JOINT3D_SOURCE
+            setattr(s, f"bennett_{side}_deg", round(gd.hanau_bennett(r["sagittal_deg"]), 1))
+            s.sources[f"bennett_{side}_deg"] = "формула Ханау (по ССП 3D)"
+            changed = True
+        return changed
+
+    def joint3d_paths(self) -> dict | None:
+        """Пути мыщелков в 3D для вставок артикулятора exocad ({сторона: N×2 вперёд, вверх}) — только если ССП
+        обеих сторон в монтаже взят из 3D; иначе None (выгрузка возьмёт плоский профиль)."""
+        if self.jaw.anatomy is None:
+            return None
+        if any(self.jaw.settings.sources.get(f"sagittal_{side}_deg") != self.JOINT3D_SOURCE for side in cond.SIDES):
+            return None
+        out = {}
+        for side in cond.SIDES:
+            r = self._joint3d_result(side)
+            if r is None or "error" in r:
+                return None
+            out[side] = np.asarray(r["path"], float)
+        return out
+
+    def articulation_joint3d(self, details: bool = False) -> dict:
+        """Карточка «Сустав в 3D»: по сторонам — ССП 3D (применён ли), плоский ССП от той же точки в прикусе, щель
+        (диск), заметки, путь для окна 3D (точки в координатах КТ: череп не едет). details — ещё анатомический
+        диск и Беннетт / немедленный сдвиг по стенке ямки (справочно, в монтаж не идут)."""
+        out = {"available": False, "sides": {}, "applied": False}
+        data = self._joints3d()
+        if data is None:
+            return out
+        out["available"] = True
+        frame = self._joint3d_frame()
+        Rt = frame[:3, :3].T
+        bite = self._joint3d_bite()
+        points = self._condyle_points()
+        skull = self.structures["skull"]
+        applied = []
+        for side in cond.SIDES:
+            r = self._joint3d_result(side)
+            co = apply(bite, np.asarray(points[side].point, float)[None])[0]
+            try:
+                flat = gd.condylar_path(*gd.eminence_profile(np.asarray(skull.vertices), np.asarray(skull.faces),
+                                                             frame, co))["sagittal_deg"]
+            except ValueError:
+                flat = None
+            info = {"flat_deg": flat}
+            if "error" in r:
+                info["error"] = r["error"]
+                applied.append(False)
+            else:
+                medial = -1.0 if side == "right" else 1.0
+                path = co + np.c_[np.zeros(len(r["path"])), r["path"]] @ Rt
+                info.update(sagittal_deg=r["sagittal_deg"], rest_gap_mm=r["rest_gap_mm"], notes=list(r["notes"]),
+                            path=path.round(3).tolist(), plausible=gd.plausible_sagittal(r["sagittal_deg"]),
+                            applied=self.jaw.settings.sources.get(f"sagittal_{side}_deg") == self.JOINT3D_SOURCE)
+                applied.append(info["applied"])
+                if details:
+                    a = self._joint3d_result(side, disc="anatomic")
+                    info["anatomic_deg"] = a.get("sagittal_deg")
+                    b = self._joint3d_result(side, "balancing")
+                    if "error" not in b:
+                        lat = b["balancing_path"]
+                        info.update(bennett_deg=b["bennett_deg"], side_shift_mm=b["side_shift_mm"],
+                                    balancing_notes=b["notes"],
+                                    balancing_path=(co + np.c_[medial * lat[:, 1], lat[:, 0], lat[:, 2]] @ Rt)
+                                    .round(3).tolist())
+                    else:
+                        info["balancing_notes"] = [b["error"]]
+            out["sides"][side] = info
+        out["applied"] = all(applied)  # обе стороны — по 3D
+        return out
 
     def articulation_mount(self, method: str = "auto", plane: str | None = None) -> dict:
         """Смонтировать модели для предварительного просмотра.
 
         Мыщелки — точки кейса Co_R, Co_L (condyles.py: подтверждённые врачом выше автоматических; недостающие
         предлагаются по нижней челюсти). Шарнир — в прикусе монтажа (в прикусе сканов точки едут с нижней
-        челюстью), бугорок — в соотношении КТ. Точки не готовы: auto монтирует без КТ, ct — ошибка.
+        челюстью), бугорок — от точки в прикусе по черепу КТ; ССП — по суставу в 3D, если он вышел
+        (_apply_joint3d). Точки не готовы: auto монтирует без КТ, ct — ошибка.
         auto с готовыми точками — монтаж по КТ по выбранной плоскости (как validate_articulation_mount)."""
         if not self._articulation_ready:
             self._prepare_jawcase()
@@ -204,6 +343,8 @@ class ArticulationSteps:
         photo = self.photo_aesthetic() if method == "ct" else None  # «Эстетика»: по фото, если оно совмещено
         result = self.jaw.mount(method, condyles=hinge, ct_condyles=ct_points, plane=selected_plane,
                                 landmarks=self.landmarks, face_points=face, photo_aesthetic=photo)
+        if method == "ct" and self._apply_joint3d():
+            result = self.jaw.state()
         if fallback_note:
             self.jaw.notes = [*self.jaw.notes, fallback_note]
             result = self.jaw.state()
@@ -260,7 +401,8 @@ class ArticulationSteps:
                     self.landmark_sources[key] = cond.SOURCE_MANDIBLE
 
     def _mount_condyles(self):
-        """(шарнирные точки в координатах монтажа, точки в соотношении КТ, причина) или (None, None, причина)."""
+        """(шарнирные точки в координатах монтажа, точки для бугорка, причина) или (None, None, причина). Бугорок —
+        тоже от прикуса: головка в прикусе против черепа КТ (КТ бывает снят не в смыкании)."""
         if self.case is None:
             return None, None, "нет КТ"
         self._suggest_missing_condyles()
@@ -272,7 +414,7 @@ class ArticulationSteps:
             why = "; ".join(([f"нет точки: {', '.join(missing)}"] if missing else []) + errors)
             return None, None, why or "точки мыщелков не готовы"
         hinge = {side: cond.to_view(p.point, self.bite_motion) for side, p in points.items()}
-        return hinge, {side: p.point.copy() for side, p in points.items()}, ""
+        return hinge, {side: hinge[side].copy() for side in hinge}, ""
 
     def articulation_condyles(self) -> dict:
         """Состояние точек мыщелков для шага «Артикулятор» (condyles.state)."""
@@ -533,6 +675,11 @@ def route(h, s, p, method, q):
         return h.job("Анализ контактов и движений", lambda progress: s.articulation_report())
     if p == ["articulation", "guides"]:
         return h.json(s.articulation_guides())
+    if p == ["articulation", "joint3d"]:  # сустав в 3D: головка по ямке от прикуса (joint3d.py)
+        if method == "POST":  # расчёт — секунды: задачей
+            details = bool(h.body().get("details"))
+            return h.job("Суставы в 3D", lambda progress: s.articulation_joint3d(details=details))
+        return h.json(s.articulation_joint3d())
     if p == ["articulation", "joint"]:
         parts = s.articulation_joint_parts()
         side, part = q.get("side"), q.get("part")

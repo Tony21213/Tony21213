@@ -392,7 +392,8 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
 def case_from_session(session) -> ArticulatorCase:
     """Собрать вход выгрузки из сессии приложения после монтажа (``Session.articulation_mount``): сканы — из
     исходных файлов с цветом (если файл доступен) в координатах кейса, нижняя челюсть и её кость — в прикусе
-    монтажа (``bite_motion``, посадка прикуса ``JawCase.lower_fix``), пути мыщелков — по черепу КТ у точек кейса.
+    монтажа (``bite_motion``, посадка прикуса ``JawCase.lower_fix``), пути мыщелков — по суставу в 3D
+    (``Session.joint3d_paths``) или по профилю бугорка черепа КТ у точек кейса в прикусе.
 
     Каркас ведущего: ведомый подключает это к ``Session`` (метод выгрузки) и к шагу «Экспорт»."""
     from . import condyles as cond
@@ -440,15 +441,17 @@ def case_from_session(session) -> ArticulatorCase:
     if "mandible" in session.structures:
         m = session.structures["mandible"]
         bones["lower"] = JawScan(apply(lower_T, np.asarray(m.vertices)), np.asarray(m.faces))
-    paths = None
+    # пути мыщелков для вставок: по суставу в 3D (если ССП монтажа из него), иначе — плоский профиль бугорка;
+    # головка — в прикусе, череп — КТ
+    paths = getattr(session, "joint3d_paths", lambda: None)()
     skull = session.structures.get("skull")
     points = cond.resolve(session.landmarks, session.suggested, getattr(session, "landmark_sources", {}))
-    if skull is not None and all(p.point is not None for p in points.values()):
+    if paths is None and skull is not None and all(p.point is not None for p in points.values()):
         paths = {}
         for side, p in points.items():
             try:
                 y, z = guidance.eminence_profile(np.asarray(skull.vertices), np.asarray(skull.faces),
-                                                 jaw.anatomy.frame, p.point)
+                                                 jaw.anatomy.frame, cond.to_view(p.point, session.bite_motion))
                 info = guidance.condylar_path(y, z)
             except ValueError:
                 paths = None

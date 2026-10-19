@@ -469,3 +469,4 @@ button.badge:hover { color: var(--text); }
 
 /* --- высота прикуса и шаблон окклюзионной плоскости (шаг «Артикулятор») --- */
 .rehab-range { width: 100%; margin: 4px 0 2px; accent-color: var(--accent); }
+.joint3d-card .dot { display: inline-block; margin-right: 6px; vertical-align: middle; border-radius: 50%; }
