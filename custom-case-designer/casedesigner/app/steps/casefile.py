@@ -41,7 +41,7 @@ class CaseFileSteps:
                 "landmark_notes": {k: v for k, v in self.landmark_notes.items() if k in self.landmarks},
                 "window": list(self.window), "scans": [], "structures": [],
                 "guide": [], "bite_fix": np.asarray(self.bite_fix, float).tolist(),
-                "photos": self._photos_meta()}
+                "photos": self._photos_meta(), "rehab": getattr(self, "rehab", None)}
         for i, (sid, item) in enumerate(self.scans.items()):
             scan = item["scan"]
             arrays[f"scan{i}_v"], arrays[f"scan{i}_f"] = scan.vertices, scan.faces
@@ -139,6 +139,10 @@ class CaseFileSteps:
             self.bite_fix = np.asarray(meta["bite_fix"], float)
             self._update_bite_motion()
         self._load_photos_meta(meta.get("photos"))  # «Эстетика»: фото — по путям, пары — в координатах скана
+        saved = meta.get("rehab")  # полная реабилитация: подъём прикуса и шаблон
+        self.rehab = None if not isinstance(saved, dict) else {
+            "raise_mm": float(saved.get("raise_mm") or 0.0), "template": bool(saved.get("template")),
+            "radius": float(saved.get("radius") or 101.6)}
         self.case_path = path
         self._remember(path)
         return self.state()

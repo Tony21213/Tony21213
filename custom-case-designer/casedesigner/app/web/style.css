@@ -466,3 +466,6 @@ button.badge:hover { color: var(--text); }
 .ceph-text { text-align: right; font-size: 11px; color: var(--muted); }
 .ceph-row .ok { color: var(--ok); } .ceph-row .warn { color: var(--warn); } .ceph-row .bad { color: var(--bad, #e5534b); }
 .ceph-skip { color: var(--muted); font-size: 11px; padding: 2px 0; }
+
+/* --- высота прикуса и шаблон окклюзионной плоскости (шаг «Артикулятор») --- */
+.rehab-range { width: 100%; margin: 4px 0 2px; accent-color: var(--accent); }

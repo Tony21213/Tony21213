@@ -27,6 +27,7 @@ export async function prepareArticulation() {
     drawArticulationGuides();
     await drawJointParts();
   } catch (e) { toast(e.message); }
+  await loadRehab();
   render();
 }
 
@@ -38,6 +39,7 @@ export async function articulationAction(kind, body = {}, title = 'Артику�
     state.articulationGuides = await get('articulation/guides');
     drawArticulationGuides();
     await refreshJointParts();
+    await loadRehab(); // система монтажа сменилась — подъём и шаблон заново
   });
 }
 
@@ -232,18 +234,94 @@ export async function playArticulation(id) {
     const motion = await get(`articulation/motion/${id}`);
     const lower = state.scans.find((s) => s.jaw === 'lower' && s.role !== 'bite' && s.transform);
     if (!lower) throw new Error('нижний скан не поставлен');
-    const base = lower.transform;
+    const raise = raiseMatrix(); // поднятый прикус: движения — от поднятого положения (как с поднятым штифтом)
+    const base = matMul(raise, lower.transform);
     const lowerStructures = state.structures.filter((s) => s.jaw === 'lower');
     const existing = new Map(lowerStructures.map((s) => [s.key, viewer.objects.get(s.key)?.visible]));
     for (const frame of motion.frames) {
       viewer.setTransform(lower.id, matMul(frame, base));
-      for (const s of lowerStructures) viewer.setObjectTransform(s.key, frame);
+      for (const s of lowerStructures) viewer.setObjectTransform(s.key, matMul(frame, raise));
       await new Promise((ok) => setTimeout(ok, 28));
     }
-    viewer.setTransform(lower.id, base);
-    for (const s of lowerStructures) viewer.setObjectTransform(s.key, [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
+    applyRaise();
     for (const [key, visible] of existing) if (visible !== undefined) viewer.setVisible(key, visible);
   } catch (e) { toast(e.message); }
+}
+
+// ---------- полная реабилитация (rehab.py): подъём прикуса по оси пациента и шаблон окклюзионной плоскости ----------
+const IDENTITY4 = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
+const TEMPLATE_KEYS = ['occl:surface', 'occl:curves'];
+let templateKey = '';
+
+// Нижняя челюсть в окне 3D: с прикусом сканов — одна матрица, как на КТ — другая (сервер считает обе).
+export function raiseMatrix() {
+  const r = state.rehab;
+  if (state.step !== 'articulation' || !r?.raise_mm) return IDENTITY4;
+  return state.biteView?.on ? r.display_bite : r.display_ct;
+}
+
+export function applyRaise(M = raiseMatrix()) {
+  const lower = state.scans.find((s) => s.jaw === 'lower' && s.role !== 'bite' && s.transform);
+  if (lower) viewer.setTransform(lower.id, matMul(M, lower.transform));
+  for (const s of state.structures.filter((x) => x.jaw === 'lower')) viewer.setObjectTransform(s.key, M);
+  for (const key of ['roots:lower', 'axes:lower']) viewer.setObjectTransform(key, M);
+}
+
+async function drawTemplate() {
+  const t = state.rehab?.template_info;
+  const key = t && state.step === 'articulation' ? `${t.radius}:${t.center.join(',')}` : '';
+  if (key === templateKey) return;
+  templateKey = key;
+  TEMPLATE_KEYS.forEach((k) => viewer.remove(k));
+  if (!key) return;
+  try {
+    viewer.setMesh('occl:surface', await mesh('articulation/template/surface'), { color: '#7fd1ff', opacity: 0.35, order: 4 });
+    viewer.setMesh('occl:curves', await mesh('articulation/template/curves'), { color: '#ffcf5a', order: 5 });
+  } catch (e) { toast(e.message); }
+}
+
+export function endRehab() {
+  applyRaise(IDENTITY4);
+  templateKey = '';
+  TEMPLATE_KEYS.forEach((k) => viewer.remove(k));
+}
+
+export async function loadRehab() {
+  try { state.rehab = await get('articulation/rehab'); } catch { state.rehab = null; }
+}
+
+export async function rehabAction(kind, value) {
+  const r = state.rehab || {};
+  const body = kind === 'raise' ? { raise_mm: Number(value) }
+    : kind === 'template' ? { template: !!value }
+      : { radius: value === 'reset' ? r.monson_mm : Math.max(60, Math.min(160, (r.radius || r.monson_mm) + Number(value))) };
+  try { state.rehab = await post('articulation/rehab', body); } catch (e) { toast(e.message); }
+  render();
+}
+
+function rehabCard(mounted) {
+  const r = state.rehab;
+  if (!mounted || !r?.available) return '';
+  queueMicrotask(() => { applyRaise(); drawTemplate(); });
+  const m = r.report?.molars || {};
+  const raiseText = r.raise_mm
+    ? `Поворот ${fmt(r.angle_deg, 1)}° вокруг оси мыщелков пациента${m.right != null ? `; на молярах справа ${fmt(m.right, 1)} мм, слева ${fmt(m.left, 1)} мм` : ''}.`
+    : 'Нижняя челюсть поворачивается вокруг настоящей оси мыщелков; в exocad — в новом положении.';
+  const t = r.template_info;
+  const norm = (x) => `${fmt(x.deg, 1)}° <span class="muted">(норма ${fmt(x.norm[0], 1)} ± ${fmt(x.norm[1], 1)})</span>`;
+  const tpl = t ? `<div class="aes-row"><span>Сфера Монсона</span><b>${fmt(t.radius, 1)} мм</b></div>
+      <div class="row" style="gap:4px;margin:2px 0 6px"><button class="btn ghost sm" data-rehab-radius="-5">−5 мм</button>
+        <button class="btn ghost sm" data-rehab-radius="5">+5 мм</button><button class="btn ghost sm" data-rehab-radius="reset" title="4 дюйма">4″</button></div>
+      <div class="aes-row"><span>Кривая Шпее, глубина</span><b>${fmt(t.spee_depth_mm, 1)} мм</b></div>
+      ${t.tilt?.fh ? `<div class="aes-row"><span>Наклон к Франкфурту</span><b>${norm(t.tilt.fh)}</b></div>` : ''}
+      ${t.tilt?.sn ? `<div class="aes-row"><span>Наклон к SN</span><b>${norm(t.tilt.sn)}</b></div>` : ''}
+      ${!t.tilt?.fh && !t.tilt?.sn ? '<p class="muted small">Наклон к FH и SN — после точек в шаге «Ориентиры».</p>' : ''}` : '';
+  return `<div class="card rehab-card"><div class="card-head">${icons.move}<h3>Высота прикуса и окклюзионная плоскость</h3></div>
+    <div class="aes-row"><span>Подъём по резцам</span><b>${fmt(r.raise_mm, 1)} мм</b></div>
+    <input type="range" class="rehab-range" min="0" max="10" step="0.5" value="${r.raise_mm}" data-rehab-raise>
+    <p class="muted small">${raiseText}</p>
+    <label class="joint-toggle"><input type="checkbox" data-rehab-template ${r.template ? 'checked' : ''}><span>Шаблон окклюзионной плоскости</span>
+      <small>сфера через мыщелки и резцы: кривые Шпее и Уилсона</small></label>${tpl}</div>`;
 }
 
 export const CONDYLE_SIDES = {
@@ -360,5 +438,5 @@ export function renderArticulation() {
       + movementCards + analysisText;
   }
   return '<h2>Артикулятор</h2><p class="lead">Здесь выполняется предварительная гипсовка, проигрываются движения и проверяются контакты до экспорта в exocad.</p>'
-    + jointsControl + renderCondylePanel(ready) + body;
+    + jointsControl + renderCondylePanel(ready) + body + (ready ? rehabCard(mounted) : '');
 }

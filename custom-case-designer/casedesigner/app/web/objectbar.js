@@ -46,6 +46,9 @@ function groups() {
   if (joints.length) out.push({ title: 'Суставы', items: joints });
   const roots = Object.entries(ROOTS).filter(([k]) => shown(k)).map(([key, [name, color]]) => ({ key, name, color }));
   if (roots.length) out.push({ title: 'Корни из КТ', items: roots });
+  const tpl = [['occl:surface', 'Окклюзионная плоскость', '#7fd1ff'], ['occl:curves', 'Кривые Шпее и Уилсона', '#ffcf5a']]
+    .filter(([k]) => shown(k)).map(([key, name, color]) => ({ key, name, color }));
+  if (tpl.length) out.push({ title: 'Шаблон', items: tpl });
   return out;
 }
 

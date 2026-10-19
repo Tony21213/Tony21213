@@ -399,6 +399,93 @@ class ArticulationSteps:
                 "paths": paths, "axes": axes, "ct_axes": ct_axes(axes),
                 "basis": "мыщелки пациента + резцовое ведение по сканам челюстей"}
 
+    # --- полная реабилитация (casedesigner/rehab.py): подъём прикуса по оси и шаблон окклюзионной плоскости --------
+    def _rehab(self) -> dict:
+        from ... import rehab as rh
+
+        state = getattr(self, "rehab", None)
+        if state is None:
+            state = self.rehab = {"raise_mm": 0.0, "template": False, "radius": rh.MONSON_MM}
+        return state
+
+    def rehab_transform(self):
+        """Подъём прикуса — поворот нижней челюсти вокруг оси мыщелков (система кейса) или None."""
+        from ... import rehab as rh
+
+        st = self._rehab()
+        if not st["raise_mm"] or self.jaw.anatomy is None:
+            return None
+        return rh.raise_transform(self.jaw.anatomy, st["raise_mm"])[0]
+
+    def rehab_template(self):
+        """Шаблон окклюзионной плоскости (rehab.template) через мыщелки и резцовую точку после подъёма или None."""
+        from ... import rehab as rh
+
+        st = self._rehab()
+        a = self.jaw.anatomy
+        if not st["template"] or a is None:
+            return None
+        R = self.rehab_transform()
+        inc = np.asarray(a.points["incisal"], float)
+        inc = inc if R is None else apply(R, inc[None])[0]
+        key = (np.asarray(a.frame, float).tobytes(), inc.tobytes(), st["radius"],
+               tuple(sorted((k, tuple(np.round(v, 3))) for k, v in self.landmarks.items())))
+        cached = getattr(self, "_rehab_cache", None)
+        if cached is None or cached[0] != key:
+            cached = self._rehab_cache = (key, rh.template(a, inc, st["radius"], self.landmarks))
+        return cached[1]
+
+    def articulation_rehab(self, raise_mm=None, template=None, radius=None) -> dict:
+        """Подъём высоты прикуса по оси пациента (мм по резцам) и шаблон окклюзионной плоскости (вкл., радиус сферы):
+        сводка (угол, на резцах и молярах; сфера, глубина кривой Шпее, наклон к FH и SN) и матрицы показа нижней
+        челюсти в окне 3D (в прикусе сканов и как на КТ)."""
+        from ... import rehab as rh
+
+        if self.jaw.anatomy is None:
+            raise ValueError("сначала смонтируйте модели")
+        st = self._rehab()
+        new = dict(st)
+        if raise_mm is not None:
+            new["raise_mm"] = round(float(raise_mm), 2)
+            rh.raise_transform(self.jaw.anatomy, new["raise_mm"])  # проверка диапазона до записи
+        if template is not None:
+            new["template"] = bool(template)
+        if radius is not None:
+            new["radius"] = round(float(radius), 1)
+            rh.monson_center(self.jaw.anatomy, self.jaw.anatomy.points["incisal"], new["radius"])
+        st.update(new)
+        return self.rehab_info()
+
+    def rehab_info(self) -> dict:
+        from ... import rehab as rh
+
+        st = self._rehab()
+        out = {**st, "available": self.jaw.anatomy is not None, "angle_deg": 0.0, "report": None, "template_info": None,
+               "display_bite": np.eye(4).tolist(), "display_ct": np.eye(4).tolist(), "monson_mm": rh.MONSON_MM}
+        a = self.jaw.anatomy
+        if a is None:
+            return out
+        R, deg = rh.raise_transform(a, st["raise_mm"])
+        out["angle_deg"] = round(deg, 2)
+        lower = getattr(self.jaw, "lower_vertices", None)
+        out["report"] = rh.raise_report(a, R, lower if lower is not None else np.zeros((0, 3)))
+        if st["raise_mm"]:
+            M = R @ np.asarray(self.jaw.lower_fix, float)
+            bite = np.eye(4) if self.bite_motion is None else np.asarray(self.bite_motion, float)
+            out["display_bite"], out["display_ct"] = M.round(9).tolist(), (M @ bite).round(9).tolist()
+        t = self.rehab_template()
+        if t is not None:
+            out["template_info"] = {"center": t["center"].round(3).tolist(), "radius": t["radius"],
+                                    "spee_depth_mm": t["spee_depth_mm"], "tilt": t["tilt"]}
+        return out
+
+    def rehab_mesh(self, part: str) -> bytes:
+        t = self.rehab_template()
+        if t is None or part not in ("surface", "curves"):
+            raise ValueError("шаблон окклюзионной плоскости не построен")
+        m = t[part]
+        return mesh_bytes(np.asarray(m.vertices), np.asarray(m.faces))
+
     def articulation_motion(self, mid: str) -> dict:
         """Отдать кадры одного движения для визуального проигрывания."""
         if mid not in self.jaw.movements:
@@ -422,6 +509,13 @@ class ArticulationSteps:
 from ..common import mesh_bytes  # noqa: E402
 def route(h, s, p, method, q):
     """HTTP-маршруты шага (вызывает server.Handler.api): h — обработчик запроса, s — сессия; True — запрос обработан."""
+    if p == ["articulation", "rehab"]:  # подъём прикуса по оси и шаблон окклюзионной плоскости (rehab.py)
+        if method == "POST":
+            b = h.body()
+            return h.json(s.articulation_rehab(b.get("raise_mm"), b.get("template"), b.get("radius")))
+        return h.json(s.rehab_info())
+    if len(p) == 3 and p[:2] == ["articulation", "template"] and method == "GET":
+        return h.binary(s.rehab_mesh(p[2]))
     if p == ["articulation", "prepare"] and method == "POST":
         return h.json(s.articulation_prepare())
     if p == ["articulation", "planes"]:
