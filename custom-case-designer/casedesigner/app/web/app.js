@@ -8,12 +8,16 @@ import { downloadModels, intakeCheck, intakeSave, openCt, partsDialog, renderCt,
 import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport, toggleGum, toggleRoots } from './steps/export.js';
 import { aestheticAction, aestheticPick, aestheticPointerDown, endAesthetics, prepareAesthetics, renderAesthetics } from './steps/aesthetics.js';
 import { renderObjectBar } from './objectbar.js';
+import { cancelPlacing, endLandmarks, landmarkAction, landmarkPlacing, landmarkPoints, placeLandmark, prepareLandmarks, renderLandmarks } from './steps/landmarks.js';
 import { accept, addScans, biteCorrect, biteDecide, endCorrection, refine, register, removeScan, renderScans, resetAuto, revertCorrection, startCorrection, stepHistory, toggleBite } from './steps/scans.js';
 
 // панели шагов и мышь в окне 3D — здесь: шаги исполняются при загрузке раньше core.js (циклические импорты)
 RENDER.ct = renderCt;
 RENDER.scans = renderScans;
 RENDER.objectBar = renderObjectBar; // панель объектов окна 3D
+RENDER.landmarks = renderLandmarks;
+app.landmarkPoints = landmarkPoints; // точки на срезах и постановка щелчком (шаг «Ориентиры»)
+app.placeLandmark = placeLandmark;
 RENDER.aesthetics = renderAesthetics;
 RENDER.articulation = renderArticulation;
 RENDER.export = renderExport;
@@ -24,18 +28,20 @@ $('#view3d').addEventListener('pointerup', aestheticPick);
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints],[data-aes],[data-gum]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints],[data-aes],[data-gum],[data-lm]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) {
     state.step = d.step;
     endCondyleEdit();
     endAesthetics();
+    endLandmarks();
     slices.forEach((v) => v.draw());
     return d.step === 'articulation' ? prepareArticulation() : d.step === 'export' ? prepareExport()
-      : d.step === 'aesthetics' ? prepareAesthetics() : render();
+      : d.step === 'aesthetics' ? prepareAesthetics() : d.step === 'landmarks' ? prepareLandmarks() : render();
   }
   if (d.aes) return aestheticAction(d.aes, d.arg);
+  if (d.lm) return landmarkAction(d.lm, d.key);
   if (d.condyleConfirm) return updateCondyles('/confirm', { side: d.condyleConfirm });
   if (d.condyleReset) return updateCondyles('/reset', { side: d.condyleReset });
   if (d.condyleEdit) return editCondyle(d.condyleEdit);
@@ -122,6 +128,7 @@ document.addEventListener('keydown', (e) => {
     endCondyleEdit();
     return render();
   }
+  if (e.key === 'Escape' && state.step === 'landmarks' && landmarkPlacing()) return cancelPlacing();
   if (e.key === 'Escape' && state.step === 'aesthetics') {
     endAesthetics();
     return render();

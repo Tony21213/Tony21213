@@ -9,6 +9,7 @@ import { moveScan } from './steps/scans.js';
 
 export const STEPS = [
   { id: 'ct', title: 'КТ', icon: 'ct' },
+  { id: 'landmarks', title: 'Ориентиры', icon: 'target' },
   { id: 'scans', title: 'Сканы', icon: 'tooth' },
   { id: 'aesthetics', title: 'Эстетика', icon: 'eye' },
   { id: 'articulation', title: 'Артикулятор', icon: 'move' },
@@ -325,6 +326,7 @@ export function render() {
     ct: state.structures.length > 0,
     scans: state.scans.length > 0 && state.scans.every((s) => s.registered),
     aesthetics: !!state.aesthetics?.mount_kind,
+    landmarks: !!state.ceph?.analyses && Object.values(state.ceph.analyses).some((a) => a.results.length),
     articulation: !!state.articulation?.mounting,
     export: !!state.exported,
   };
