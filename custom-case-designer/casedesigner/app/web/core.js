@@ -21,6 +21,7 @@ export const TRANSLUCENT = { mandible: 0.42, maxilla: 0.42, skull: 0.3, maxillar
 
 export const state = {
   scanColors: true, // цвет скана со сканера в окне 3D (переключатель «Цвет»)
+  gumMap: false, gingiva: null, // толщина десны над костью и корнями (кнопка «Десна»), сводка — GET gingiva
   step: 'ct', ct: null, scans: [], structures: [], visible: new Set(), heat: true, selected: null,
   modelsDir: null, frame: 'exocad', bite: 'scan', exported: null, busy: false, groupsOpen: new Set(['Зубы']),
   exocadProjectPath: null, exocadArticulatorResult: null,
@@ -181,7 +182,11 @@ export const cls = (v, good, fair) => (v <= good ? 'ok' : v <= fair ? 'warn' : '
 export const scanById = (id) => state.scans.find((s) => s.id === id);
 export const JAWS = { upper: 'верхняя', lower: 'нижняя', bite: 'прикус' };
 export const NEXT_JAW = { upper: 'lower', lower: 'bite', bite: 'upper' }; // значок челюсти у скана — по кругу
-export const heatOn = (info) => state.heat && !!state.ct && (!info || info.registered); // отклонение от КТ — только с КТ
+export const heatOn = (info) => state.heat && !state.gumMap && !!state.ct && (!info || info.registered); // отклонение от КТ — только с КТ
+// Толщина десны: скан челюсти, совмещённый с КТ, и кость или зубы КТ (сегментация).
+export const gumAvailable = () => !!state.ct && state.scans.some((s) => s.registered && s.role !== 'bite')
+  && state.structures.some((s) => ['skull', 'maxilla', 'mandible', 'upper_teeth', 'lower_teeth'].includes(s.key) || s.key.startsWith('teeth/tooth_'));
+const gumOn = (info) => state.gumMap && gumAvailable() && info.registered && info.role !== 'bite';
 export const shownRecent = () => state.recent.filter((r) => r.exists);
 
 // ---------- инкогнито: показ программы без данных пациента ----------
@@ -248,6 +253,10 @@ export function updateScan(info) {
 
 // Цвета скана в окне 3D: карта отклонений, если включена; иначе — цвет со сканера (переключатель «Цвет»), иначе ровный.
 export async function scanRgb(info) {
+  if (gumOn(info)) {
+    const buf = await get(`scans/${info.id}/gingiva`);
+    if (buf.byteLength) return new Uint8Array(buf);
+  }
   if (heatOn(info)) return new Uint8Array(await get(`scans/${info.id}/colors`));
   if (state.scanColors && info.has_colors) return new Uint8Array(await get(`scans/${info.id}/texture`));
   return null;
@@ -337,8 +346,10 @@ export function render() {
   $('#empty3d').innerHTML = ct || state.scans.length ? '' : '<span>Откройте КТ или добавьте сканы</span>';
   $('#view3d').classList.toggle('picking', state.step === 'articulation' && !!state.condyleEditing);
   const legend = $('#legend');
-  legend.hidden = !(heatOn() && state.scans.some((s) => s.registered));
-  legend.innerHTML = '<span><i style="background:#28aa46"></i>≤ 0.1 мм</span><span><i style="background:#e6be1e"></i>≤ 0.2 мм</span>' +
+  const gum = state.gumMap && gumAvailable() && state.gingiva?.legend;
+  legend.hidden = !gum && !(heatOn() && state.scans.some((s) => s.registered));
+  legend.innerHTML = gum ? `<b style="font-weight:500">Десна:</b>${state.gingiva.legend.map((l) => `<span><i style="background:rgb(${l.color.join(',')})"></i>${l.label}</span>`).join('')}`
+    : '<span><i style="background:#28aa46"></i>≤ 0.1 мм</span><span><i style="background:#e6be1e"></i>≤ 0.2 мм</span>' +
     '<span><i style="background:#d23228"></i>> 0.2 мм</span><span><i style="background:#aaa"></i>не коронки</span>';
   $('#tools3d').innerHTML = [['front', 'Спереди'], ['right', 'Справа'], ['left', 'Слева'], ['top', 'Сверху']]
     .map(([v, t]) => `<button class="btn" data-view="${v}" style="width:auto;padding:0 8px">${t}</button>`).join('') +
@@ -346,5 +357,7 @@ export function render() {
       title="Прикус сканов: нижняя челюсть со всеми её структурами — в прикусе со сканов (врача), а не как на КТ (на КТ отличается на ${fmt(state.biteView.shift_mm, 1)} мм)">Прикус</button>` : '') +
     (state.scans.some((s) => s.has_colors) ? `<button class="btn ${state.scanColors ? 'on' : ''}" data-scancolor style="width:auto;padding:0 8px"
       title="Цвет скана со сканера (карта отклонений, если включена, — поверх)">Цвет</button>` : '') +
+    (gumAvailable() ? `<button class="btn ${state.gumMap ? 'on' : ''}" data-gum style="width:auto;padding:0 8px"
+      title="Толщина десны над костью и корнями по КТ (вместо карты отклонений): красный — тоньше 1 мм">Десна</button>` : '') +
     (ct && state.scans.some((s) => s.registered) ? `<button class="btn ${state.heat ? 'on' : ''}" data-heat title="Карта отклонений скана от КТ">${icons.heat}</button>` : '');
 }

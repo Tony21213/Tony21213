@@ -3,11 +3,13 @@
 from ..common import (  # noqa: F401
     BITE,
     JAWS_APART,
+    LOWER_BONES,
     Registration,
     SCAN_COLORS,
     SHARED_SHARE,
     Scan,
     UNGUIDED,
+    UPPER_BONES,
     apply,
     deviation_colors,
     errorlog,
@@ -268,6 +270,67 @@ class ScanSteps:
             return b""
         return np.ascontiguousarray(deviation_colors(reg.deviation)[:, :3], np.uint8).tobytes()
 
+    # --- толщина десны над костью и корнями (casedesigner/gingiva.py) ----------------------------------------------
+    def gum_map(self, sid: str):
+        """Карта толщины десны скана челюсти (gingiva.GumMap) или None: нужны КТ, совмещение и кость или зубы КТ.
+        Скан — в положении совмещения (соотношение КТ), коронки — вершины, легшие на коронки КТ. Кэш — по скану,
+        его положению и сеткам КТ."""
+        from ... import gingiva as gg
+
+        item = self.scans.get(sid)
+        reg = None if item is None else item["reg"]
+        if reg is None or item["role"] == BITE or reg.jaw not in ("upper", "lower") or self.case is None:
+            return None
+        bones = [self.structures[k] for k in (UPPER_BONES if reg.jaw == "upper" else LOWER_BONES)
+                 if k in self.structures]
+        teeth = {int(k.rsplit("_", 1)[1]): m for k, m in self.structures.items()
+                 if k.startswith("teeth/tooth_") and k.rsplit("_", 1)[1].isdigit()
+                 and (int(k.rsplit("_", 1)[1]) < 30) == (reg.jaw == "upper")}
+        if not teeth and f"{reg.jaw}_teeth" in self.structures:
+            teeth = {0: self.structures[f"{reg.jaw}_teeth"]}
+        if not bones and not teeth:
+            return None
+        T = np.asarray(reg.transform, float)
+        key = (id(item["scan"]), T.tobytes(), tuple(id(m) for m in bones), tuple((k, id(m)) for k, m in teeth.items()))
+        cache = getattr(self, "_gum_cache", None)
+        if cache is None:
+            cache = self._gum_cache = {}
+        if sid not in cache or cache[sid][0] != key:
+            crown = np.isfinite(np.asarray(reg.deviation, float))
+            cache[sid] = (key, gg.thickness(apply(T, item["scan"].vertices), crown, bones, teeth))
+        return cache[sid][1]
+
+    def scan_gingiva(self, sid: str) -> bytes:
+        """Цвета толщины десны на вершины скана (RGB) — для окна 3D; карты нет — пусто."""
+        gum = self.gum_map(sid)
+        return b"" if gum is None else np.ascontiguousarray(gum.colors()[:, :3], np.uint8).tobytes()
+
+    def gingiva_info(self) -> dict:
+        """Для окна: по челюстям — медиана, доли толщин, биотип по зубам, заметки; легенда цветов."""
+        from ... import gingiva as gg
+
+        jaws = {}
+        for sid, item in self.scans.items():
+            reg = item["reg"]
+            if reg is None or item["role"] == BITE or reg.jaw in jaws:
+                continue
+            gum = self.gum_map(sid)
+            if gum is not None:
+                jaws[reg.jaw] = gum.summary()
+        legend = [{"label": label, "color": list(color[:3])} for _hi, color, label in gg.BINS]
+        legend.append({"label": "глубже кости или корня", "color": list(gg.INSIDE[:3])})
+        return {"jaws": jaws, "legend": legend, "thin_mm": gg.THIN_MM}
+
+    def _gum_colors(self, regs) -> dict:
+        """Для выгрузки: {id(Registration): RGBA} у сканов челюстей с картой толщины десны."""
+        out = {}
+        for sid, item in self.scans.items():
+            if item["reg"] is not None and any(item["reg"] is r for r in regs):
+                gum = self.gum_map(sid)
+                if gum is not None:
+                    out[id(item["reg"])] = gum.colors()
+        return out
+
     def _require_ct(self):
         if self.case is None:
             raise ValueError("сначала откройте КТ")
@@ -364,6 +427,8 @@ def route(h, s, p, method, q):
     """HTTP-маршруты шага (вызывает server.Handler.api): h — обработчик запроса, s — сессия; True — запрос обработан."""
     if p == ["scans"] and method == "POST":
         return h.json(s.add_scan(h.body()["path"]))
+    if p == ["gingiva"] and method == "GET":
+        return h.json(s.gingiva_info())
     if len(p) == 3 and p[0] == "scans":
         sid, action = p[1], p[2]
         if action == "mesh":
@@ -372,6 +437,8 @@ def route(h, s, p, method, q):
             return h.binary(s.scan_colors(sid))
         if action == "texture":  # цвет скана со сканера
             return h.binary(s.scan_texture(sid))
+        if action == "gingiva":  # толщина десны над костью и корнями
+            return h.binary(s.scan_gingiva(sid))
         b = h.body() if method == "POST" else {}
         if action == "register":
             return h.job("Совмещаю скан", lambda progress: s.register(

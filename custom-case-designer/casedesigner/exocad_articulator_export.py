@@ -95,6 +95,9 @@ class ArticulatorCase:
     roots: dict = field(default_factory=dict)
     tooth_axes: dict = field(default_factory=dict)
     roots_info: dict = field(default_factory=dict)
+    # Толщина десны над костью и корнями (gingiva.py): {"upper" | "lower": JawScan с цветами} — сканы в положении
+    # выгрузки, цвета по толщине; пишутся в подпапку цветным PLY (в exocad — «Load mesh», как карта отклонений).
+    gingiva: dict = field(default_factory=dict)
 
 
 def articulator_values(anatomy: mo.Anatomy, settings: kin.Settings) -> dict:
@@ -303,6 +306,15 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
 
     sub = os.path.join(folder, SUBFOLDER)
     os.makedirs(sub, exist_ok=True)
+    if case.gingiva:
+        names = []
+        for jaw, gum in case.gingiva.items():
+            name = f"{stem}-{jaw}jaw-gingiva.ply"
+            gum.moved(to_art).export(os.path.join(sub, name))
+            names.append(f"{SUBFOLDER}/{name}")
+        written["толщина десны"] = names
+        notes.append(f"карта толщины десны над костью и корнями — цветные PLY в {SUBFOLDER} (в exocad — «Load mesh»): "
+                     "красный — тоньше 1 мм, оранжевый — 1–2, зелёный — 2–3, синий — 3–6 мм")
     spheres = [trimesh.creation.icosphere(subdivisions=2, radius=2.5).apply_translation(p)
                for p in fb.condyles.values()]
     trimesh.util.concatenate(spheres).apply_transform(to_art).export(os.path.join(sub, "condyles.stl"))
@@ -447,4 +459,13 @@ def case_from_session(session) -> ArticulatorCase:
             if axes is not None:
                 case.tooth_axes[jaw] = JawScan(apply(T, axes[0]), axes[1])
         case.roots_info = {"teeth": rt.summary(found), "notes": root_notes}
+    # толщина десны: карта — у сессии (кэш); сетка — скан челюсти из сессии в положении выгрузки
+    gum_map = getattr(session, "gum_map", None)
+    if gum_map is not None:
+        for jaw, item, T in (("upper", up, np.asarray(up["reg"].transform, float)),
+                             ("lower", lo, lower_T @ np.asarray(lo["reg"].transform, float))):
+            sid = next((k for k, it in session.scans.items() if it is item), None)
+            gum = None if sid is None else gum_map(sid)
+            if gum is not None:
+                case.gingiva[jaw] = JawScan(apply(T, item["scan"].vertices), item["scan"].faces, gum.colors())
     return case

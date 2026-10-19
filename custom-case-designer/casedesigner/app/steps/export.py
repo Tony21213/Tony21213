@@ -55,7 +55,7 @@ class ExportSteps:
         matrix, name = self.reference(reference) if frame == "reference" else (None, "")
         self.last_export = out_dir
         report = export_case(out_dir, regs, meshes, bite=bite, frame=frame, ct=self.case, reference=matrix,
-                             reference_name=name, without_ct=self.case is None)
+                             reference_name=name, without_ct=self.case is None, gingiva=self._gum_colors(regs))
         return {"out_dir": out_dir, "files": sorted(report["files"]), "notes": report["notes"],
                 "bite": report["ct_bite_vs_scans"], "frame": report["frame"]}
 
@@ -214,7 +214,7 @@ class ExportSteps:
         out_dir = os.path.join(project.folder, EXOCAD_SUBFOLDER)
         self.last_export = out_dir
         report = export_case(out_dir, regs, meshes, bite=bite, frame="exocad", ct=self.case, scene=scene,
-                             without_ct=self.case is None)
+                             without_ct=self.case is None, gingiva=self._gum_colors(regs))
         notes = [f"Проект exocad: файлы в подпапке {EXOCAD_SUBFOLDER}, в координатах сцены проекта (матрица — "
                  f"{project.source}). В exocad: «Load mesh as …»; копии сканов там же должны совпасть со сканами проекта."]
         bone_files, bone_notes = self._bones_as_frameworks(project, jaws)

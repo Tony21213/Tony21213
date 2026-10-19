@@ -5,7 +5,7 @@ import { SliceView } from './slices.js';
 import { articulationAction, editCondyle, endCondyleEdit, handleCondylePick, mountWithPlane, nudgeCondyle, playArticulation, prepareArticulation, rememberPointerDown, remountCondyles, renderArticulation, selectMountPlane, toggleJoints, updateCondyles } from './steps/articulation.js';
 import { helpDialog, openCase, saveCase, settingsDialog } from './steps/case.js';
 import { downloadModels, intakeCheck, intakeSave, openCt, partsDialog, renderCt, segment } from './steps/ct.js';
-import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport, toggleRoots } from './steps/export.js';
+import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport, toggleGum, toggleRoots } from './steps/export.js';
 import { aestheticAction, aestheticPick, aestheticPointerDown, endAesthetics, prepareAesthetics, renderAesthetics } from './steps/aesthetics.js';
 import { renderObjectBar } from './objectbar.js';
 import { accept, addScans, biteCorrect, biteDecide, endCorrection, refine, register, removeScan, renderScans, resetAuto, revertCorrection, startCorrection, stepHistory, toggleBite } from './steps/scans.js';
@@ -24,7 +24,7 @@ $('#view3d').addEventListener('pointerup', aestheticPick);
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints],[data-aes]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints],[data-aes],[data-gum]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) {
@@ -85,6 +85,7 @@ document.addEventListener('click', async (e) => {
   if ('bite' in d) return toggleBite();
   if ('heat' in d) { state.heat = !state.heat; for (const s of state.scans) await showScan(s); return render(); }
   if ('scancolor' in d) { state.scanColors = !state.scanColors; for (const s of state.scans) await showScan(s); return render(); }
+  if ('gum' in d) return toggleGum();
   if (d.select && !e.target.closest('button')) {
     if (state.selected !== d.select) state.correcting = null;
     state.selected = d.select;

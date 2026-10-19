@@ -459,7 +459,7 @@ def _rotation_deg(T: np.ndarray) -> float:
 def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict[str, Mesh] | None = None,
                 bite: str = "scan", frame: str = "exocad", ct: "CaseCT | None" = None,
                 reference: np.ndarray | None = None, reference_name: str = "",
-                scene: np.ndarray | None = None, without_ct: bool = False) -> dict:
+                scene: np.ndarray | None = None, without_ct: bool = False, gingiva: dict | None = None) -> dict:
     """Пишет все сетки в одной системе координат и файл с матрицами.
 
     ct_meshes — сетки из КТ (структуры сегментации или поверхности по порогам),
@@ -590,6 +590,8 @@ def export_case(out_dir: str, registrations: list[Registration], ct_meshes: dict
         if not without_ct or reg.jaw == BITE:  # карта отклонений от КТ (у скана прикуса — от сканов челюстей)
             write(reg.scan.name + "_deviation", [(reg.scan.vertices, reg.scan.faces, M)],
                   deviation_colors(reg.deviation), suffix=".ply")
+        if gingiva and id(reg) in gingiva:  # толщина десны над костью и корнями (gingiva.py): {id(reg): RGBA}
+            write(reg.scan.name + "_gingiva", [(reg.scan.vertices, reg.scan.faces, M)], gingiva[id(reg)], suffix=".ply")
         scans[reg.scan.name] = {
             "jaw": reg.jaw, "scan_to_ct": reg.transform.round(9).tolist(),
             "placement": placed_by[id(reg)],
