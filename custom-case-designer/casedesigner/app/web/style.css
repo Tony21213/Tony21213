@@ -444,3 +444,25 @@ button.badge:hover { color: var(--text); }
 
 /* --- корни зубов из КТ (шаг «Экспорт») --- */
 .roots-list { color: var(--muted); line-height: 1.6; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+
+/* --- шаг «Ориентиры» и цефалометрия --- */
+.lm-list { display: flex; flex-direction: column; gap: 1px; }
+.lm-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 6px;
+  padding: 2px 4px; border-radius: 6px; }
+.lm-row.sel { background: var(--panel-2); }
+.lm-row.placing { background: var(--accent-soft); }
+.lm-row .dot { width: 8px; height: 8px; border-radius: 50%; }
+.lm-name { border: 0; background: none; color: var(--text); text-align: left; padding: 3px 0; cursor: pointer; font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lm-name:hover { color: var(--accent-2); }
+.lm-src { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.lm-btn { width: 24px; height: 24px; }
+.lm-btn svg { width: 13px; height: 13px; }
+.lm-note { grid-column: 2 / -1; color: var(--warn); font-size: 11px; }
+.ceph-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 10px; padding: 4px 0; border-top: 1px solid var(--line); font-size: 12px; }
+.ceph-name { color: var(--text); }
+.ceph-row b { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ceph-norm { color: var(--muted); font-size: 11px; }
+.ceph-text { text-align: right; font-size: 11px; color: var(--muted); }
+.ceph-row .ok { color: var(--ok); } .ceph-row .warn { color: var(--warn); } .ceph-row .bad { color: var(--bad, #e5534b); }
+.ceph-skip { color: var(--muted); font-size: 11px; padding: 2px 0; }

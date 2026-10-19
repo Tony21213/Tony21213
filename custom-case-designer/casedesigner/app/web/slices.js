@@ -245,7 +245,10 @@ export class SliceView {
         this.commit(t.id, m);
       } else if (!mode && !g.chord) { // после сдвига двумя кнопками перекрестие не ставится
         const p = this.toWorld(ev.offsetX, ev.offsetY);
-        if (p) this.app.setCursor(p);
+        if (p) {
+          this.app.placeLandmark?.(p); // шаг «Ориентиры», режим «Поставить» — точка сюда
+          this.app.setCursor(p);
+        }
       }
     };
     this.canvas.addEventListener('pointermove', move);

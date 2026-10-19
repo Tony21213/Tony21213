@@ -1,6 +1,6 @@
 """Ориентиры и плоскости: точки, поиск ALI-CBCT, плоскости и артикуляторы — методы Session (разделено из session.py; контракты — там же, где были)."""
 
-from ..common import (arts, cond, lmk, model_store, np, os, threading)  # noqa: F401
+from ..common import (arts, cond, errorlog, lmk, model_store, np, open_folder, os, threading)  # noqa: F401
 
 
 class LandmarkSteps:
@@ -111,6 +111,43 @@ class LandmarkSteps:
                     self.landmark_sources[key] = cond.SOURCE_MANDIBLE if key in cond.SIDES.values() else "segmentation"
         return self.landmarks_info()
 
+    # --- цефалометрия (casedesigner/cephalometry.py): анализы по точкам кейса, отчёт -------------------------------
+    def cephalometry_info(self) -> dict:
+        """Все анализы (Steiner, Ricketts…): {ключ: результат analyze}; срединной плоскости нет — error."""
+        from ... import cephalometry as ce
+
+        try:
+            ce.midsagittal(self.landmarks)
+        except ValueError as e:
+            return {"analyses": {}, "error": str(e), "points": list(ce.CEPH_POINTS)}
+        return {"analyses": {key: ce.analyze(self.landmarks, key) for key in ce.ANALYSES}, "error": None,
+                "points": list(ce.CEPH_POINTS)}
+
+    def cephalometry_save(self, out_dir: str) -> dict:
+        """Отчёт цефалометрии (PDF и PNG) в папку; подпись — дата (имён файлов кейса не берём)."""
+        from datetime import date
+
+        from ... import cephalometry as ce
+        from ... import reports
+
+        errorlog.private(out_dir, "папка отчёта")
+        if not out_dir:
+            raise ValueError("выберите папку для отчёта")
+        info = self.cephalometry_info()
+        if info["error"]:
+            raise ValueError(info["error"])
+        report = ce.report(list(info["analyses"].values()), f"Кейс · {date.today().strftime('%d.%m.%Y')}")
+        names = reports.save(report, out_dir, "cephalometry")
+        self.last_cephalometry = os.path.join(out_dir, names[1])
+        return {"files": names, "out_dir": out_dir}
+
+    def open_cephalometry(self):
+        """Открыть отчёт цефалометрии (последний сохранённый — путь не приходит снаружи)."""
+        path = getattr(self, "last_cephalometry", None)
+        if not path or not os.path.isfile(path):
+            raise ValueError("отчёта ещё нет — сначала сохраните его")
+        open_folder(path)
+
     def reference(self, kind: str) -> tuple[np.ndarray, str]:
         """Матрица «КТ → система» и её название: plane:<плоскость> или articulator:<ключ>."""
         what, _, key = kind.partition(":")
@@ -140,3 +177,10 @@ def route(h, s, p, method, q):
         return h.job("Ищу ориентиры", lambda progress: s.auto_landmarks(progress, b.get("keys")))
     if p == ["landmarks", "suggest"] and method == "POST":
         return h.json(s.suggest_landmarks())
+    if p == ["cephalometry"] and method == "GET":
+        return h.json(s.cephalometry_info())
+    if p == ["cephalometry", "save"] and method == "POST":
+        return h.json(s.cephalometry_save(h.body().get("out_dir")))
+    if p == ["cephalometry", "open"] and method == "POST":
+        s.open_cephalometry()
+        return h.json({"ok": True})
