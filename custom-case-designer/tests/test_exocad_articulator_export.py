@@ -6,6 +6,9 @@
 import json
 import os
 import xml.etree.ElementTree as ET
+import time
+import urllib.error
+import urllib.request
 from types import SimpleNamespace
 
 import numpy as np
@@ -204,7 +207,6 @@ def test_case_from_session_adds_opening_on_patient_axis(case):
 
 # --- задачи ведомого ------------------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="ведомый: метод сессии и маршрут API выгрузки")
 def test_session_and_api_contract():
     import inspect
 
@@ -214,3 +216,117 @@ def test_session_and_api_contract():
     sig = inspect.signature(Session.export_exocad_articulator)
     assert list(sig.parameters)[1:3] == ["project_dir", "out_dir"]
     assert "exocad_articulator" in inspect.getsource(server)
+
+
+@pytest.fixture
+def session(case, register, tmp_path, monkeypatch):
+    from casedesigner.app.session import Session
+
+    s = Session(memory_path=str(tmp_path / "memory.jsonl"))
+    s.case = object()
+    to_ct = np.diag([-1., -1., 1., 1.])
+    for side, mesh in (("upper", case.upper), ("lower", case.lower)):
+        s.scans[side] = {"role": "jaw", "path": None,
+                         "reg": SimpleNamespace(jaw=side, transform=to_ct),
+                         "scan": SimpleNamespace(vertices=mesh.vertices, faces=mesh.faces)}
+    s.bite_motion = rigid(axis_angle(np.array([1., 0., 0.]), np.radians(2)), [0, 1, -1])
+    s.set_condyle("right", apply(to_ct, CONDYLES["right"]).tolist())
+    s.set_condyle("left", apply(to_ct, CONDYLES["left"]).tolist())
+    app = exocad_app(tmp_path, custom=True)
+    monkeypatch.setattr(ef, "find_exocad", lambda: app)
+    monkeypatch.setattr(ef, "load_register", lambda _path: register)
+    return s
+
+
+def _http(server, path, body=None):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/api/{path}", data=data,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with opener.open(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read())
+
+
+def _done(server, started):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        status, job = _http(server, "jobs/" + started["job"])
+        assert status == 200
+        if job["status"] != "running":
+            assert job["status"] == "done", job["error"]
+            return job["result"]
+        time.sleep(.01)
+    pytest.fail("фоновая операция не завершилась")
+
+
+@pytest.mark.parametrize("with_bone", [False, True])
+def test_http_mount_then_export_without_skull(session, project, tmp_path, with_bone):
+    from casedesigner.app.server import serve
+
+    before = {p.name: p.read_bytes() for p in project.iterdir()}
+    server = serve(session)
+    try:
+        status, started = _http(server, "articulation/mount", {"method": "ct"})
+        assert status == 200
+        _done(server, started)
+        assert session.articulation_condyles()["applied"]
+        # Без черепа движения построены стандартной кинематикой.
+        session.jaw._add(kin.protrusion(session.jaw.anatomy, session.jaw.settings), recorded=False)
+        if with_bone:
+            # Кость ВЧ не меняет проверку мыщелков и не заменяет череп для вставок.
+            session.structures["maxilla"] = trimesh.creation.box((30, 20, 10))
+        out = tmp_path / "export-001"
+        status, started = _http(server, "export/exocad-articulator", {"project": str(project), "out": str(out)})
+        assert status == 200 and set(started) == {"job"}
+        summary = _done(server, started)
+        assert summary["movements"] == 2  # протрузия и добавленное открывание
+        assert any("стандартные" in note for note in summary["notes"])
+        assert summary["files"].get("кости-каркасы", 0) == int(with_bone)
+        for role, name in summary["files"].items():
+            if isinstance(name, str):
+                assert (out / name).is_file(), role
+        params = ET.parse(out / xa.SUBFOLDER / "articulator" / summary["articulator_folder"] /
+                          "articulatorparameters.xml").getroot()
+        assert params.find("ArticulatorMainParts/CondylarInserts") is None
+        assert params.findtext("RotationAxisRightParam/Value") == "0"
+        lower = trimesh.load_mesh(out / summary["files"]["нижний скан"], process=False)
+        expected = xa.case_from_session(session).lower.vertices
+        assert np.max(np.abs(lower.vertices - apply(np.asarray(summary["case_to_articulator"]), expected))) < 1e-3
+        assert session.last_export == str(out)
+        assert {p.name: p.read_bytes() for p in project.iterdir()} == before
+    finally:
+        server.shutdown()
+
+
+def test_export_rejections_are_400(session, project, tmp_path):
+    from casedesigner.app.server import serve
+
+    server = serve(session)
+    out = tmp_path / "copy"
+    body = {"project": str(project), "out": str(out)}
+    try:
+        status, answer = _http(server, "export/exocad-articulator", body)
+        assert status == 400 and "перемонтируйте" in answer["error"]
+        session.articulation_mount("ct")
+        status, answer = _http(server, "export/exocad-articulator", body)
+        assert status == 400 and "движения" in answer["error"]
+        session.jaw._add(kin.protrusion(session.jaw.anatomy, session.jaw.settings), recorded=False)
+        session.set_condyle("right", [-10, 0, 0])
+        status, answer = _http(server, "export/exocad-articulator", body)
+        assert status == 400 and "мыщелков" in answer["error"]
+        assert not out.exists()
+        session.set_condyle("right", [-49, 70, 24])
+        session.articulation_mount("ct")
+        session.jaw._add(kin.protrusion(session.jaw.anatomy, session.jaw.settings), recorded=False)
+        status, answer = _http(server, "export/exocad-articulator", {"project": str(tmp_path / "missing")})
+        assert status == 400 and "нет проекта" in answer["error"]
+        out.mkdir()
+        (out / "keep.txt").write_text("keep")
+        status, answer = _http(server, "export/exocad-articulator", body)
+        assert status == 400 and "не пуста" in answer["error"]
+        assert (out / "keep.txt").read_text() == "keep"
+    finally:
+        server.shutdown()

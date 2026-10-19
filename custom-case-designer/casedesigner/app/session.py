@@ -1140,6 +1140,60 @@ class Session:
         raise ValueError(f"неизвестная система координат: {kind}")
 
     # --- экспорт ------------------------------------------------------------
+    def validate_exocad_articulator_export(self, project_dir, out_dir=None):
+        """Быстрые проверки до фоновой выгрузки; сообщения не содержат путей."""
+        from .. import exocad_articulator_export as xa
+
+        points = self.articulation_condyles()
+        if not points["available"] or not points["ready"]:
+            reason = "; ".join(c["text"] for c in points["checks"] if c["level"] == "error")
+            raise ValueError("нужны готовые точки обоих мыщелков" + (": " + reason if reason else ""))
+        if not points["applied"] or self.jaw.mounting not in ("ct", "aesthetic"):
+            raise ValueError("сначала перемонтируйте модели по мыщелкам в шаге «Артикулятор»")
+        if not self.jaw.movements:
+            raise ValueError("сначала постройте движения в шаге «Артикулятор»")
+        up, lo = self._jaw_items()
+        if up is None or lo is None or up.get("reg") is None or lo.get("reg") is None:
+            raise ValueError("нужны совмещённые сканы обеих челюстей")
+        if not isinstance(project_dir, (str, os.PathLike)) or not str(project_dir).strip():
+            raise ValueError("выберите папку проекта exocad")
+        if out_dir is not None and (not isinstance(out_dir, (str, os.PathLike)) or not str(out_dir).strip()):
+            raise ValueError("выберите папку для копии проекта")
+        try:
+            folder, _stem = xa.target(os.fspath(project_dir), None if out_dir is None else os.fspath(out_dir))
+            if os.path.exists(folder) and (not os.path.isdir(folder) or os.listdir(folder)):
+                raise ValueError("папка для копии проекта уже существует и не пуста — выберите другую")
+        except FileNotFoundError:
+            raise ValueError("в папке нет проекта exocad (.dentalProject)") from None
+        except OSError:
+            raise ValueError("нет доступа к папке проекта или результата") from None
+
+    def export_exocad_articulator(self, project_dir, out_dir=None, progress=None) -> dict:
+        """Создать копию проекта с текущим монтажом, движениями и артикулятором."""
+        from .. import exocad_articulator_export as xa
+        from .. import exocad_facebow as ef
+
+        self.validate_exocad_articulator_export(project_dir, out_dir)
+        if progress:
+            progress(0.1, "Подготовка сканов, костей и движений")
+        app = ef.find_exocad()
+        if app is None:
+            raise ValueError("не найдена библиотека вилки Zebris SD в exocad")
+        try:
+            case = xa.case_from_session(self)
+            if progress:
+                progress(0.4, "Запись копии проекта и артикулятора")
+            result = xa.export(case, os.fspath(project_dir), None if out_dir is None else os.fspath(out_dir),
+                               exocad_app=app)
+        except FileExistsError:
+            raise ValueError("папка для копии проекта уже существует и не пуста — выберите другую") from None
+        except OSError:
+            raise ValueError("не удалось прочитать библиотеку или записать копию проекта; проверьте доступ к папкам") from None
+        self.last_export = result["folder"]
+        if progress:
+            progress(1.0, "Копия проекта готова")
+        return result
+
     def export(self, out_dir: str, bite: str = "scan", frame: str = "exocad", include: list[str] | None = None,
                reference: str | None = None) -> dict:
         errorlog.private(out_dir, "папка экспорта")
