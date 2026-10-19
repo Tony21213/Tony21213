@@ -1,5 +1,5 @@
 // Шаг «Экспорт»: выгрузка в папку и для exocad с артикулятором, панель.
-import { $, busy, choose, fmt, hide, html, plural, render, state, toast, viewer } from '../core.js';
+import { $, busy, choose, fmt, gumAvailable, hide, html, plural, render, showScan, state, toast, viewer } from '../core.js';
 import { get, mesh, run } from '../api.js';
 import { icons } from '../icons.js';
 import { condyleReason } from './articulation.js';
@@ -62,11 +62,43 @@ export async function doExportExocadArticulator() {
 export async function prepareExport() {
   try { state.articulationCondyles = await get('articulation/condyles'); }
   catch (e) { toast(e.message); }
-  // корни зубов из КТ (roots.py) — когда есть сегментация зубов
-  if (state.structures.some((s) => s.key.startsWith('teeth/tooth_'))) {
-    try { state.roots = await get('export/roots'); } catch (e) { toast(e.message); }
-  } else state.roots = null;
   render();
+  // корни зубов из КТ (roots.py) и толщина десны (gingiva.py) — считаются секунды: панель уже показана
+  const jobs = [];
+  if (state.structures.some((s) => s.key.startsWith('teeth/tooth_'))) {
+    jobs.push(get('export/roots').then((r) => { state.roots = r; }).catch((e) => toast(e.message)));
+  } else state.roots = null;
+  if (gumAvailable()) jobs.push(get('gingiva').then((g) => { state.gingiva = g; }).catch((e) => toast(e.message)));
+  if (jobs.length) { await Promise.all(jobs); if (state.step === 'export') render(); }
+}
+
+// ---------- толщина десны над костью и корнями: карта на сканах вместо карты отклонений ----------
+export async function toggleGum() {
+  await busy('Толщина десны', async () => {
+    state.gumMap = !state.gumMap;
+    if (state.gumMap && !state.gingiva) state.gingiva = await get('gingiva');
+    for (const s of state.scans) await showScan(s);
+  });
+}
+
+function gumCard() {
+  const g = state.gingiva;
+  const jaws = Object.entries(g?.jaws || {});
+  if (!jaws.length) return '';
+  const name = { upper: 'Верхняя', lower: 'Нижняя' };
+  const rows = jaws.map(([jaw, s]) => {
+    const thin = s.teeth.filter((t) => t.thin).map((t) => t.fdi);
+    const unclear = s.teeth.filter((t) => t.thin === null).map((t) => t.fdi);
+    return `<div class="aes-row"><span>${name[jaw]}: медиана</span><b>${fmt(s.median_mm, 1)} мм</b></div>
+      <div class="aes-row"><span>тоньше 1 мм</span><b>${Math.round((s.shares['< 1 мм — тонкая'] || 0) * 100)}% десны</b></div>
+      ${thin.length ? `<p class="small roots-list" title="Медиана толщины десны над корнем меньше 1 мм">Тонкий биотип: ${thin.join(', ')}</p>` : ''}
+      ${unclear.length ? `<p class="small roots-list" title="Скан лёг глубже корня — проверьте совмещение и сегментацию">Биотип не определён: ${unclear.join(', ')}</p>` : ''}
+      ${s.notes.map((n) => `<div class="warning">${icons.warn}<span>${html(n)}</span></div>`).join('')}`;
+  }).join('');
+  return `<div class="card gum-card"><div class="card-head">${icons.tooth}<h3>Толщина десны</h3></div>
+    <p class="muted small" style="margin-top:0">Над костью и корнями по КТ — для промежуточных частей мостов, коронок на имплантах,
+      биотипа. Выгружается цветным PLY рядом с картой отклонений (…_gingiva.ply), в копии для exocad — в KStomCaseDesigner.</p>
+    ${rows}<button class="btn ghost wide sm" data-gum>${state.gumMap ? 'Скрыть карту десны' : 'Показать карту десны в 3D'}</button></div>`;
 }
 
 // ---------- корни зубов из КТ: показать в 3D (корни и оси обеих челюстей), сканы — полупрозрачные ----------
@@ -171,5 +203,5 @@ export function renderExport() {
   return `<h2>Экспорт</h2><p class="lead">STL всех видимых объектов в единой системе координат и case.json с матрицами.</p>
     <div class="label">Система координат</div>${frames}
     <button class="btn primary wide" data-a="export" ${ready ? '' : 'disabled'}>${icons.export}Экспортировать в папку…</button>
-    ${ready ? '' : `<p class="muted small">${state.ct ? 'Сегментируйте КТ или совместите сканы.' : 'Добавьте сканы.'}</p>`}${result}${exocadExport}${rootsCard()}`;
+    ${ready ? '' : `<p class="muted small">${state.ct ? 'Сегментируйте КТ или совместите сканы.' : 'Добавьте сканы.'}</p>`}${result}${exocadExport}${rootsCard()}${gumCard()}`;
 }
