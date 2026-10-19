@@ -1,5 +1,5 @@
 // KStom Case Designer — вход: события интерфейса и старт; шаги — steps/<шаг>.js, общее — core.js.
-import { $, NEXT_JAW, RENDER, app, busy, loadStructures, render, scanById, showScan, shownRecent, slices, state, toast, toggleIncognito, toggleOpacity, toggleStructures, updateScan, viewer } from './core.js';
+import { $, NEXT_JAW, RENDER, app, bumpOverlay, busy, loadStructures, render, scanById, showScan, shownRecent, slices, state, toast, toggleIncognito, toggleOpacity, toggleStructures, updateScan, viewer } from './core.js';
 import { get, mesh, post, run } from './api.js';
 import { SliceView } from './slices.js';
 import { articulationAction, editCondyle, endCondyleEdit, endRehab, handleCondylePick, mountWithPlane, nudgeCondyle, playArticulation, prepareArticulation, rehabAction, rememberPointerDown, remountCondyles, renderArticulation, selectMountPlane, toggleJoints, updateCondyles } from './steps/articulation.js';
@@ -28,7 +28,7 @@ $('#view3d').addEventListener('pointerup', aestheticPick);
 
 // ---------- события ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints],[data-aes],[data-gum],[data-lm],[data-rehab-radius]');
+  const t = e.target.closest('[data-step],[data-a],[data-select],[data-remove],[data-register],[data-refine],[data-reset],[data-accept],[data-correct],[data-revert],[data-hist],[data-endcorrect],[data-recent],[data-case],[data-opacity],[data-gopacity],[data-warns],[data-toggle],[data-groupcheck],[data-group],[data-frame],[data-exbite],[data-view],[data-heat],[data-scancolor],[data-bite],[data-jaw],[data-art-mount],[data-art-generate],[data-art-analysis],[data-art-play],[data-condyle-confirm],[data-condyle-reset],[data-condyle-edit],[data-condyle-remount],[data-joints],[data-aes],[data-gum],[data-lm],[data-rehab-radius],[data-otherjaw]');
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.step) {
@@ -43,6 +43,15 @@ document.addEventListener('click', async (e) => {
   }
   if (d.aes) return aestheticAction(d.aes, d.arg);
   if (d.lm) return landmarkAction(d.lm, d.key);
+  if (d.otherjaw) { // беззубая челюсть (п. 15): скан — в координаты совмещённой противоположной
+    e.stopPropagation();
+    return busy('Ставлю по другой челюсти', async () => {
+      const info = await post(`scans/${d.otherjaw}/other_jaw`);
+      updateScan(info);
+      await showScan(info);
+      bumpOverlay();
+    });
+  }
   if (d.rehabRadius) return rehabAction('radius', d.rehabRadius);
   if (d.condyleConfirm) return updateCondyles('/confirm', { side: d.condyleConfirm });
   if (d.condyleReset) return updateCondyles('/reset', { side: d.condyleReset });

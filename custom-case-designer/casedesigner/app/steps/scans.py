@@ -1,5 +1,6 @@
 """Сканы: загрузка, совмещение с КТ, сканы прикуса, прикус сканов — методы Session (разделено из session.py; контракты — там же, где были)."""
 
+from ...fusion import EDENTULOUS_SHARE
 from ..common import (  # noqa: F401
     BITE,
     JAWS_APART,
@@ -242,7 +243,11 @@ class ScanSteps:
                               + ([JAWS_APART] if self._apart(item) else [])) if reg
                              else [item["note"]] if item.get("note") else []),
                 "segments": [vars(s) for s in reg.segments] if reg else [],
-                "corrected_mm": self._corrected(sid)}
+                "corrected_mm": self._corrected(sid),
+                # беззубая челюсть (п. 15): по коронкам ненадёжно; «по другой челюсти» — уже поставлен так
+                "edentulous": bool(reg and self.case is not None and item.get("placed_by") != "other_jaw"
+                                   and reg.stats.get("matched_fraction", 0) < EDENTULOUS_SHARE),
+                "placed_by": item.get("placed_by")}
 
     def _apart(self, item) -> bool:
         return bool(getattr(self, "jaws_apart", False) and item["reg"] is not None and item["role"] != BITE
@@ -359,8 +364,53 @@ class ScanSteps:
                                  start=None if start is None else np.asarray(start, float))
         with self.lock:
             item["reg"], item["transform"], item["accepted"] = reg, reg.transform, False
+            item["placed_by"] = None
             item["guided"] = reg.jaw in self.case.guided
             if item["auto"] is None or (start is None and pairs is None):
+                item["auto"] = reg
+        self._place_bites()
+        return self.scan_info(sid)
+
+    def place_by_other_jaw(self, sid: str) -> dict:
+        """Беззубая челюсть (п. 15): скан — в координаты уже совмещённой противоположной челюсти (сканы одной выгрузки
+        сканера лежат в прикусе). Точность — как у прикуса сканов; правдоподобие — по толщине слизистой над костью КТ
+        (gingiva.py): скан глубже кости или далеко от неё — прикус на КТ, похоже, другой."""
+        from ... import gingiva as gg
+
+        self._require_ct()
+        item = self.scans[sid]
+        if item["role"] == BITE:
+            raise ValueError("скан прикуса ставится на сканы челюстей сам")
+        jaw = (item["reg"].jaw if item["reg"] is not None else None) or item["jaw"] or jaw_by_name(item["scan"].name)
+        if jaw not in ("upper", "lower"):
+            raise ValueError("укажите челюсть скана (значок у скана)")
+        up, lo = self._jaw_items(skip=sid)
+        other = lo if jaw == "upper" else up
+        if other is None:
+            raise ValueError(f"сначала совместите скан {'нижней' if jaw == 'upper' else 'верхней'} челюсти")
+        T = np.asarray(other["reg"].transform, float)
+        reg = self.case.evaluate(item["scan"], T, jaw=jaw)
+        notes = []  # предупреждения совмещения по коронкам здесь не о том — положение не по коронкам
+        if not (in_occlusion(item["scan"], other["scan"]) or in_occlusion(other["scan"], item["scan"])):
+            notes.insert(0, "Сканы не сомкнуты: проверьте, что они из одной выгрузки сканера (общие координаты) — "
+                            "иначе положение случайное.")
+        bones = [self.structures[k] for k in (UPPER_BONES if jaw == "upper" else LOWER_BONES) if k in self.structures]
+        if bones:
+            gum = gg.thickness(apply(T, item["scan"].vertices), np.isfinite(reg.deviation), bones, {}).summary()
+            reg.stats = {**reg.stats, "mucosa_mm": gum["median_mm"], "inside_bone": gum["inside_share"]}
+            if gum["median_mm"] is None:
+                notes.insert(0, "Скан далеко от кости КТ — проверьте положение на срезах («Скорректировать»).")
+            elif gum["inside_share"] > 0.10 or gum["median_mm"] > 4.0:
+                notes.insert(0, f"Скан {'местами глубже кости' if gum['inside_share'] > 0.10 else 'далеко от кости'} "
+                                f"(слизистая — медиана {gum['median_mm']} мм, глубже кости — {gum['inside_share']:.0%}): "
+                                "прикус на КТ, похоже, не тот, что у сканов — проверьте положение («Скорректировать»).")
+        else:
+            notes.append("КТ не сегментировано: толщину слизистой над костью не проверить — проверьте положение на "
+                         "срезах.")
+        reg.warnings = notes
+        with self.lock:
+            item.update(reg=reg, transform=reg.transform, accepted=False, guided=True, jaw=jaw, placed_by="other_jaw")
+            if item["auto"] is None:
                 item["auto"] = reg
         self._place_bites()
         return self.scan_info(sid)
@@ -440,6 +490,8 @@ def route(h, s, p, method, q):
         if action == "gingiva":  # толщина десны над костью и корнями
             return h.binary(s.scan_gingiva(sid))
         b = h.body() if method == "POST" else {}
+        if action == "other_jaw" and method == "POST":  # беззубая челюсть: по другой челюсти
+            return h.json(s.place_by_other_jaw(sid))
         if action == "register":
             return h.job("Совмещаю скан", lambda progress: s.register(
                 sid, b.get("jaw"), pairs=b.get("pairs"), start=b.get("start"), progress=progress))

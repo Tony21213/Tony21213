@@ -19,6 +19,12 @@ from .teeth import OCCLUSAL, Levels, crown_surface, split_jaws
 JAWS = ("upper", "lower")
 # Точка скана считается лежащей на коронке, если до неё ближе этого расстояния.
 MATCH_MM = 0.5
+# Беззубая или почти беззубая челюсть (п. 15): на коронках КТ меньше этой доли вершин скана — совмещение по
+# коронкам ненадёжно (у челюстей с зубами — 40–65 %, у частично беззубой из архива — 1,4 %).
+EDENTULOUS_SHARE = 0.10
+EDENTULOUS = ("На коронки КТ легло только {share:.0%} скана: челюсть, похоже, беззубая или почти беззубая — "
+              "совмещение по коронкам ненадёжно. Поставьте скан по другой челюсти (сканы одной выгрузки сканера) "
+              "или скорректируйте вручную.")
 FINE_SCHEDULE = ((1.0, 15), (0.5, 15), (0.3, 20), (0.2, 20))
 # С сегментацией коронки КТ — только у зубов: дальше этого от поверхности зуба — кость или артефакт.
 TEETH_NEAR_MM = 1.0
@@ -187,7 +193,10 @@ class CaseCT:
         deviation = surface_deviation(apply(T, scan.vertices), corrected)
         # Участки дуги проверяются только по коронкам: нёбо и глубокая десна их не портят.
         segments, warnings = check_scan(scan.vertices[scan.crowns], T, deviation[scan.crowns], corrected, jaw)
-        return Registration(scan, jaw, T, deviation, deviation_stats(deviation), float(shift), segments, warnings)
+        stats = deviation_stats(deviation)
+        if stats["matched_fraction"] < EDENTULOUS_SHARE:
+            warnings = [EDENTULOUS.format(share=stats["matched_fraction"])] + list(warnings)
+        return Registration(scan, jaw, T, deviation, stats, float(shift), segments, warnings)
 
     def surfaces(self, step: int = 1) -> dict[str, Mesh]:
         """Поверхности КТ по порогам плотности: зубы и кость — когда нет моделей сегментации."""
