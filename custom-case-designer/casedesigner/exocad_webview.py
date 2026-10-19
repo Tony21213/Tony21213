@@ -391,7 +391,7 @@ def mount(upper_vertices, lower_vertices, mandible=None, skull=None, condyles=No
     артикулятор. Шарнир (Anatomy.points condyle_*, вокруг них вращается челюсть, на них головки артикулятора) —
     центры головок: на радиус головки (guidance.CONDYLE_RADIUS_MM) ниже Co по вертикали монтажа; путь мыщелка
     по бугорку — путь этого же центра. ССП — по суставному бугорку черепа (skull: vertices и faces) у точек Co
-    eminence_condyles — в координатах черепа, то есть в соотношении КТ (без них — у condyles), от плоскости
+    eminence_condyles — в координатах черепа (сессия даёт их в прикусе; без них — у condyles), от плоскости
     монтажа; угол Беннетта — по Ханау; чего нет — значения по умолчанию. face_up — эстетическое «вверх» в
     координатах кейса (для plane="aesthetic_hinge", см. mount_planes.rotation).
     """

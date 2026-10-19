@@ -135,9 +135,11 @@ def test_session_mount_points_follow_bite(session):
     session.landmarks.update({"Co_R": CO_R, "Co_L": CO_L})
     hinge, ct_points, why = session._mount_condyles()
     assert why == "" and np.allclose(hinge["right"], CO_R) and np.allclose(ct_points["left"], CO_L)
-    session.bite_motion = bite_motion()  # прикус сканов: шарнир едет с нижней челюстью, бугорок — по КТ
+    session.bite_motion = bite_motion()  # прикус сканов: шарнир и точка для бугорка едут с нижней челюстью
     hinge, ct_points, _ = session._mount_condyles()
-    assert np.allclose(hinge["left"], cond.to_view(CO_L, session.bite_motion)) and np.allclose(ct_points["left"], CO_L)
+    bitten = cond.to_view(CO_L, session.bite_motion)
+    assert np.allclose(hinge["left"], bitten) and np.allclose(ct_points["left"], bitten)
+    assert not np.allclose(bitten, CO_L)  # от прикуса, не как на КТ
     session.landmarks.pop("Co_L")  # нет сегментации — второй точке неоткуда взяться: монтаж не по КТ
     hinge, ct_points, why = session._mount_condyles()
     assert hinge is None and ct_points is None and "left" in why
