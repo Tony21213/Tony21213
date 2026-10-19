@@ -277,8 +277,9 @@ export function renderScans() {
   const ct = !!state.ct;
   const sel = scanById(state.selected);
   const cards = state.scans.map((s) => {
-    const status = s.accepted ? '<span class="badge ok">принят</span>' : s.registered ? ''
-      : `<span class="badge">${ct ? 'не совмещён' : 'не поставлен'}</span>`;
+    const status = s.accepted ? '<span class="badge ok">принят</span>' : s.placed_by === 'other_jaw'
+      ? '<span class="badge" title="Поставлен в координаты другой челюсти: по прикусу сканов, не по КТ">по другой челюсти</span>'
+      : s.registered ? '' : `<span class="badge">${ct ? 'не совмещён' : 'не поставлен'}</span>`;
     const jaw = s.jaw || !ct ? `<button class="badge ${s.jaw ? '' : 'warn'}" data-jaw="${s.id}"
       title="Челюсть скана — щёлкните, чтобы сменить: верхняя → нижняя → прикус">${s.jaw ? JAWS[s.jaw] : 'челюсть?'}</button>` : '';
     const list = s.warnings || [];
@@ -289,8 +290,12 @@ export function renderScans() {
       <div class="card-head"><i class="dot" style="background:${s.color}"></i><h3 ${state.incognito ? '' : `title="${s.path}"`}>${scanLabel(s)}</h3>${jaw}${status}
         ${warnBtn}${s.registered ? opacityButton([s.id], `data-opacity="${s.id}"`) : ''}
         <button class="btn icon ghost" data-remove="${s.id}" title="Убрать">${icons.trash}</button></div>
-      ${metricsHtml(s)}${warnings}
-      ${s.registered ? '' : `<button class="btn wide" data-register="${s.id}">${icons.play}${ct ? 'Совместить' : 'Поставить'}</button>`}</div>`;
+      ${s.placed_by === 'other_jaw' ? (s.stats?.mucosa_mm != null ? `<div class="metrics">
+        <div class="metric"><span>Слизистая, мм</span><b class="${s.stats.mucosa_mm > 4 ? 'bad' : 'ok'}">${s.stats.mucosa_mm}</b></div>
+        <div class="metric"><span>Глубже кости</span><b class="${s.stats.inside_bone > 0.1 ? 'bad' : s.stats.inside_bone > 0.03 ? 'warn' : 'ok'}">${Math.round(s.stats.inside_bone * 100)}%</b></div></div>` : '')
+        : metricsHtml(s)}${warnings}
+      ${s.registered ? '' : `<button class="btn wide" data-register="${s.id}">${icons.play}${ct ? 'Совместить' : 'Поставить'}</button>`}
+      ${s.edentulous ? `<button class="btn wide" data-otherjaw="${s.id}" title="Сканы одной выгрузки сканера лежат в прикусе: скан встанет к совмещённой челюсти">${icons.align}Поставить по другой челюсти</button>` : ''}</div>`;
   }).join('');
   const correcting = !!sel && state.correcting?.id === sel.id;
   let tools = '';

@@ -53,7 +53,7 @@ class CaseFileSteps:
                 "reg_jaw": item["reg"].jaw if item["reg"] is not None else None,
                 "transform": None if item["transform"] is None else np.asarray(item["transform"]).tolist(),
                 "auto": None if auto is None else np.asarray(auto.transform).tolist(), "accepted": item["accepted"],
-                "role": item["role"]})
+                "role": item["role"], "placed_by": item.get("placed_by")})
         for k, (key, mesh) in enumerate(self.structures.items()):
             arrays[f"st{k}_v"], arrays[f"st{k}_f"] = np.asarray(mesh.vertices), np.asarray(mesh.faces)
             meta["structures"].append(key)
@@ -121,13 +121,15 @@ class CaseFileSteps:
             sid = uuid.uuid4().hex[:8]
             role = sm.get("role") or (BITE if is_bite_name(scan.name) else "jaw")
             item = {"scan": scan, "path": sm["path"], "color": sm["color"], "jaw": sm["jaw"], "reg": None, "auto": None,
-                    "role": role, "lower_bite": None,
+                    "role": role, "lower_bite": None, "placed_by": sm.get("placed_by"),
                     "transform": None, "accepted": False, "guided": False}
             if sm["transform"] is not None and role != BITE and self.case is None:  # без КТ — как в файле
                 reg = scanner_registration(scan, sm["reg_jaw"])
                 item.update(reg=reg, auto=reg, transform=reg.transform, guided=True)
             elif sm["transform"] is not None and role != BITE:  # сканы прикуса ставятся заново на челюсти
                 reg = self.case.evaluate(scan, np.asarray(sm["transform"], float), jaw=sm["reg_jaw"])
+                if sm.get("placed_by") == "other_jaw":  # поставлен по другой челюсти: метрики коронок не о нём
+                    reg.warnings = []
                 item.update(reg=reg, transform=reg.transform, guided=reg.jaw in self.case.guided)
                 auto = np.asarray(sm["auto"], float) if sm["auto"] is not None else reg.transform
                 item["auto"] = reg if np.allclose(auto, reg.transform) else SimpleNamespace(transform=auto, jaw=reg.jaw)
