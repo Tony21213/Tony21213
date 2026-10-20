@@ -32,6 +32,7 @@ EYE_LINE_MAX_DEG = 10.0  # линия глаз круче — не горизо�
 MOUTH_OPEN_MIN = 0.08
 FREE_PASSES = 2  # без пар: доводок по маскам (вторая — от первой: грубое положение дальше, чем по парам)
 FREE_MIN_TEETH = 2  # без пар: совпало меньше зубов — совмещение не принимается (нужны пары)
+NO_TEETH = "нет номеров зубов: нужна сегментация зубов на КТ или нейросеть зубов на скане (models/dentalmodelseg)"
 ON_SCAN_MM = 2.0  # точка пары — на скане верхней челюсти: не дальше от его вершин
 FIT_WARN_SHARE = 0.004  # ошибка совмещения больше этой доли диагонали фото — пары стоит проверить
 PREVIEW_PX = 1600  # длинная сторона снимка для окна
@@ -291,27 +292,34 @@ class AestheticsSteps:
         return float(item.get("distance_mm") or ae.DEFAULT_DISTANCE_MM)
 
     def _aes_teeth(self, compute: bool = True):
-        """Зубы верхнего скана для доводки: номера вершин (сегментация КТ), нормали — кэш; None — номеров нет
-        (или ещё не посчитаны: compute=False — не считать, для окна)."""
+        """Зубы верхнего скана для доводки: номера вершин (сегментация КТ; без неё — нейросеть по самому скану,
+        scan_seg), нормали — кэш; None — номеров нет (или ещё не посчитаны: compute=False — не считать, для окна)."""
         from ... import photo_teeth as pt
+        from ... import scan_seg as ss
 
         up, _T, cache = self._upper_ct()
         teeth = {int(k.rsplit("_", 1)[1]): np.asarray(m.vertices) for k, m in self.structures.items()
                  if k.startswith("teeth/tooth_") and k.rsplit("_", 1)[1].isdigit() and int(k.rsplit("_", 1)[1]) // 10 in (1, 2, 5, 6)}
-        key = (cache["key"], tuple(sorted((k, len(v)) for k, v in teeth.items())))
+        folder = getattr(self, "models_dir", None)
+        key = (cache["key"], tuple(sorted((k, len(v)) for k, v in teeth.items())), ss.available(folder))
         if cache.get("teeth_key") != key and not compute:
             return None, None
         if cache.get("teeth_key") != key:
-            labels = normals = None
+            labels, source = None, None
             if teeth:
                 # по близости к зубам КТ (до photo_teeth.REACH_MM): признак «на коронке» по совмещению
                 # (Registration.deviation) бывает почти пустым — тогда от зубов оставались обрывки контуров
-                labels = pt.crown_labels(cache["v"], teeth)
-                if (labels > 0).sum() < 200:
-                    labels = None
-                else:
-                    normals = np.asarray(trimesh.Trimesh(cache["v"], up["scan"].faces, process=False).vertex_normals)
-            cache["teeth_key"], cache["teeth"] = key, (labels, normals)
+                labels, source = pt.crown_labels(cache["v"], teeth), "КТ"
+            if (labels is None or (labels > 0).sum() < 200) and ss.available(folder):
+                # без КТ (или зубов на ней нет) — номера по самому скану (DentalModelSeg, ~20 с)
+                labels = ss.DentalModelSeg(folder).labels(up["scan"].vertices, up["scan"].faces, "upper")
+                source = "DentalModelSeg"
+            normals = None
+            if labels is not None and (labels > 0).sum() < 200:
+                labels, source = None, None
+            if labels is not None:
+                normals = np.asarray(trimesh.Trimesh(cache["v"], up["scan"].faces, process=False).vertex_normals)
+            cache["teeth_key"], cache["teeth"], cache["teeth_source"] = key, (labels, normals), source
         return cache["teeth"]
 
     def _aes_occluders(self, crowns: bool = False):
@@ -370,7 +378,7 @@ class AestheticsSteps:
             return None, "нет нейросети SAM 2.1 (models/sam2.1-tiny)"
         labels, normals = self._aes_teeth()
         if labels is None:
-            return None, "нет номеров зубов: нужна сегментация зубов на КТ"
+            return None, NO_TEETH
         occ, occ_n = self._aes_occluders() if kind == "retracted" else (None, None)
         anchor = self._upper_incisal(self._base_frame())
         try:
@@ -414,7 +422,7 @@ class AestheticsSteps:
         sam = self._sam()
         labels, normals = self._aes_teeth()
         if labels is None:
-            return None, None, {"used": False, "error": "нет номеров зубов: нужна сегментация зубов на КТ", "free": True}
+            return None, None, {"used": False, "error": NO_TEETH, "free": True}
         try:
             base = self._base_frame()
             anchor = self._upper_incisal(base)
@@ -443,6 +451,7 @@ class AestheticsSteps:
                                 "error": why or "зубы на фото и на скане не совпали"}
         report = self._auto_report(r)
         report.update(free=True, coarse_iou=round(score, 3))
+        report["teeth_source"] = self._upper_ct()[2].get("teeth_source")
         return r.camera, r, report
 
     def _camera(self, kind: str, refine: bool = False):
@@ -505,6 +514,7 @@ class AestheticsSteps:
                         cam = r.camera
                         item["_refined"] = r
                     item["_auto"] = self._auto_report(r, why)
+                    item["_auto"]["teeth_source"] = self._upper_ct()[2].get("teeth_source")
                     item["_cam"], item["_overlay"], item["_auto_key"] = cam, None, key
         return item["_cam"], None
 
