@@ -230,7 +230,11 @@ def test_export(case, register, tmp_path):
     assert np.abs(ef.register_to_articulator() @ file_to_register - np.eye(4)).max() < 1e-3
 
 
-@pytest.mark.skipif(EXOCAD is None, reason="exocad не установлен")
+SAMPLE_012 = None if EXOCAD is None else os.path.join(os.path.dirname(EXOCAD), "CAD-Data", "2025-03-25_99999-012")
+
+
+@pytest.mark.skipif(SAMPLE_012 is None or not os.path.isdir(SAMPLE_012) or not os.listdir(SAMPLE_012),
+                    reason="нет exocad или его образца 012")
 def test_sample_012_models_in_articulator_like_exocad():
     """Образец exocad с настоящей лицевой дугой Zebris (012): вилка библиотеки на его скане маркера и его
     .jawmotion дают «сканы → регистратор»; наша цепочка для тех же сканов ставит модели в артикулятор туда же
