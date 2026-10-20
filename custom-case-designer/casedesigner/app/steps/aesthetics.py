@@ -1,7 +1,10 @@
 """Шаг «Эстетика»: фото анфас с улыбкой и с ретрактором — методы Session (docs/handoff/archive/aesthetics-photo.md).
 
-Каждое фото совмещается со сканом верхней челюсти по своим парам точек «фото — скан» (aesthetic.fit_camera);
-горизонт, средняя линия лица и точки лица отмечаются на фото. Камера фото с улыбкой даёт эстетическую систему
+Каждое фото совмещается со сканом верхней челюсти, как в exocad Smile Design: 2+ пары точек «фото — скан» дают
+грубую камеру (aesthetic.fit_camera, расстояние до камеры — задано), доводит модель — маски зубов на фото по SAM 2.1
+и подгонка камеры по контурам каждого зуба (photo_teeth.align; номера зубов — из сегментации КТ); поправить можно
+мышью поверх фото (поворот скана — ПКМ, сдвиг и масштаб — с Shift) — тогда камера запоминается как есть.
+Горизонт, средняя линия лица и точки лица отмечаются на фото. Камера фото с улыбкой даёт эстетическую систему
 монтажа (шаг «Артикулятор»: photo_aesthetic), оба фото с камерами — набор Smile Design exocad (шаг «Экспорт»)."""
 
 from ..common import (  # noqa: F401
@@ -17,7 +20,9 @@ from ..common import (  # noqa: F401
 
 PHOTO_KINDS = {"smile": "с улыбкой", "retracted": "с ретрактором"}
 FACE_KEYS = ("pupil", "endocanthion", "canthus", "ala", "commissure")  # пары _right / _left — aesthetic.FACE_WIDTHS
-PAIRS_WITH_FOCAL, PAIRS_WITHOUT_FOCAL = 4, 6  # aesthetic.fit_camera: фокус из EXIF или подбирается
+CONTOUR_STEP = 2  # контуры зубов в окне — каждая вторая клетка
+OCCLUDER_REACH_MM = 6.0  # нижние зубы, что загораживают верхние на фото с ретрактором: не дальше этого от верхнего скана
+OCCLUDER_POINTS = 150_000
 ON_SCAN_MM = 2.0  # точка пары — на скане верхней челюсти: не дальше от его вершин
 FIT_WARN_SHARE = 0.004  # ошибка совмещения больше этой доли диагонали фото — пары стоит проверить
 PREVIEW_PX = 1600  # длинная сторона снимка для окна
@@ -70,7 +75,8 @@ class AestheticsSteps:
     def _new_photo(self, path: str, photo) -> dict:
         self._photo_version = getattr(self, "_photo_version", 0) + 1
         return {"path": path, "photo": photo, "pairs": [], "horizon_deg": 0.0, "midline_px": [], "face": {},
-                "upper_n": None, "version": self._photo_version, "_cam_key": None, "_cam": None, "_overlay": None}
+                "upper_n": None, "version": self._photo_version, "_cam_key": None, "_cam": None, "_overlay": None,
+                "distance_mm": None, "auto": True, "override": None, "_auto": None, "_refined": None}
 
     def aesthetic_remove_photo(self, kind: str) -> dict:
         self.photos.pop(_kind(kind), None)
@@ -117,6 +123,7 @@ class AestheticsSteps:
             item["pairs"], item["upper_n"] = [], len(up["scan"].vertices)
         local = apply(np.linalg.inv(T), p[None])[0]
         item["pairs"].append({"px": uv, "local": [round(float(c), 4) for c in local]})
+        item["override"] = None
         return self.aesthetics_info()
 
     def aesthetic_unpair(self, kind: str, index: int | None = None) -> dict:
@@ -128,13 +135,26 @@ class AestheticsSteps:
             if not 0 <= int(index) < len(item["pairs"]):
                 raise ValueError("нет такой пары")
             del item["pairs"][int(index)]
+        item["override"] = None
         return self.aesthetics_info()
 
-    def aesthetic_set(self, kind: str, horizon_deg=None, midline_px=None, face=None) -> dict:
+    def aesthetic_set(self, kind: str, horizon_deg=None, midline_px=None, face=None, distance_mm=None,
+                      auto=None) -> dict:
         """Горизонт (угол истинной горизонтали в кадре, градусы), точки средней линии лица, точки лица
-        ({"pupil_right": [x, y] | None, …} — меняются только названные)."""
+        ({"pupil_right": [x, y] | None, …} — меняются только названные), расстояние до камеры (мм; 0 — по
+        умолчанию) и доводка моделью (auto)."""
+        from ... import aesthetic as ae
+
         item = self._photo(kind)
         size = item["photo"].size
+        if distance_mm is not None:
+            d = float(distance_mm)
+            if d and not ae.DISTANCE_RANGE_MM[0] <= d <= ae.DISTANCE_RANGE_MM[1]:
+                lo, hi = ae.DISTANCE_RANGE_MM
+                raise ValueError(f"расстояние до камеры — от {lo:g} до {hi:g} мм")
+            item["distance_mm"], item["override"] = (round(d) if d else None), None
+        if auto is not None:
+            item["auto"], item["override"] = bool(auto), None
         if horizon_deg is not None:
             h = float(horizon_deg)
             if not np.isfinite(h) or abs(h) > 45:
@@ -176,29 +196,177 @@ class AestheticsSteps:
         return cache["base"][1]
 
     def _need_pairs(self, item: dict) -> int:
-        return PAIRS_WITH_FOCAL if item["photo"].focal_px is not None else PAIRS_WITHOUT_FOCAL
+        from ... import aesthetic as ae
+
+        return ae.MIN_PAIRS
+
+    def _distance(self, item) -> float:
+        from ... import aesthetic as ae
+
+        return float(item.get("distance_mm") or ae.DEFAULT_DISTANCE_MM)
+
+    def _aes_teeth(self):
+        """Зубы верхнего скана для доводки: номера вершин (сегментация КТ), нормали — кэш; None — номеров нет."""
+        from ... import photo_teeth as pt
+
+        up, _T, cache = self._upper_ct()
+        teeth = {int(k.rsplit("_", 1)[1]): np.asarray(m.vertices) for k, m in self.structures.items()
+                 if k.startswith("teeth/tooth_") and k.rsplit("_", 1)[1].isdigit() and int(k.rsplit("_", 1)[1]) // 10 in (1, 2, 5, 6)}
+        key = (cache["key"], tuple(sorted((k, len(v)) for k, v in teeth.items())))
+        if cache.get("teeth_key") != key:
+            labels = normals = None
+            if teeth:
+                dev = getattr(up["reg"], "deviation", None)
+                crown = None if dev is None or len(dev) != len(cache["v"]) else np.isfinite(np.asarray(dev, float))
+                if crown is not None and crown.sum() < 1000:  # коронок по совмещению почти нет — по близости к зубам КТ
+                    crown = None
+                labels = pt.crown_labels(cache["v"], teeth, crown)
+                if (labels > 0).sum() < 200:
+                    labels = None
+                else:
+                    normals = np.asarray(trimesh.Trimesh(cache["v"], up["scan"].faces, process=False).vertex_normals)
+            cache["teeth_key"], cache["teeth"] = key, (labels, normals)
+        return cache["teeth"]
+
+    def _aes_occluders(self):
+        """Нижние зубы в прикусе (координаты КТ) — загораживают верхние на фото с ретрактором: (точки, нормали)."""
+        from scipy.spatial import cKDTree
+
+        _up, lo = self._jaw_items()
+        if lo is None or lo.get("reg") is None:
+            return None, None
+        T = np.asarray(lo["reg"].transform, float)
+        if getattr(self, "bite_motion", None) is not None:
+            T = np.asarray(self.bite_motion, float) @ T
+        _u, _T, cache = self._upper_ct()
+        key = (id(lo["scan"]), T.tobytes(), cache["key"])
+        if cache.get("occ_key") != key:
+            v = apply(T, lo["scan"].vertices)
+            n = np.asarray(trimesh.Trimesh(v, lo["scan"].faces, process=False).vertex_normals)
+            near = np.isfinite(cKDTree(cache["v"]).query(v, distance_upper_bound=OCCLUDER_REACH_MM)[0])
+            v, n = v[near], n[near]
+            if len(v) > OCCLUDER_POINTS:
+                k = np.random.default_rng(0).choice(len(v), OCCLUDER_POINTS, replace=False)
+                v, n = v[k], n[k]
+            cache["occ_key"], cache["occ"] = key, (v, n)
+        return cache["occ"]
+
+    def _sam(self):
+        from ... import photo_teeth as pt
+
+        folder = getattr(self, "models_dir", None)
+        if not pt.Sam2.available(folder):
+            return None
+        sam = getattr(self, "_sam2", None)
+        if sam is None or sam.folder != os.path.join(folder, pt.MODEL_DIR):
+            sam = self._sam2 = pt.Sam2(folder)
+        return sam
+
+    def _auto_refine(self, kind: str, item: dict, camera):
+        """Доводка моделью: маски зубов на фото (SAM) и подгонка камеры по контурам; (Refined | None, причина)."""
+        from ... import photo_teeth as pt
+
+        sam = self._sam()
+        if sam is None:
+            return None, "нет нейросети SAM 2.1 (models/sam2.1-tiny)"
+        labels, normals = self._aes_teeth()
+        if labels is None:
+            return None, "нет номеров зубов: нужна сегментация зубов на КТ"
+        occ, occ_n = self._aes_occluders() if kind == "retracted" else (None, None)
+        anchor = self._upper_incisal(self._base_frame())
+        try:
+            r = pt.align(sam, item["photo"].image, camera, self._upper_ct()[2]["v"], labels, anchor,
+                         self._distance(item), normals, occ, occ_n)
+        except ValueError as e:
+            return None, str(e)
+        if not r.teeth:
+            return None, "зубы на фото не совпали со сканом — проверьте пары точек"
+        return r, None
 
     def _camera(self, kind: str):
-        """Камера совмещения фото (aesthetic.Camera, координаты КТ) или None; вторым — почему её нет."""
+        """Камера совмещения фото (aesthetic.Camera, координаты КТ) или None; вторым — почему её нет.
+        Запомненная (ручная поправка или «Уточнить по зубам») — как есть; иначе — по парам, затем доводка моделью."""
         from ... import aesthetic as ae
 
         item = self.photos.get(kind)
         if item is None:
             return None, "нет фото"
+        if item.get("override") is not None:
+            o = item["override"]
+            return ae.Camera(np.asarray(o["K"], float), np.asarray(o["R"], float), np.asarray(o["t"], float), 0.0,
+                             bool(o.get("mirrored")), tuple(item["photo"].size)), None
         if not self._pairs_valid(item) or len(item["pairs"]) < self._need_pairs(item):
             n = len(item["pairs"]) if self._pairs_valid(item) else 0
             return None, f"пар точек {n} из {self._need_pairs(item)}"
         _up, T, _cache = self._upper_ct()
         px = np.array([p["px"] for p in item["pairs"]], float)
         pts = apply(T, np.array([p["local"] for p in item["pairs"]], float))
-        key = (T.tobytes(), px.tobytes(), pts.tobytes())
+        key = (T.tobytes(), px.tobytes(), pts.tobytes(), self._distance(item), bool(item["auto"]),
+               self._sam() is not None, len(self.structures))
         if item["_cam_key"] != key:
+            base = self._base_frame()
             try:
-                cam = ae.fit_camera(px, pts, item["photo"].size, self._base_frame(), item["photo"].focal_px)
+                cam = ae.fit_camera(px, pts, item["photo"].size, base, distance_mm=self._distance(item),
+                                    anchor=self._upper_incisal(base))
             except (ValueError, np.linalg.LinAlgError) as e:
                 return None, str(e)
+            item["_auto"], item["_refined"] = None, None
+            if item["auto"]:
+                r, why = self._auto_refine(kind, item, cam)
+                if r is not None and np.mean(list(r.iou_after.values()) or [0]) >= np.mean(list(r.iou_before.values()) or [0]):
+                    cam = r.camera
+                    item["_refined"] = r
+                item["_auto"] = self._auto_report(r, why)
             item["_cam_key"], item["_cam"], item["_overlay"] = key, cam, None
         return item["_cam"], None
+
+    @staticmethod
+    def _auto_report(r, why=None) -> dict:
+        if r is None:
+            return {"used": False, "error": why}
+        mean = lambda d: round(float(np.mean([d[n] for n in r.teeth])), 3) if r.teeth else None  # noqa: E731
+        return {"used": True, "error": None, "teeth": list(r.teeth), "iou_before": mean(r.iou_before),
+                "iou_after": mean(r.iou_after), "edge_px": None if r.edge_px is None else round(r.edge_px, 1)}
+
+    def _remember_camera(self, item: dict, cam) -> None:
+        item["override"] = {"K": cam.K.round(6).tolist(), "R": cam.R.round(9).tolist(), "t": cam.t.round(6).tolist(),
+                            "mirrored": bool(cam.mirrored)}
+        item["_overlay"] = None
+
+    def aesthetic_adjust(self, kind: str, manual: dict) -> dict:
+        """Ручная поправка совмещения поверх фото (aesthetic.adjust_camera): поворот скана, сдвиг, масштаб —
+        от текущей камеры; камера запоминается как есть."""
+        from ... import aesthetic as ae
+
+        item = self._photo(kind)
+        cam, why = self._camera(kind)
+        if cam is None:
+            raise ValueError(f"поправлять нечего: {why}")
+        delta = {k: float(v) for k, v in dict(manual or {}).items() if k in ae.MANUAL_KEYS}
+        anchor = self._upper_incisal(self._base_frame())
+        self._remember_camera(item, ae.adjust_camera(cam, delta, anchor))
+        item["_refined"] = None
+        item["_auto"] = {"used": False, "error": None, "manual": True}
+        return self.aesthetics_info()
+
+    def aesthetic_refine(self, kind: str) -> dict:
+        """«Уточнить по зубам»: доводка моделью от текущей камеры (после ручной поправки — от неё)."""
+        item = self._photo(kind)
+        cam, why = self._camera(kind)
+        if cam is None:
+            raise ValueError(f"уточнять нечего: {why}")
+        r, why = self._auto_refine(kind, item, cam)
+        if r is None:
+            raise ValueError(why)
+        self._remember_camera(item, r.camera)
+        item["_refined"], item["_auto"] = r, self._auto_report(r)
+        return self.aesthetics_info()
+
+    def aesthetic_reset_camera(self, kind: str) -> dict:
+        """Забыть поправку: камера — снова по парам и доводке."""
+        item = self._photo(kind)
+        item["override"], item["_cam_key"] = None, None
+        return self.aesthetics_info()
 
     def _upper_incisal(self, base: np.ndarray) -> np.ndarray:
         """Точка между центральными резцами верхней челюсти (координаты КТ): самая передняя у режущих краёв."""
@@ -229,22 +397,44 @@ class AestheticsSteps:
             return ae.aesthetic_frame(base, cam, item["horizon_deg"], midline, self._upper_incisal(base), face=face)
         return build
 
-    def _overlay(self, kind: str, cam) -> list:
-        """Скан верхней челюсти на фото по камере: вершины, обращённые к камере, — пиксели фото."""
+    def _overlay(self, kind: str, cam) -> dict:
+        """Наложение скана на фото: контуры зубов скана — точками скана (3D, координаты КТ: окно перепроецирует их,
+        пока скан двигают мышью), контуры масок зубов на фото (доводка) — пиксели; без номеров зубов — видимые
+        точки скана (3D)."""
+        from ... import photo_teeth as pt
+
         item = self.photos[kind]
         if item["_overlay"] is None:
             up, _T, cache = self._upper_ct()
-            mesh = trimesh.Trimesh(cache["v"], up["scan"].faces, process=False)
-            v, n = np.asarray(mesh.vertices), np.asarray(mesh.vertex_normals)
-            centre = -cam.R.T @ cam.t
-            facing = np.einsum("ij,ij->i", n, centre - v) > 0
-            v = v[facing]
-            if len(v) > OVERLAY_POINTS:
-                v = v[np.random.default_rng(0).choice(len(v), OVERLAY_POINTS, replace=False)]
-            uv = cam.project(v) if len(v) else np.zeros((0, 2))
-            w, h = item["photo"].size
-            inside = (uv[:, 0] >= 0) & (uv[:, 0] <= w) & (uv[:, 1] >= 0) & (uv[:, 1] <= h)
-            item["_overlay"] = np.round(uv[inside], 1).tolist()
+            labels, normals = self._aes_teeth()
+            out = {"scan": [], "photo": [], "points": []}
+            if labels is not None:
+                on = labels > 0
+                P, L, N = cache["v"][on], labels[on], normals[on]
+                if len(P) > pt.MAX_POINTS:
+                    k = np.random.default_rng(0).choice(len(P), pt.MAX_POINTS, replace=False)
+                    P, L, N = P[k], L[k], N[k]
+                try:
+                    window = pt.teeth_window(cam, P, item["photo"].size)
+                    grid = pt.grid_for(cam, P, L, window, N)
+                    occ, occ_n = self._aes_occluders() if kind == "retracted" else (None, None)
+                    view = pt.project(cam, P, L, window, grid, N, occ, occ_n)
+                    out["scan"] = [{"tooth": c["tooth"], "points": c["points"].round(3).tolist()}
+                                   for c in pt.scan_contours(view, P, CONTOUR_STEP)]
+                except ValueError:
+                    pass
+            r = item.get("_refined")
+            if r is not None and r.masks:
+                out["photo"] = [{"tooth": c["tooth"], "px": c["px"].round(1).tolist()}
+                                for c in pt.mask_contours(r.masks, r.window, r.grid, CONTOUR_STEP)]
+            if not out["scan"]:
+                mesh = trimesh.Trimesh(cache["v"], up["scan"].faces, process=False)
+                v, n = np.asarray(mesh.vertices), np.asarray(mesh.vertex_normals)
+                v = v[np.einsum("ij,ij->i", n, cam.centre - v) > 0]
+                if len(v) > OVERLAY_POINTS:
+                    v = v[np.random.default_rng(0).choice(len(v), OVERLAY_POINTS, replace=False)]
+                out["points"] = v.round(3).tolist()
+            item["_overlay"] = out
         return item["_overlay"]
 
     def _export_photos(self) -> list:
@@ -276,15 +466,25 @@ class AestheticsSteps:
             info = {"label": label, "size": [w, h], "focal": item["photo"].focal_px is not None,
                     "notes": list(item["photo"].notes), "version": item["version"], "pairs": pairs,
                     "need": self._need_pairs(item), "fit_error": why, "camera": None,
+                    "distance_mm": self._distance(item), "distance_set": item.get("distance_mm") is not None,
+                    "auto": bool(item.get("auto", True)), "auto_info": item.get("_auto"),
+                    "auto_ready": self._sam() is not None,
                     "horizon_deg": item["horizon_deg"], "midline_px": item["midline_px"], "face": item["face"],
-                    "overlay": [], "widths": {}, "guide": [], "aesthetic": None}
+                    "overlay": {"scan": [], "photo": [], "points": []}, "widths": {}, "guide": [], "aesthetic": None}
             if item["pairs"] and not valid:
                 info["notes"].append("скан верхней челюсти заменён — пары точек нужно поставить заново")
             if cam is not None:
                 diag = float(np.hypot(w, h))
-                info["camera"] = {"residual_px": round(cam.residual_px, 1), "mirrored": bool(cam.mirrored),
+                px_ = np.array([p["px"] for p in item["pairs"]], float) if valid and item["pairs"] else np.zeros((0, 2))
+                pts_ = apply(T, np.array([p["local"] for p in item["pairs"]], float)) if len(px_) else np.zeros((0, 3))
+                residual = float(np.sqrt(np.mean(np.sum((cam.project(pts_) - px_) ** 2, 1)))) if len(px_) else 0.0
+                anchor = self._upper_incisal(self._base_frame())
+                info["camera"] = {"residual_px": round(residual, 1), "mirrored": bool(cam.mirrored),
                                   "focal_35mm": round(float(cam.K[0, 0]) * ae.FULL_FRAME_DIAGONAL_MM / diag, 1),
-                                  "check": cam.residual_px > FIT_WARN_SHARE * diag}
+                                  "distance_mm": round(float((anchor - cam.centre) @ cam.R[2])),
+                                  "check": residual > FIT_WARN_SHARE * diag and not item.get("override"),
+                                  "K": cam.K.round(6).tolist(), "R": cam.R.round(9).tolist(), "t": cam.t.round(6).tolist(),
+                                  "anchor": anchor.round(4).tolist(), "fixed": item.get("override") is not None}
                 info["overlay"] = self._overlay(kind, cam)
                 try:
                     base = self._base_frame()
@@ -337,7 +537,9 @@ class AestheticsSteps:
     # --- кейс ---------------------------------------------------------------------------------------------------------
     def _photos_meta(self) -> dict:
         return {kind: {"path": item["path"], "pairs": item["pairs"], "upper_n": item["upper_n"],
-                       "horizon_deg": item["horizon_deg"], "midline_px": item["midline_px"], "face": item["face"]}
+                       "horizon_deg": item["horizon_deg"], "midline_px": item["midline_px"], "face": item["face"],
+                       "distance_mm": item.get("distance_mm"), "auto": bool(item.get("auto", True)),
+                       "override": item.get("override")}
                 for kind, item in self.photos.items()}
 
     def _load_photos_meta(self, meta: dict | None):
@@ -360,7 +562,9 @@ class AestheticsSteps:
             item = self._new_photo(path, photo)
             item.update(pairs=list(saved.get("pairs") or []), upper_n=saved.get("upper_n"),
                         horizon_deg=float(saved.get("horizon_deg") or 0.0),
-                        midline_px=list(saved.get("midline_px") or []), face=dict(saved.get("face") or {}))
+                        midline_px=list(saved.get("midline_px") or []), face=dict(saved.get("face") or {}),
+                        distance_mm=saved.get("distance_mm"), auto=bool(saved.get("auto", True)),
+                        override=saved.get("override"))
             self.photos[kind] = item
 
 
@@ -384,5 +588,12 @@ def route(h, s, p, method, q):
     if p == ["aesthetics", "pair", "remove"]:
         return h.json(s.aesthetic_unpair(b.get("kind"), b.get("index")))
     if p == ["aesthetics", "set"]:
-        return h.json(s.aesthetic_set(b.get("kind"), b.get("horizon_deg"), b.get("midline_px"), b.get("face")))
+        return h.json(s.aesthetic_set(b.get("kind"), b.get("horizon_deg"), b.get("midline_px"), b.get("face"),
+                                      b.get("distance_mm"), b.get("auto")))
+    if p == ["aesthetics", "adjust"]:  # ручная поправка поверх фото (ПКМ — поворот скана, Shift — сдвиг и масштаб)
+        return h.json(s.aesthetic_adjust(b.get("kind"), b.get("manual") or {}))
+    if p == ["aesthetics", "refine"]:  # «Уточнить по зубам» — доводка моделью от текущей камеры
+        return h.job("Уточнение по зубам", lambda progress: s.aesthetic_refine(b.get("kind")))
+    if p == ["aesthetics", "camera", "reset"]:
+        return h.json(s.aesthetic_reset_camera(b.get("kind")))
     return False

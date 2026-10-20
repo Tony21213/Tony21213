@@ -15,9 +15,14 @@
 * зрачковая линия и другие линии лица из-за естественной асимметрии лица
   горизонт не задают — это подсказки с их углом к горизонту (`face_hints`).
 
-Фото привязывается к зубам верхнего скана по 4+ парам точек «фото — скан»
-(режущие края, бугры клыков): по ним находится положение камеры
-(`fit_camera`), и направления кадра переносятся на модели.
+Фото привязывается к зубам верхнего скана по 2+ парам точек «фото — скан»
+(режущие края, бугры клыков), как в exocad Smile Creator: по ним находится
+положение камеры (`fit_camera`), и направления кадра переносятся на модели.
+Перспектива по точкам на зубах не определяется (зубы неглубокие, камера в
+полуметре и дальше: фокус от 21 до 150 мм даёт одну и ту же ошибку), поэтому
+расстояние до камеры задаётся — по умолчанию DEFAULT_DISTANCE_MM (exocad: 1072,55
+мм; протокол съёмки exocad — с 1 м), фокус подбирается по масштабу. Взгляд — спереди
+по функциональной системе; при 3+ парах он уточняется, держась у фронтального.
 
 Автоматические подсказки по лицу — MediaPipe Face Landmarker (Apache-2.0,
 модель face_landmarker.task); без неё всё работает по точкам, отмеченным вручную.
@@ -34,6 +39,10 @@ from .register import rigid
 FULL_FRAME_DIAGONAL_MM = 43.27  # диагональ кадра 36×24 мм — для фокусного расстояния в 35-мм эквиваленте
 DEFAULT_FOCAL_35MM = 50.0  # если в EXIF нет фокусного расстояния: портретная съёмка
 MIRROR_GAIN = 0.5  # зеркальное (фронтальная камера) — если с отражением ошибка меньше хотя бы вдвое
+DEFAULT_DISTANCE_MM = 1000.0  # камера — до зубов (exocad Smile Creator: 1072,55 мм по умолчанию)
+DISTANCE_RANGE_MM = (150.0, 5000.0)
+MIN_PAIRS = 2
+VIEW_PRIOR_PX_PER_DEG = 0.5  # 3+ пары: отход взгляда от фронтального на 1° стоит, как 0,5 px ошибки на паре
 LIP_DEPTH_MM = 10.0  # средняя линия лица на высоте резцов лежит на губе — примерно на 10 мм впереди режущего края
 
 # Точки MediaPipe Face Landmarker (478): зрачки, углы глаз, крылья носа, углы рта, срединные точки.
@@ -71,8 +80,6 @@ def load_photo(path: str) -> Photo:
     if f35:
         diag = float(np.hypot(*image.shape[:2]))
         focal_px = float(f35) * diag / FULL_FRAME_DIAGONAL_MM
-    else:
-        notes.append("в EXIF нет фокусного расстояния — камера будет подобрана с фокусом (нужно 6+ пар точек)")
     if exif.get(0x0112, 1) != 1:
         notes.append("фото повёрнуто по EXIF")
     return Photo(image, focal_px, notes)
@@ -104,6 +111,11 @@ class Camera:
         d_cam = np.array([(u - self.K[0, 2]) / self.K[0, 0], (v - self.K[1, 2]) / self.K[1, 1], 1.0])
         d = self.R.T @ d_cam
         return -self.R.T @ self.t, d / np.linalg.norm(d)
+
+    @property
+    def centre(self) -> np.ndarray:
+        """Центр камеры, координаты кейса."""
+        return -self.R.T @ self.t
 
     def axis(self, image_direction) -> np.ndarray:
         """Направление в кадре (пиксели: x вправо, y вниз) — как направление в координатах кейса."""
@@ -146,31 +158,124 @@ def _fit(px, pts, size, focal, R0, fit_focal):
     return Camera(K, Rotation.from_rotvec(x[:3]).as_matrix(), x[3:6], rms, size=size)
 
 
-def fit_camera(points_px, points_3d, size, base_frame: np.ndarray, focal_px: float | None = None) -> Camera:
+def view_rotation(base_frame: np.ndarray, pitch_deg: float = 0.0, yaw_deg: float = 0.0) -> np.ndarray:
+    """Камера спереди по функциональной системе, повёрнутая на pitch (плюс — смотрит сверху: верх модели к камере)
+    и yaw (плюс — камера правее пациента). Строки — оси камеры в координатах кейса."""
+    R0 = _front_rotation(base_frame)
+    x_f, _y_f, z_f = np.asarray(base_frame, float)[:3, :3]
+    turn = Rotation.from_rotvec(-np.radians(yaw_deg) * z_f) * Rotation.from_rotvec(np.radians(pitch_deg) * x_f)
+    return R0 @ turn.as_matrix().T
+
+
+def _fit_at_distance(px, pts, size, distance, R0, free_view, anchor=None):
+    """Камера, у которой anchor (по умолчанию центр точек) на глубине distance: неизвестны поворот (при 2 парах —
+    только вокруг взгляда), сдвиг anchor в кадре и фокус."""
+    w, h = size
+    cx, cy = w / 2, h / 2
+    c3 = pts.mean(0) if anchor is None else np.asarray(anchor, float)
+    rel = pts - c3
+    spread3 = np.linalg.norm(rel, axis=1).mean()
+    c2 = px.mean(0)
+    spread2 = np.linalg.norm(px - c2, axis=1).mean()
+    f0 = max(spread2, 1e-6) * distance / max(spread3, 1e-6)
+
+    def camera(x):
+        dR = Rotation.from_rotvec(x[:3] if free_view else np.r_[0.0, 0.0, x[0]]).as_matrix()
+        R = dR @ R0
+        k = 3 if free_view else 1
+        f = float(np.exp(x[k + 2]))
+        t = np.r_[x[k:k + 2], distance] - R @ c3
+        return R, t, f
+
+    def residual(x):
+        R, t, f = camera(x)
+        c = pts @ R.T + t
+        uv = c[:, :2] / c[:, 2:3] * f + [cx, cy]
+        r = (uv - px).ravel()
+        if free_view:  # взгляд — у фронтального: наклон и разворот (повороты вокруг осей кадра x, y)
+            r = np.r_[r, VIEW_PRIOR_PX_PER_DEG * np.degrees(x[:2])]
+        return r
+
+    off0 = [(c2[0] - cx) / f0 * distance, (c2[1] - cy) / f0 * distance]
+    x0 = np.r_[np.zeros(3 if free_view else 1), off0, np.log(f0)]
+    sol = least_squares(residual, x0, method="lm" if len(x0) <= len(residual(x0)) else "trf")
+    R, t, f = camera(sol.x)
+    data = residual(sol.x)[: 2 * len(px)]
+    rms = float(np.sqrt(np.mean(data ** 2) * 2))
+    return Camera(np.array([[f, 0, cx], [0, f, cy], [0, 0, 1.0]]), R, t, rms, size=size)
+
+
+def fit_camera(points_px, points_3d, size, base_frame: np.ndarray, focal_px: float | None = None,
+               distance_mm: float | None = None, view_deg=None, anchor=None) -> Camera:
     """Положение камеры по парам точек «фото — скан».
 
     points_px — пиксели на фото (x вправо, y вниз), points_3d — те же точки на
-    верхнем скане (координаты кейса); base_frame — функциональная система (для
-    начального приближения: камера спереди). Фокус — из EXIF; если неизвестен,
-    подбирается (нужно 6+ пар). Зеркальное фото (фронтальная камера)
-    распознаётся по ошибке.
+    верхнем скане (координаты кейса); base_frame — функциональная система (камера
+    спереди). Как в exocad: anchor (резцовая точка; без неё — центр точек) — на
+    глубине distance_mm от камеры (по умолчанию DEFAULT_DISTANCE_MM), фокус
+    подбирается; хватит 2 пар. Взгляд —
+    спереди, повёрнутый на view_deg = (наклон, разворот) градусов; при 3+ парах и
+    view_deg=None — уточняется по точкам, держась у фронтального. focal_px без
+    distance_mm — прежний расчёт: фокус задан (EXIF), расстояние подбирается
+    (4+ пары). Зеркальное фото (фронтальная камера) распознаётся по ошибке.
     """
     px = np.asarray(points_px, float)
     pts = np.asarray(points_3d, float)
-    if len(px) != len(pts) or len(px) < 4:
-        raise ValueError("нужно минимум 4 пары точек «фото — скан»")
-    fit_focal = focal_px is None
-    if fit_focal and len(px) < 6:
-        raise ValueError("фокусное расстояние неизвестно — нужно минимум 6 пар точек или фото с EXIF")
     w, h = size
-    focal = focal_px or DEFAULT_FOCAL_35MM * float(np.hypot(w, h)) / FULL_FRAME_DIAGONAL_MM
-    R0 = _front_rotation(base_frame)
-    direct = _fit(px, pts, size, focal, R0, fit_focal)
-    flipped = _fit(np.c_[w - px[:, 0], px[:, 1]], pts, size, focal, R0, fit_focal)
+    if focal_px is not None and distance_mm is None:
+        if len(px) != len(pts) or len(px) < 4:
+            raise ValueError("нужно минимум 4 пары точек «фото — скан»")
+        R0 = _front_rotation(base_frame)
+        direct = _fit(px, pts, size, float(focal_px), R0, False)
+        flipped = _fit(np.c_[w - px[:, 0], px[:, 1]], pts, size, float(focal_px), R0, False)
+    else:
+        if len(px) != len(pts) or len(px) < MIN_PAIRS:
+            raise ValueError(f"нужно минимум {MIN_PAIRS} пары точек «фото — скан»")
+        d = float(DEFAULT_DISTANCE_MM if distance_mm is None else distance_mm)
+        if not DISTANCE_RANGE_MM[0] <= d <= DISTANCE_RANGE_MM[1]:
+            raise ValueError(f"расстояние до камеры — от {DISTANCE_RANGE_MM[0]:g} до {DISTANCE_RANGE_MM[1]:g} мм")
+        pitch, yaw = (0.0, 0.0) if view_deg is None else (float(view_deg[0]), float(view_deg[1]))
+        R0 = view_rotation(base_frame, pitch, yaw)
+        free = view_deg is None and len(px) >= 3
+        direct = _fit_at_distance(px, pts, size, d, R0, free, anchor)
+        flipped = _fit_at_distance(np.c_[w - px[:, 0], px[:, 1]], pts, size, d, R0, free, anchor)
+        if len(px) < 3:
+            return direct  # по 2 парам зеркало не отличить: фото считается обычным
     if flipped.residual_px < MIRROR_GAIN * direct.residual_px:
         flipped.mirrored = True
         return flipped
     return direct
+
+
+MANUAL_KEYS = ("pitch", "yaw", "roll", "dx", "dy", "scale")
+
+
+def adjust_camera(camera: Camera, manual: dict | None, anchor) -> Camera:
+    """Ручная поправка совмещения, как в exocad Smile Design: скан поворачивается вокруг anchor (резцовая точка) —
+    pitch (вокруг оси кадра «вправо»; плюс — верх скана к камере), yaw (вокруг «вниз»), roll (вокруг взгляда),
+    градусы; затем сдвигается на dx, dy (px снимка, как на экране) и масштабируется в scale раз вокруг anchor.
+    Зеркальное фото — поправка как на экране."""
+    from dataclasses import replace
+
+    m = {k: float((manual or {}).get(k, 1.0 if k == "scale" else 0.0)) for k in MANUAL_KEYS}
+    if m["scale"] <= 0:
+        raise ValueError("масштаб поправки — больше нуля")
+    sgn = -1.0 if camera.mirrored else 1.0
+    Q = Rotation.from_euler("xyz", [m["pitch"], sgn * m["yaw"], sgn * m["roll"]], degrees=True).as_matrix()
+    A = np.asarray(anchor, float)
+    R = Q @ camera.R
+    t = camera.R @ A + camera.t - Q @ camera.R @ A  # anchor — на прежнем месте перед камерой
+    K = camera.K.copy()
+    cam = replace(camera, R=R, t=t)
+    uv_a = cam.project(A[None])[0]
+    if camera.mirrored:
+        uv_a[0] = camera.size[0] - uv_a[0]
+    s_ = m["scale"]
+    K[0, 0] *= s_
+    K[1, 1] *= s_
+    K[0, 2] = camera.K[0, 2] + (1 - s_) * (uv_a[0] - camera.K[0, 2]) + sgn * m["dx"]
+    K[1, 2] = camera.K[1, 2] + (1 - s_) * (uv_a[1] - camera.K[1, 2]) + m["dy"]
+    return replace(cam, K=K)
 
 
 def horizon_from_points(p1, p2) -> float:

@@ -72,3 +72,21 @@ def test_scene_transform_and_mirrored_photo(tmp_path):
     assert images[0].findtext("ImagePixelsX") == str(W)
     view = np.array([float(images[0].findtext(f"ViewDirection/{k}")) for k in "xyz"])
     assert np.allclose(view, g["view"])
+
+
+def test_perspective_like_smile_creator(tmp_path):
+    """Перспектива — как пишет exocad Smile Creator: камера — на DistanceToCamera от FovFocalPoint по ViewDirection;
+    точка фокуса — на оси камеры на глубине резцов (exocad по умолчанию — 1072,55 мм = 75 / tg 4°)."""
+    cam, anchor = camera(), np.array([2.0, 5.0, -3.0])
+    to_scene = rigid(Rotation.from_euler("z", 30, degrees=True).as_matrix(), [30, -80, 60])
+    g = ev.photo_view(cam, anchor, to_scene)
+    centre = apply(to_scene, (-cam.R.T @ cam.t)[None])[0]
+    assert np.allclose(g["focal_point"] - g["distance"] * g["view"], centre, atol=1e-6)
+    assert g["distance"] == np.float64((anchor - (-cam.R.T @ cam.t)) @ (cam.R.T @ [0, 0, 1.0]))
+    ev.write_photo_images(str(tmp_path), "case", [{"kind": "smile", "image": np.zeros((H, W, 3), np.uint8),
+                                                   "camera": cam, "anchor": anchor}], to_scene)
+    im = ET.parse(tmp_path / "case.treatmentImages").getroot().find("Images/Image")
+    tags = [c.tag for c in im]
+    assert tags.index("ViewAxisY") < tags.index("FovFocalPoint") < tags.index("DistanceToCamera") < tags.index("ImagePixelsX")
+    assert float(im.findtext("DistanceToCamera")) == np.float64(g["distance"])
+    assert np.allclose([float(im.findtext(f"FovFocalPoint/{k}")) for k in "xyz"], g["focal_point"])
