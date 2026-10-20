@@ -97,7 +97,9 @@ Ctrl+O; недавние кейсы — на стартовом экране): �
 `models/`: SAM 2.1 Hiera-Tiny (Meta, Apache-2.0) — `sam2.1-tiny/sam2.1_hiera_tiny.encoder.onnx` и `.decoder.onnx` из
 `huggingface.co/vietanhdev/segment-anything-2.1-onnx-models` (архив `sam2.1_hiera_tiny_20260221.zip`); точки лица —
 MediaPipe Face Landmarker (Google, Apache-2.0) `models/face_landmarker.task` и пакет `mediapipe`. В exocad — с той же
-перспективой («Вид Smile Design»).
+перспективой («Вид Smile Design»). Расстояние до камеры — по самому снимку (MoGe-2, расстояние до рта в мм), фокус
+по зубам сверяется с фокусом снимка (GeoCalib), горизонт можно взять по вертикали снимка; без сегментации зубов на КТ
+номера зубов берутся с самого скана (DentalModelSeg). Что откуда и как проверено — `docs/models.md`.
 
 **Сустав в 3D** (шаг «Артикулятор», монтаж по КТ, нужны сегментации черепа и нижней челюсти): головка мыщелка
 скользит по ямке черепа с диском от положения в прикусе — ССП в монтаж и путь во вставки exocad; карточка

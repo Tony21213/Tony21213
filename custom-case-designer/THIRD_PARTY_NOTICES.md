@@ -44,6 +44,20 @@ KStom Case Designer использует следующие открытые б�
 - **nnU-Net** (архитектура и обучение всех моделей выше) — Apache-2.0.
   Isensee F. et al., *Nature Methods* 18, 203–211 (2021).
 
+## Фото и сканы
+
+- **SAM 2.1** (Segment Anything 2.1, Hiera-Tiny) — Apache-2.0. Ravi N. et al., "SAM 2: Segment Anything in
+  Images and Videos" (Meta, 2024), https://github.com/facebookresearch/sam2. ONNX — vietanhdev,
+  https://huggingface.co/vietanhdev/segment-anything-2.1-onnx-models.
+- **MoGe-2** (ViT-S) — MIT. Wang R. et al., "MoGe-2: Accurate Monocular Geometry with Metric Scale and Sharp
+  Details" (Microsoft, 2025), https://github.com/microsoft/MoGe; DINOv2 внутри — Apache-2.0.
+- **GeoCalib** — код Apache-2.0, веса CC BY 4.0. Veicht A., Sarlin P.-E., Lindenberger P., Pollefeys M.,
+  "GeoCalib: Learning Single-image Calibration with Geometric Optimization", ECCV 2024,
+  https://github.com/cvg/GeoCalib.
+- **DentalModelSeg** — Apache-2.0. DCBIA-OrthoLab (University of North Carolina at Chapel Hill, University of
+  Michigan): Leclercq M., Prieto J. C., Cevidanes L., Styner M. et al.,
+  https://github.com/DCBIA-OrthoLab/SlicerDentalModelSeg (веса — релиз v3.0).
+
 ## Автоматические ориентиры
 
 - **ALI-CBCT** — сети поиска цефалометрических точек на КЛКТ (переведены в
