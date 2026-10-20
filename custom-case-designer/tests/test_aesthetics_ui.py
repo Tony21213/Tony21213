@@ -108,7 +108,7 @@ def test_pairs_fit_camera_and_overlay(files, tmp_path):
     assert ((uv[:, 0] > -W) & (uv[:, 0] < 2 * W)).mean() > 0.9
     c = smile["camera"]
     assert c["distance_mm"] == pytest.approx(300, abs=1) and len(c["K"]) == 3 and not c["fixed"]
-    assert smile["auto"] and not smile["auto_ready"] and smile["auto_info"]["error"]  # SAM нет — доводки нет
+    assert smile["auto"] and not smile["auto_ready"] and not smile["auto_pending"]  # SAM нет — доводки нет
     # ручная поправка, как в exocad: поворот скана вокруг резцов, сдвиг — камера запоминается
     before = fitted.project(points)
     info = s.aesthetic_adjust("smile", {"yaw": 2.0, "dx": 5.0})
