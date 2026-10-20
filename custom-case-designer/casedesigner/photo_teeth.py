@@ -8,12 +8,17 @@
   с допуском 1 мм коронки скана заходили на десну.
 * **Проекция** — z-буфер точек на сетке ``grid`` px в окне вокруг зубов: точки, повёрнутые от камеры, не видны;
   загораживают — нижние зубы в прикусе (на фото с ретрактором зубы сомкнуты).
+* **Губы** — на фото с улыбкой зубы видны только в вырезе рта: проекция вне внутреннего контура губ (MediaPipe)
+  закрыта (−2), край зуба по губе в уточнении не участвует (там край губы, а не зуба).
 * **Уточнение** — «силуэтный ICP»: точки края каждого зуба скана в проекции ↔ ближайший край маски того же зуба на
   фото; по парам — поворот, сдвиг и фокус камеры (расстояние до резцовой точки — мягко у заданного: перспективу по
   контурам видно лишь отчасти), несколько итераций.
+* **Без пар точек** — грубое положение перебором: силуэт зубов скана спереди (крен, масштаб; сдвиг — по
+  наибольшему перекрытию, FFT) ↔ зубы на фото по цвету в окне рта (``coarse_camera``), дальше — уточнение по маскам.
 
 Проба на кейсе 7 (фото с ретрактором; 2 пары точек → уточнение): совпадение передних зубов 0,74–0,85 (IoU), 95 %
-проекции зубов — в 8–10 px от камеры по 6 парам точек (было 23 px).
+проекции зубов — в 8–10 px от камеры по 6 парам точек (было 23 px). Без пар: грубое — 9 px от камеры по 6 парам
+(медиана), после доводки — 2,3 px от доводки по 6 парам.
 """
 
 import os
@@ -130,7 +135,7 @@ def crown_labels(vertices, teeth: dict, crown=None, reach: float = REACH_MM) -> 
 class View:
     """Проекция зубов скана на фото: номера и индекс видимой точки по клеткам окна."""
 
-    labels: np.ndarray  # номер зуба в клетке; 0 — нет зуба, −1 — загорожено (нижние зубы)
+    labels: np.ndarray  # номер зуба в клетке; 0 — нет зуба, −1 — загорожено (нижние зубы), −2 — губы
     index: np.ndarray  # индекс точки в клетке; −1 — нет
     origin: tuple  # левый верхний угол окна, px фото
     grid: int
@@ -162,11 +167,23 @@ def _zbuffer(camera, P, normals, window, grid):
     return index.reshape(h3, w3), depth.reshape(h3, w3)
 
 
-def project(camera, points, labels, window, grid: int, normals=None, occluders=None, occluder_normals=None) -> View:
+def mouth_cells(mouth, window, grid: int, shape) -> np.ndarray:
+    """Клетки окна внутри выреза рта mouth (многоугольник, px снимка)."""
+    from skimage.draw import polygon2mask
+
+    q = np.asarray(mouth, float)
+    rows = (q[:, 1] - window[1]) / grid - 0.5
+    cols = (q[:, 0] - window[0]) / grid - 0.5
+    return polygon2mask(shape, np.c_[rows, cols])
+
+
+def project(camera, points, labels, window, grid: int, normals=None, occluders=None, occluder_normals=None,
+            mouth=None) -> View:
     """Проекция зубов скана (точки в координатах кейса, номера labels) в окне window = (x0, y0, x1, y1) снимка:
     z-буфер по клеткам grid px, точки, повёрнутые от камеры, не видны; дырки между точками и внутри зуба — по
     соседям. occluders — точки, что загораживают (нижние зубы; −1): видны там, где ближе зубов (глубина зубов в
-    пустых клетках — по соседним, иначе нижние зубы «просвечивают» сквозь промежутки между точками)."""
+    пустых клетках — по соседним, иначе нижние зубы «просвечивают» сквозь промежутки между точками). mouth —
+    вырез рта (многоугольник, px снимка): зубы вне его закрыты губами (−2)."""
     P = np.asarray(points, float)
     lab = np.asarray(labels, int)
     index, depth = _zbuffer(camera, P, normals, window, grid)
@@ -189,6 +206,9 @@ def project(camera, points, labels, window, grid: int, normals=None, occluders=N
     if inner.any():
         _d, (iy, ix) = ndimage.distance_transform_edt(~(labels_img > 0), return_indices=True)
         labels_img = np.where(inner, labels_img[iy, ix], labels_img)
+    if mouth is not None and len(mouth) >= 3:
+        lips = (labels_img > 0) & ~mouth_cells(mouth, window, grid, labels_img.shape)
+        labels_img = np.where(lips, -2, labels_img)
     index = np.where((index >= 0) & (labels_img > 0) & (lab[np.maximum(index, 0)] == labels_img), index, -1)
     return View(labels_img, index, (int(window[0]), int(window[1])), grid)
 
@@ -263,10 +283,11 @@ def _sdf(mask):
 
 
 def refine(camera, points, labels, masks: dict, window, grid: int, anchor, distance_mm: float, normals=None,
-           occluders=None, occluder_normals=None, iters: int = ITERS) -> Refined:
+           occluders=None, occluder_normals=None, iters: int = ITERS, mouth=None) -> Refined:
     """Уточнить камеру так, чтобы край каждого зуба скана лёг на край маски того же зуба (маски — клетки окна):
     точки края проекции зуба (3D) — в поле «расстояние до края маски со знаком», по нему — поворот, сдвиг и фокус
-    (край скользит вдоль контура — сходится за несколько шагов); расстояние до anchor — мягко у distance_mm."""
+    (край скользит вдоль контура — сходится за несколько шагов); расстояние до anchor — мягко у distance_mm.
+    Край по губам (mouth) — не край зуба: в подгонке не участвует."""
     from dataclasses import replace
 
     from scipy.optimize import least_squares
@@ -274,7 +295,7 @@ def refine(camera, points, labels, masks: dict, window, grid: int, anchor, dista
 
     P_all = np.asarray(points, float)
     anchor = np.asarray(anchor, float)
-    start = project(camera, P_all, labels, window, grid, normals, occluders, occluder_normals)
+    start = project(camera, P_all, labels, window, grid, normals, occluders, occluder_normals, mouth)
     agree = iou(start, masks)
     fields = {n: _sdf(m) for n, (m, _s) in masks.items() if agree.get(n, 0.0) >= MIN_IOU}
     reach = EDGE_REACH_PX / grid
@@ -282,15 +303,16 @@ def refine(camera, points, labels, masks: dict, window, grid: int, anchor, dista
     origin = np.asarray(window[:2], float)
     cam, first, edge = camera, None, None
     for _ in range(iters):
-        view = project(cam, P_all, labels, window, grid, normals, occluders, occluder_normals)
+        view = project(cam, P_all, labels, window, grid, normals, occluders, occluder_normals, mouth)
         if first is None:
             first = view
+        lip_edge = ndimage.binary_dilation(view.labels == -2)
         src, tooth = [], []
         for n, f in fields.items():
             r = view.labels == n
             if r.sum() < MIN_CELLS:
                 continue
-            by, bx = np.nonzero(_boundary(r))
+            by, bx = np.nonzero(_boundary(r) & ~lip_edge)
             vi = view.index[by, bx]
             ok = (vi >= 0) & (np.abs(f[by, bx]) < reach)
             src.append(P_all[vi[ok]])
@@ -330,13 +352,13 @@ def refine(camera, points, labels, masks: dict, window, grid: int, anchor, dista
         edge = new_edge
         if done:
             break
-    last = project(cam, P_all, labels, window, grid, normals, occluders, occluder_normals)
+    last = project(cam, P_all, labels, window, grid, normals, occluders, occluder_normals, mouth)
     return Refined(cam, agree, iou(last, masks), edge, sorted(fields), masks, tuple(window), grid)
 
 
 def align(sam: Sam2, image, camera, points, labels, anchor, distance_mm: float, normals=None, occluders=None,
-          occluder_normals=None) -> Refined:
-    """Маски зубов по камере camera и уточнение камеры по ним."""
+          occluder_normals=None, mouth=None) -> Refined:
+    """Маски зубов по камере camera и уточнение камеры по ним (mouth — вырез рта на фото с улыбкой)."""
     size = (image.shape[1], image.shape[0])
     on = np.asarray(labels) > 0
     if on.sum() < 200:
@@ -349,11 +371,12 @@ def align(sam: Sam2, image, camera, points, labels, anchor, distance_mm: float, 
         nrm = None if nrm is None else nrm[k]
     window = teeth_window(camera, pts, size)
     grid = grid_for(camera, pts, lab, window, nrm)
-    view = project(camera, pts, lab, window, grid, nrm, occluders, occluder_normals)
+    view = project(camera, pts, lab, window, grid, nrm, occluders, occluder_normals, mouth)
     masks = tooth_masks(sam, image, view, window)
     if len(masks) < 2:
         raise ValueError("нейросеть не нашла зубы на фото — проверьте пары точек")
-    return refine(camera, pts, lab, masks, window, grid, anchor, distance_mm, nrm, occluders, occluder_normals)
+    return refine(camera, pts, lab, masks, window, grid, anchor, distance_mm, nrm, occluders, occluder_normals,
+                  mouth=mouth)
 
 
 def _polylines(region: np.ndarray, step: int):
@@ -406,3 +429,141 @@ def mask_contours(masks: dict, window, grid: int, step: int = 2) -> list:
             out.append({"tooth": int(n), "px": np.c_[window[0] + (line[:, 1] + 0.5) * grid,
                                                       window[1] + (line[:, 0] + 0.5) * grid]})
     return out
+
+
+# --- грубое положение без пар точек (как облачное «Automatic alignment» exocad Smile Creator) -------------------
+COARSE_PX = 320  # окно рта для перебора — до стольких px по ширине
+COARSE_ROLL_DEG = tuple(range(-8, 9, 2))
+COARSE_SCALES = tuple(np.exp(np.linspace(np.log(0.7), np.log(1.4), 15)))
+
+
+def teeth_color_mask(image, box) -> np.ndarray:
+    """Зубы на фото по цвету в окне box = (x0, y0, x1, y1): светлое и не красное (Lab: L выше порога Оцу, a — ниже);
+    грубо — для перебора положения, точные края даёт SAM."""
+    from skimage import color, filters
+
+    x0, y0, x1, y1 = (int(v) for v in box)
+    lab = color.rgb2lab(np.asarray(image)[y0:y1, x0:x1, :3])
+    L, a = lab[..., 0], lab[..., 1]
+    m = (L > filters.threshold_otsu(L)) & (a < filters.threshold_otsu(a))
+    yy, xx = np.mgrid[-2:3, -2:3]
+    m = ndimage.binary_opening(m, structure=yy ** 2 + xx ** 2 <= 4)
+    parts, n = ndimage.label(m)
+    if n:
+        size = np.bincount(parts.ravel())
+        keep = size >= max(30, m.size // 2000)
+        keep[0] = False
+        m = keep[parts]
+    return m
+
+
+def mouth_box(size, lips=None, margin=(0.15, 0.35)):
+    """Окно рта: по наружному контуру губ (MediaPipe) с запасом; без лица — середина нижней половины кадра."""
+    w, h = size
+    if lips is not None and len(lips) >= 3:
+        q = np.asarray(lips, float)
+        lo, hi = q.min(0), q.max(0)
+        mx, my = (hi - lo) * margin
+        return (max(0, int(lo[0] - mx)), max(0, int(lo[1] - my)), min(w, int(hi[0] + mx)), min(h, int(hi[1] + my)))
+    return (int(0.2 * w), int(0.45 * h), int(0.8 * w), int(0.85 * h))
+
+
+def _correlate(a: np.ndarray, b: np.ndarray):
+    """Сдвиг b относительно a с наибольшим перекрытием (FFT) и само перекрытие."""
+    from scipy.signal import fftconvolve
+
+    c = fftconvolve(a.astype(np.float32), b[::-1, ::-1].astype(np.float32), mode="full")
+    k = int(np.argmax(c))
+    iy, ix = np.unravel_index(k, c.shape)
+    return iy - (b.shape[0] - 1), ix - (b.shape[1] - 1), float(c.flat[k])
+
+
+def _shifted_overlap(a: np.ndarray, b: np.ndarray, dy: int, dx: int) -> float:
+    """Сколько клеток b, сдвинутой на (dy, dx), попадает в a."""
+    ya, yb = max(0, dy), max(0, -dy)
+    xa, xb = max(0, dx), max(0, -dx)
+    h = min(a.shape[0] - ya, b.shape[0] - yb)
+    w = min(a.shape[1] - xa, b.shape[1] - xb)
+    if h <= 0 or w <= 0:
+        return 0.0
+    return float((a[ya:ya + h, xa:xa + w] & b[yb:yb + h, xb:xb + w]).sum())
+
+
+def coarse_camera(image, points, labels, base_frame, anchor, distance_mm: float, normals=None, others=None,
+                  lips=None, mouth=None):
+    """Камера без пар точек: зубы скана (points/labels — верхние с номерами; others — нижние в прикусе) спереди по
+    base_frame с anchor на глубине distance_mm; перебором крена и масштаба, сдвиг — по наибольшему перекрытию (FFT),
+    их силуэт совмещается с зубами на фото (teeth_color_mask в окне рта mouth_box по наружному контуру губ lips).
+    mouth — вырез рта (фото с улыбкой): зубы на фото — только в нём, силуэт скана вне его закрыт губами и
+    перекрытие не портит. Возвращает (камеру, IoU)."""
+    from . import aesthetic as ae
+
+    img = np.asarray(image)
+    H, W = img.shape[:2]
+    box = mouth_box((W, H), lips)
+    photo = teeth_color_mask(img, box)
+    inside = None
+    if mouth is not None and len(mouth) >= 3:
+        inside = mouth_cells(mouth, box, 1, photo.shape)
+        photo &= inside
+    if photo.sum() < 50:
+        raise ValueError("зубов на фото не видно — поставьте 2 пары точек")
+    k = min(1.0, COARSE_PX / photo.shape[1])
+    from PIL import Image
+
+    shrink = lambda m: np.asarray(Image.fromarray(m.astype(np.uint8) * 255).resize(  # noqa: E731
+        (max(1, int(photo.shape[1] * k)), max(1, int(photo.shape[0] * k))), Image.NEAREST)) > 0
+    small = shrink(photo)
+    small_in = None if inside is None else shrink(inside)
+    # силуэт зубов скана спереди: нормированные координаты кадра (x/z, y/z) видимых точек
+    R0 = ae.view_rotation(base_frame)
+    A = np.asarray(anchor, float)
+    P = np.asarray(points, float)[np.asarray(labels) > 0]
+    N = None if normals is None else np.asarray(normals, float)[np.asarray(labels) > 0]
+    if others is not None and len(others):
+        P = np.vstack([P, np.asarray(others, float)])
+        N = None if N is None else np.vstack([N, np.zeros((len(others), 3))])
+    c = (P - A) @ R0.T + [0.0, 0.0, distance_mm]
+    vis = c[:, 2] > 1
+    if N is not None:
+        centre = A - distance_mm * R0[2]
+        vis &= (np.einsum("ij,ij->i", N, centre - P) > 0) | (np.abs(N).sum(1) == 0)
+    xn = c[vis, :2] / c[vis, 2:3]
+    if len(xn) < 100:
+        raise ValueError("на скане нет зубов с номерами — нужна сегментация зубов на КТ")
+    width_photo = np.ptp(np.nonzero(small)[1]) + 1
+    width_scan = np.ptp(xn[:, 0])
+    s0 = width_photo / max(width_scan, 1e-9)
+    best = None
+    for roll in COARSE_ROLL_DEG:
+        cr, sr = np.cos(np.radians(roll)), np.sin(np.radians(roll))
+        rot = xn @ np.array([[cr, sr], [-sr, cr]])
+        for sc in COARSE_SCALES:
+            q = rot * (s0 * sc)
+            lo = q.min(0)
+            ij = np.floor(q - lo).astype(int)
+            shape = (ij[:, 1].max() + 1, ij[:, 0].max() + 1)
+            if shape[0] > 4 * small.shape[0] or shape[1] > 2 * small.shape[1]:
+                continue
+            sil = np.zeros(shape, bool)
+            sil[ij[:, 1], ij[:, 0]] = True
+            sil = ndimage.binary_closing(sil, iterations=2)
+            dy, dx, overlap = _correlate(small, sil)
+            seen = sil.sum() if small_in is None else _shifted_overlap(small_in, sil, dy, dx)
+            score = overlap / (small.sum() + seen - overlap)
+            if best is None or score > best[0]:
+                best = (score, roll, s0 * sc, lo, dy, dx)
+    if best is None:
+        raise ValueError("зубы на фото и на скане не совпали — поставьте 2 пары точек")
+    score, roll, sc, lo, dy, dx = best
+    # нормированная точка (0, 0) — anchor: её место на фото
+    u_a = box[0] + (dx - lo[0]) / k
+    v_a = box[1] + (dy - lo[1]) / k
+    f = sc / k
+    Q = np.array([[np.cos(np.radians(roll)), -np.sin(np.radians(roll)), 0.0],
+                  [np.sin(np.radians(roll)), np.cos(np.radians(roll)), 0.0], [0.0, 0.0, 1.0]])
+    R = Q @ R0
+    cx, cy = W / 2.0, H / 2.0
+    t = np.array([(u_a - cx) * distance_mm / f, (v_a - cy) * distance_mm / f, distance_mm]) - R @ A
+    K = np.array([[f, 0.0, cx], [0.0, f, cy], [0.0, 0.0, 1.0]])
+    return ae.Camera(K, R, t, 0.0, size=(W, H)), float(score)

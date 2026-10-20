@@ -276,6 +276,130 @@ def download_landmarks(folder: str, progress=None, cancel: threading.Event | Non
     return landmarks_status(folder)
 
 
+# --- нейросети для фото (шаг «Эстетика») -------------------------------------------------------
+# Готовые файлы с хранилищ их авторов (Apache-2.0): SAM 2.1 — архив ONNX (кодировщик и декодер), MediaPipe — файл
+# .task. Проверяется SHA-256 каждого файла, который ложится в папку моделей; размер — примерный, для окна.
+PHOTO_TITLE = "Нейросети для фото"
+PHOTO_MODELS: dict[str, tuple[str, str, int, dict[str, str]]] = {
+    # имя → (название, адрес, примерно байт, {файл в папке моделей: SHA-256})
+    "sam": ("Контуры зубов — SAM 2.1 Hiera-Tiny (Meta, Apache-2.0)",
+            "https://huggingface.co/vietanhdev/segment-anything-2.1-onnx-models/resolve/main/"
+            "sam2.1_hiera_tiny_20260221.zip", 116_500_000,
+            {"sam2.1-tiny/sam2.1_hiera_tiny.encoder.onnx": "667384d1e686de6828b841ac8a24db0fafa2b3452494225f82eeedac56141230",
+             "sam2.1-tiny/sam2.1_hiera_tiny.decoder.onnx": "c40f5aa7d37b681cd500481a85d44839fd81c93dce1e86271a2c866470d22105"}),
+    "face": ("Точки лица и губы — MediaPipe Face Landmarker (Google, Apache-2.0)",
+             "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/"
+             "face_landmarker.task", 3_800_000,
+             {"face_landmarker.task": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"}),
+}
+
+
+def photo_status(folder: str | None) -> dict:
+    """Скачаны ли нейросети для фото и сколько примерно осталось."""
+    items = []
+    for name, (title, _url, approx, files) in PHOTO_MODELS.items():
+        ok = bool(folder) and all(os.path.isfile(os.path.join(folder, rel)) for rel in files)
+        items.append({"name": name, "title": title, "installed": ok, "approx_bytes": approx})
+    return {"folder": folder, "ready": all(i["installed"] for i in items), "models": items, "title": PHOTO_TITLE,
+            "left_bytes": sum(i["approx_bytes"] for i in items if not i["installed"])}
+
+
+def _get(url: str, part: str, on_bytes, cancel) -> None:
+    """Скачать url в part целиком (без докачки: размер и сумма архива заранее не известны — проверяются файлы
+    из него); on_bytes(сколько добавилось, сколько всего по ответу сервера)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "KStomCaseDesigner"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=TIMEOUT_S)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"сервер моделей ответил {e.code} ({url})") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"нет связи с сервером моделей: {e.reason}") from e
+    total = int(resp.headers.get("Content-Length") or 0)
+    with resp, open(part, "wb") as f:
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled("загрузка остановлена — её можно начать снова")
+            try:
+                block = resp.read(CHUNK)
+            except OSError as e:
+                raise RuntimeError(f"связь прервалась: {e} — скачайте заново") from e
+            if not block:
+                break
+            f.write(block)
+            on_bytes(len(block), total)
+
+
+def _place(source, folder: str, rel: str, sha: str, title: str) -> None:
+    """Файл (поток source) — в папку моделей через .part, если совпала SHA-256."""
+    target = os.path.join(folder, rel)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    h = hashlib.sha256()
+    try:
+        with open(target + ".part", "wb") as f:
+            for block in iter(lambda: source.read(CHUNK), b""):
+                f.write(block)
+                h.update(block)
+    except BaseException:
+        os.remove(target + ".part")
+        raise
+    if h.hexdigest() != sha:
+        os.remove(target + ".part")
+        raise RuntimeError(f"{title}: файл {os.path.basename(rel)} повреждён или не тот (не совпала контрольная сумма)")
+    os.replace(target + ".part", target)
+
+
+def download_photo(folder: str, progress=None, cancel: threading.Event | None = None,
+                   base_url: str | None = None) -> dict:
+    """Скачать нейросети для фото в folder (base_url — другой источник тех же файлов: <base_url>/<имя файла>);
+    progress(доля, сообщение, **сведения) — как у download."""
+    import tempfile
+    import zipfile
+
+    todo = [n for n, i in zip(PHOTO_MODELS, photo_status(folder)["models"]) if not i["installed"]]
+    plan = sum(PHOTO_MODELS[n][2] for n in todo) or 1  # примерно байт всего
+    done, planned, started = 0, 0, time.monotonic()  # скачано байт; примерно байт в уже скачанных моделях
+    for index, name in enumerate(todo, 1):
+        title, url, approx, files = PHOTO_MODELS[name]
+        if base_url:
+            url = base_url.rstrip("/") + "/" + url.rsplit("/", 1)[1]
+
+        def on_bytes(n, total, title=title, name=name, index=index, before=done, planned=planned, approx=approx):
+            nonlocal done
+            done += n
+            if progress:
+                share = min(1.0, (done - before) / (total or approx))
+                fraction = (planned + share * approx) / plan
+                speed = done / max(time.monotonic() - started, 1e-3)
+                progress(fraction, title, done=round(fraction * plan), total=plan, model=name, index=index,
+                         count=len(todo), speed=speed, eta_s=(1 - fraction) * plan / speed if speed > 0 else None)
+
+        os.makedirs(folder, exist_ok=True)
+        fd, part = tempfile.mkstemp(suffix=".part", dir=folder)
+        os.close(fd)
+        try:
+            _get(url, part, on_bytes, cancel)
+            if url.lower().endswith(".zip"):
+                with zipfile.ZipFile(part) as z:
+                    members = {os.path.basename(m): m for m in z.namelist() if not m.endswith("/")}
+                    for rel, sha in files.items():
+                        member = members.get(os.path.basename(rel))
+                        if member is None:
+                            raise RuntimeError(f"{title}: в архиве нет {os.path.basename(rel)}")
+                        with z.open(member) as src:
+                            _place(src, folder, rel, sha, title)
+            else:
+                (rel, sha), = files.items()
+                with open(part, "rb") as src:
+                    _place(src, folder, rel, sha, title)
+        except zipfile.BadZipFile:
+            raise RuntimeError(f"{title}: архив повреждён — скачайте заново") from None
+        finally:
+            if os.path.isfile(part):
+                os.remove(part)
+        planned += approx
+    return photo_status(folder)
+
+
 def _table(folder: str):
     """Строки для MODELS по папке переведённых моделей."""
     for name in MODELS:

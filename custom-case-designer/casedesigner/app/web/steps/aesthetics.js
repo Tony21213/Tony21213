@@ -159,6 +159,7 @@ const photo = () => info()?.photos?.[aes.kind] || null;
 export async function prepareAesthetics() {
   try { state.aesthetics = await get('aesthetics'); }
   catch (e) { toast(e.message); }
+  if (!aes.models) get('aesthetics/models').then((m) => { aes.models = m; render(); }).catch(() => {});
   render();
   autoRefine();
 }
@@ -510,6 +511,12 @@ export async function aestheticAction(action, arg) {
   if (action === 'midreset') return send('aesthetics/set', { midline_px: [] });
   if (action === 'facereset') return send('aesthetics/set', { face: Object.fromEntries(FACE_STEPS.map(([k]) => [k, null])) });
   if (action === 'face') return send('aesthetics/face', {});
+  if (action === 'models') {
+    return busy('Загрузка нейросетей для фото', async (progress) => {
+      state.aesthetics = await run('aesthetics/models/download', {}, progress);
+      aes.models = await get('aesthetics/models').catch(() => null);
+    }).then(() => { render(); autoRefine(); });
+  }
 }
 
 // поля панели: расстояние до камеры, доводка моделью (событие change — app.js)
@@ -521,26 +528,42 @@ export function aestheticChange(e) {
 }
 
 const side = (mm, right, left) => (mm > 0 ? right : left);
+const mb = (bytes) => Math.round(bytes / 1e6);
+
+function modelsHtml() {
+  const m = aes.models;
+  if (!m || m.ready) return m && !m.mediapipe ? '<p class="muted small">Пакет mediapipe не установлен — точки лица ставятся вручную.</p>' : '';
+  const missing = m.models.filter((x) => !x.installed);
+  return `<div class="card"><div class="card-head">${icons.eye}<h3>Нейросети для фото</h3></div>
+    ${missing.map((x) => `<p class="muted small" style="margin:0 0 4px">${hide(x.title)} — около ${mb(x.approx_bytes)} МБ</p>`).join('')}
+    <button class="btn wide" data-aes="models">${icons.plus}Скачать (около ${mb(m.left_bytes)} МБ)</button>
+    <p class="muted small">Совмещение фото без пар точек, доводка по зубам и поиск лица. С хранилищ авторов (Apache-2.0), каждый файл проверяется по SHA-256.</p></div>`;
+}
 
 function cameraHtml(p) {
   if (!p.camera) {
-    const why = p.fit_error && !p.fit_error.startsWith('пар точек') ? `<div class="warning warn">${icons.warn}<span>${hide(p.fit_error)}</span></div>` : '';
-    return `${why}<p class="muted small">Камера фото — после ${p.need} пар (как в exocad: две сходные точки, лучше подальше друг от друга —
+    if (p.auto_pending) return '<p class="muted small">Совмещаю автоматически — по зубам на фото (нейросеть, до полуминуты). Можно не ждать и поставить 2 пары точек.</p>';
+    const failed = p.fit_error?.includes('автоматически не совместилось');
+    const why = p.fit_error && (failed || !p.fit_error.startsWith('пар точек'))
+      ? `<div class="warning warn">${icons.warn}<span>${hide(failed ? p.fit_error.slice(p.fit_error.indexOf(';') + 2) : p.fit_error)}.</span></div>` : '';
+    return `${why}<p class="muted small">${failed ? 'Поставьте' : 'Камера фото — без пар автоматически (нужны нейросеть SAM и номера зубов КТ) или после'} ${p.need} пар (как в exocad: две сходные точки, лучше подальше друг от друга —
       например, бугры клыков); дальше доводит нейросеть по зубам.</p>`;
   }
   const c = p.camera;
   const a = p.auto_info;
   const auto = c.fixed ? (a?.manual ? 'Поправлено вручную — камера запомнена.' : 'Уточнено по зубам — камера запомнена.')
     : p.auto_pending ? 'Доводка по зубам… (нейросеть, до полуминуты; пока — по парам)'
+    : a?.used && p.free ? `Совмещено автоматически, без пар — по зубам ${a.teeth.join(', ')}: совпадение ${fmt(a.iou_after, 2)}, край ${fmt(a.edge_px, 1)} px. Проверьте поверх фото; не так — поправьте мышью или поставьте 2 пары.`
     : a?.used ? `Доводка по зубам ${a.teeth.join(', ')}: совпадение ${fmt(a.iou_before, 2)} → ${fmt(a.iou_after, 2)}, край ${fmt(a.edge_px, 1)} px.`
       : a?.error ? `Без доводки: ${hide(a.error)}.` : '';
   return `<div class="metrics">
-      <div class="metric"><span>По парам, px</span><b class="${c.check ? 'warn' : 'ok'}">${fmt(c.residual_px, 1)}</b></div>
+      ${p.pairs.length ? `<div class="metric"><span>По парам, px</span><b class="${c.check ? 'warn' : 'ok'}">${fmt(c.residual_px, 1)}</b></div>` : ''}
       <div class="metric"><span>До камеры, мм</span><b>${fmt(c.distance_mm, 0)}</b></div>
       <div class="metric"><span>Фокус, мм (35)</span><b>${fmt(c.focal_35mm, 0)}</b></div></div>
     ${auto ? `<p class="muted small">${auto}</p>` : ''}
     ${c.check ? '<div class="warning warn">' + icons.warn + '<span>Точки пар легли далеко — проверьте пары (номера на фото и точки в 3D).</span></div>' : ''}
-    ${c.mirrored ? '<p class="muted small">Фото зеркальное (фронтальная камера) — учтено.</p>' : ''}`;
+    ${c.mirrored ? '<p class="muted small">Фото зеркальное (фронтальная камера) — учтено.</p>' : ''}
+    ${p.mouth ? '<p class="muted small">Зубы — в вырезе губ (контур губ MediaPipe): закрытое губами в доводке не участвует.</p>' : ''}`;
 }
 
 function alignHtml(p) {
@@ -554,7 +577,7 @@ function alignHtml(p) {
       <span>Доводка нейросетью по зубам</span><small>${p.auto_ready ? 'SAM 2.1: контуры каждого зуба' : 'нет модели SAM 2.1 (models/sam2.1-tiny)'}</small></label>
     ${p.camera ? `<div class="row" style="gap:4px;margin-top:4px">
       <button class="btn ghost grow" data-aes="refine" ${p.auto_ready ? '' : 'disabled'}>Уточнить по зубам</button>
-      ${p.camera.fixed ? '<button class="btn ghost" data-aes="resetcam" title="Снова по парам и доводке">Сбросить поправку</button>' : ''}</div>
+      ${p.camera.fixed ? `<button class="btn ghost" data-aes="resetcam" title="${p.pairs.length >= p.need ? 'Снова по парам и доводке' : 'Снова автоматически'}">Сбросить поправку</button>` : ''}</div>
       <p class="muted small">Поправить вручную — поверх фото: ПКМ — повернуть скан, Shift + ЛКМ — сдвинуть, Shift + колесо — масштаб.</p>` : ''}`;
 }
 
@@ -587,7 +610,7 @@ export function renderAesthetics() {
     return `<button class="${k === aes.kind ? 'on' : ''}" data-aes="kind" data-arg="${k}">${t}${cam ? ' ✓' : ''}</button>`;
   }).join('')}</div>`;
   const lead = `<h2>Эстетика</h2><p class="lead">Фото анфас с улыбкой и с ретрактором. Каждое совмещается со сканом верхней челюсти
-    по точкам на зубах. По фото — эстетическая плоскость монтажа в шаге «Артикулятор» и «Вид Smile Design» в exocad.</p>`;
+    автоматически, по зубам на фото, или по двум точкам на зубах. По фото — эстетическая плоскость монтажа в шаге «Артикулятор» и «Вид Smile Design» в exocad.</p>${modelsHtml()}`;
   if (!data) return `${lead}<p class="muted small">Загружаю…</p>`;
   if (!data.upper) {
     return `${lead}<div class="warning warn">${icons.warn}<span>Сначала поставьте скан верхней челюсти (шаг «Сканы»).</span></div>`;
@@ -607,7 +630,7 @@ export function renderAesthetics() {
       <button class="btn ghost sm" data-aes="load">Заменить</button>
       <button class="btn icon ghost" data-aes="remove" title="Убрать фото">${icons.trash}</button></div>
       ${(p.notes || []).map((n) => `<p class="muted small" style="margin:0 0 6px">${hide(n)}</p>`).join('')}
-      <div class="label" style="margin-top:4px">Пары «фото — скан»: ${p.pairs.length} из ${p.need}+</div>
+      <div class="label" style="margin-top:4px">Пары «фото — скан»: ${p.pairs.length} из ${p.need}+${p.free ? ' — не обязательны' : ''}</div>
       <div class="row">${mode('pair', `${icons.target}Ставить пары`, 'Готово')}
         ${p.pairs.length ? '<button class="btn ghost" data-aes="unpair" data-arg="all">Убрать все</button>' : ''}</div>
       ${aes.mode === 'pair' ? '<p class="muted small">Щёлкните точку на фото и ту же точку на зубах в 3D (порядок любой). Хватит двух подальше друг от друга — бугры клыков; остальное доводит нейросеть.</p>' : ''}
