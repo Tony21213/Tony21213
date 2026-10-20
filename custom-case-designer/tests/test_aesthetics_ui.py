@@ -67,6 +67,7 @@ def _front_points(s, cam, n=8):
 def _paired(files, tmp_path, kind="smile"):
     s = _session(files, tmp_path)
     s.aesthetic_add_photo(kind, str(files / f"{kind}.jpg"))
+    s.aesthetic_set(kind, distance_mm=300)  # камера сцены — в 300 мм от резцов
     cam, base = _camera(s)
     for p in _front_points(s, cam):
         s.aesthetic_pair(kind, cam.project(p[None])[0], p)
@@ -79,7 +80,12 @@ def test_pairs_fit_camera_and_overlay(files, tmp_path):
         s.aesthetic_pair("smile", (10, 10), (0, 0, 0))
     info = s.aesthetic_add_photo("smile", str(files / "smile.jpg"))
     smile = info["photos"]["smile"]
-    assert smile["size"] == [W, H] and not smile["focal"] and smile["need"] == 6 and smile["camera"] is None
+    assert smile["size"] == [W, H] and not smile["focal"] and smile["need"] == 2 and smile["camera"] is None
+    assert smile["distance_mm"] == 1000 and not smile["distance_set"]  # по умолчанию — как exocad: с метра
+    info = s.aesthetic_set("smile", distance_mm=300)
+    assert info["photos"]["smile"]["distance_mm"] == 300 and info["photos"]["smile"]["distance_set"]
+    with pytest.raises(ValueError, match="расстояние"):
+        s.aesthetic_set("smile", distance_mm=20)
     assert info["photos"]["retracted"] is None and info["upper"]
     cam, _base = _camera(s)
     points = _front_points(s, cam)
@@ -87,18 +93,32 @@ def test_pairs_fit_camera_and_overlay(files, tmp_path):
         s.aesthetic_pair("smile", (100, 100), points[0] + [0, 0, 30.0])
     with pytest.raises(ValueError, match="вне фото"):
         s.aesthetic_pair("smile", (W + 5, 10), points[0])
-    for p in points[:5]:
-        info = s.aesthetic_pair("smile", cam.project(p[None])[0], p)
-    assert info["photos"]["smile"]["camera"] is None and "5 из 6" in info["photos"]["smile"]["fit_error"]
-    for p in points[5:]:
+    info = s.aesthetic_pair("smile", cam.project(points[:1])[0], points[0])
+    assert info["photos"]["smile"]["camera"] is None and "1 из 2" in info["photos"]["smile"]["fit_error"]
+    for p in points[1:]:
         info = s.aesthetic_pair("smile", cam.project(p[None])[0], p)
     smile = info["photos"]["smile"]
     assert smile["camera"]["residual_px"] < 1.0 and not smile["camera"]["mirrored"] and not smile["camera"]["check"]
     assert len(smile["pairs"]) == 8 and np.allclose(smile["pairs"][0]["point"], points[0], atol=1e-3)
     fitted = s._camera("smile")[0]
     assert np.allclose(fitted.project(points), cam.project(points), atol=1.0)
-    overlay = np.array(smile["overlay"])
-    assert len(overlay) > 100 and (overlay[:, 0] <= W).all() and (overlay[:, 1] <= H).all()
+    overlay = smile["overlay"]  # номеров зубов (сегментации КТ) нет — видимые точки скана, 3D: окно проецирует само
+    assert not overlay["scan"] and len(overlay["points"]) > 100
+    uv = fitted.project(np.array(overlay["points"]))
+    assert ((uv[:, 0] > -W) & (uv[:, 0] < 2 * W)).mean() > 0.9
+    c = smile["camera"]
+    assert c["distance_mm"] == pytest.approx(300, abs=1) and len(c["K"]) == 3 and not c["fixed"]
+    assert smile["auto"] and not smile["auto_ready"] and smile["auto_info"]["error"]  # SAM нет — доводки нет
+    # ручная поправка, как в exocad: поворот скана вокруг резцов, сдвиг — камера запоминается
+    before = fitted.project(points)
+    info = s.aesthetic_adjust("smile", {"yaw": 2.0, "dx": 5.0})
+    moved = s._camera("smile")[0]
+    assert info["photos"]["smile"]["camera"]["fixed"] and not np.allclose(moved.project(points), before, atol=1.0)
+    info = s.aesthetic_reset_camera("smile")
+    assert not info["photos"]["smile"]["camera"]["fixed"]
+    assert np.allclose(s._camera("smile")[0].project(points), before, atol=0.01)
+    with pytest.raises(ValueError, match="SAM"):
+        s.aesthetic_refine("smile")
     info = s.aesthetic_unpair("smile", 0)
     assert len(info["photos"]["smile"]["pairs"]) == 7
     assert s.aesthetic_unpair("smile")["photos"]["smile"]["camera"] is None

@@ -1,7 +1,7 @@
 // Шаг «Эстетика»: фото анфас с улыбкой и с ретрактором, пары точек «фото — скан», камера, горизонт, средняя линия,
 // точки лица и размеры зубов по лицу (сервер — app/steps/aesthetics.py).
-import { $, choose, fmt, hide, render, state, toast, viewer } from '../core.js';
-import { get, post } from '../api.js';
+import { $, busy, choose, fmt, hide, render, state, toast, viewer } from '../core.js';
+import { get, post, run } from '../api.js';
 import { icons } from '../icons.js';
 
 const KINDS = { smile: 'С улыбкой', retracted: 'С ретрактором' };
@@ -11,14 +11,67 @@ const FACE_STEPS = [
   ['endocanthion_right', 'внутренний угол правого глаза'], ['endocanthion_left', 'внутренний угол левого глаза'],
   ['ala_right', 'правое крыло носа'], ['ala_left', 'левое крыло носа'],
 ];
-const COLORS = { pair: '#5ec8ff', pending: '#ffd166', midline: '#ff8fab', horizon: '#9be564', face: '#c3a6ff', overlay: 'rgba(94, 200, 255, 0.55)' };
+const COLORS = { pair: '#5ec8ff', pending: '#ffd166', midline: '#ff8fab', horizon: '#9be564', face: '#c3a6ff', overlay: 'rgba(94, 200, 255, 0.55)',
+  scan: 'rgba(80, 220, 255, 0.95)', photo: 'rgba(255, 214, 0, 0.9)' };
+const ROTATE_DEG_PER_PX = 0.1; // ПКМ: поворот скана, как в exocad Smile Design
+const NO_ADJ = () => ({ pitch: 0, yaw: 0, roll: 0, dx: 0, dy: 0, scale: 1 });
 
 const aes = {
   kind: 'smile', mode: null, // null | pair | horizon | midline | face
   pending: { px: null, point: null }, horizon: [], faceStep: 0, overlay: true,
   view: null, // { k, ox, oy } — пиксели фото → точки окна; null — по размеру окна
   image: null, imageKey: '', drag: null, down3d: null,
+  adj: NO_ADJ(), adjTimer: null, // ручная поправка скана поверх фото — пока тянут мышью (сервер получает по отпусканию)
 };
+
+// ---------- камера фото в окне: поправка и проекция, как aesthetic.adjust_camera / Camera.project ----------
+function mat(a, b) { return a.map((r) => b[0].map((_, j) => r.reduce((s, x, k) => s + x * b[k][j], 0))); }
+function rot(axis, deg) {
+  const c = Math.cos((deg * Math.PI) / 180), s = Math.sin((deg * Math.PI) / 180);
+  if (axis === 0) return [[1, 0, 0], [0, c, -s], [0, s, c]];
+  if (axis === 1) return [[c, 0, s], [0, 1, 0], [-s, 0, c]];
+  return [[c, -s, 0], [s, c, 0], [0, 0, 1]];
+}
+const mulv = (M, v) => M.map((r) => r[0] * v[0] + r[1] * v[1] + r[2] * v[2]);
+
+export function adjustCamera(cam, d) {
+  if (!cam || !d) return cam;
+  const sgn = cam.mirrored ? -1 : 1;
+  const Q = mat(rot(2, sgn * d.roll), mat(rot(1, sgn * d.yaw), rot(0, d.pitch))); // как Rotation.from_euler('xyz')
+  const A = cam.anchor;
+  const RA = mulv(cam.R, A), QRA = mulv(Q, RA);
+  const R = mat(Q, cam.R);
+  const t = [0, 1, 2].map((i) => RA[i] + cam.t[i] - QRA[i]);
+  const ca = RA.map((x, i) => x + cam.t[i]);
+  const ua = cam.K[0][0] * ca[0] / ca[2] + cam.K[0][2], va = cam.K[1][1] * ca[1] / ca[2] + cam.K[1][2];
+  const K = cam.K.map((r) => [...r]);
+  K[0][0] *= d.scale; K[1][1] *= d.scale;
+  K[0][2] = cam.K[0][2] + (1 - d.scale) * (ua - cam.K[0][2]) + sgn * d.dx;
+  K[1][2] = cam.K[1][2] + (1 - d.scale) * (va - cam.K[1][2]) + d.dy;
+  return { ...cam, K, R, t };
+}
+
+export function projectPoints(cam, pts) {
+  const [[f, , cx], [, g, cy]] = cam.K;
+  const W = cam.size?.[0] ?? 0;
+  return pts.map((p) => {
+    const c = [0, 1, 2].map((i) => cam.R[i][0] * p[0] + cam.R[i][1] * p[1] + cam.R[i][2] * p[2] + cam.t[i]);
+    const u = f * c[0] / c[2] + cx, v = g * c[1] / c[2] + cy;
+    return [cam.mirrored ? W - u : u, v];
+  });
+}
+
+const adjusting = () => Object.entries(aes.adj).some(([k, v]) => (k === 'scale' ? Math.abs(v - 1) > 1e-6 : Math.abs(v) > 1e-6));
+
+async function commitAdjust() {
+  if (!adjusting()) return;
+  const manual = aes.adj;
+  try {
+    state.aesthetics = await post('aesthetics/adjust', { kind: aes.kind, manual });
+  } catch (e) { toast(e.message); }
+  aes.adj = NO_ADJ();
+  render();
+}
 
 const info = () => state.aesthetics;
 const photo = () => info()?.photos?.[aes.kind] || null;
@@ -52,6 +105,13 @@ function photoView() {
   canvas.addEventListener('wheel', (e) => {
     if (!aes.image || !photo()) return;
     e.preventDefault();
+    if (e.shiftKey && photo().camera) { // Shift + колесо — масштаб скана поверх фото
+      aes.adj.scale *= Math.exp(-(e.deltaY || e.deltaX) * 0.0005);
+      clearTimeout(aes.adjTimer);
+      aes.adjTimer = setTimeout(commitAdjust, 400);
+      drawPhoto();
+      return;
+    }
     const v = currentView(canvas);
     const f = Math.exp(-e.deltaY * 0.0015);
     const r = canvas.getBoundingClientRect();
@@ -59,16 +119,28 @@ function photoView() {
     aes.view = { k: v.k * f, ox: mx - (mx - v.ox) * f, oy: my - (my - v.oy) * f };
     drawPhoto();
   }, { passive: false });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 && e.button !== 1) return;
+    if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
     const v = currentView(canvas);
-    aes.drag = { x: e.clientX, y: e.clientY, ox: v.ox, oy: v.oy, moved: false, button: e.button };
+    // ПКМ — повернуть скан, Shift + ЛКМ — сдвинуть скан (поверх фото, как в exocad Smile Design)
+    const adjust = photo()?.camera && (e.button === 2 ? 'rotate' : e.button === 0 && e.shiftKey ? 'move' : null);
+    if (e.button === 2 && !adjust) return;
+    aes.drag = { x: e.clientX, y: e.clientY, ox: v.ox, oy: v.oy, moved: false, button: e.button, adjust,
+      start: { ...aes.adj }, k: v.k };
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', (e) => {
     const d = aes.drag;
     if (!d) return;
     if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) d.moved = true;
+    if (d.moved && d.adjust) {
+      const mx = e.clientX - d.x, my = e.clientY - d.y;
+      if (d.adjust === 'rotate') aes.adj = { ...d.start, yaw: d.start.yaw + mx * ROTATE_DEG_PER_PX, pitch: d.start.pitch - my * ROTATE_DEG_PER_PX };
+      else aes.adj = { ...d.start, dx: d.start.dx + mx / d.k, dy: d.start.dy + my / d.k };
+      drawPhoto();
+      return;
+    }
     if (d.moved) {
       aes.view = { ...currentView(canvas), ox: d.ox + e.clientX - d.x, oy: d.oy + e.clientY - d.y };
       drawPhoto();
@@ -77,6 +149,7 @@ function photoView() {
   canvas.addEventListener('pointerup', (e) => {
     const d = aes.drag;
     aes.drag = null;
+    if (d?.adjust) { if (d.moved) commitAdjust(); return; }
     if (!d || d.moved || d.button !== 0) return;
     const r = canvas.getBoundingClientRect();
     const v = currentView(canvas);
@@ -135,11 +208,19 @@ export function drawPhoto() {
   const v = currentView(canvas);
   const at = (q) => [v.ox + q[0] * v.k, v.oy + q[1] * v.k];
   g.drawImage(aes.image, v.ox, v.oy, p.size[0] * v.k, p.size[1] * v.k);
-  if (aes.overlay && p.overlay?.length) {
-    g.fillStyle = COLORS.overlay;
-    for (const q of p.overlay) {
-      const [x, y] = at(q);
-      g.fillRect(x - 0.8, y - 0.8, 1.6, 1.6);
+  const cam = p.camera ? adjustCamera({ ...p.camera, size: p.size }, aes.adj) : null;
+  if (aes.overlay && cam) {
+    const o = p.overlay || {};
+    const poly = (pts, color, width) => {
+      g.strokeStyle = color; g.lineWidth = width; g.beginPath();
+      pts.forEach((q, i) => { const [x, y] = at(q); if (i) g.lineTo(x, y); else g.moveTo(x, y); });
+      g.closePath(); g.stroke();
+    };
+    if (!adjusting()) (o.photo || []).forEach((c) => poly(c.px, COLORS.photo, 1.2)); // зубы на фото (нейросеть)
+    (o.scan || []).forEach((c) => poly(projectPoints(cam, c.points), COLORS.scan, 1.4)); // зубы скана
+    if (o.points?.length) {
+      g.fillStyle = COLORS.overlay;
+      for (const q of projectPoints(cam, o.points)) { const [x, y] = at(q); g.fillRect(x - 0.8, y - 0.8, 1.6, 1.6); }
     }
   }
   // горизонт — линия через центр кадра под углом horizon_deg
@@ -198,7 +279,9 @@ function hint() {
   if (aes.mode === 'horizon') return aes.horizon.length ? 'вторая точка горизонтали' : 'две точки на истинной горизонтали';
   if (aes.mode === 'midline') return 'точки средней линии лица: переносица, кончик носа, фильтрум, подбородок';
   if (aes.mode === 'face') return FACE_STEPS[aes.faceStep]?.[1] || '';
-  return 'колесо — масштаб, перетаскивание — сдвиг, двойной щелчок — весь кадр';
+  return photo()?.camera
+    ? 'колесо — масштаб окна, перетаскивание — сдвиг фото; скан: ПКМ — повернуть, Shift + ЛКМ — сдвинуть, Shift + колесо — масштаб'
+    : 'колесо — масштаб, перетаскивание — сдвиг, двойной щелчок — весь кадр';
 }
 
 function photoClick(px) {
@@ -300,6 +383,12 @@ export async function aestheticAction(action, arg) {
   }
   if (action === 'unpair') return send('aesthetics/pair/remove', { index: arg === 'all' ? null : Number(arg) });
   if (action === 'overlay') { aes.overlay = !aes.overlay; return render(); }
+  if (action === 'refine') {
+    return busy('Уточнение по зубам', async (progress) => {
+      state.aesthetics = await run('aesthetics/refine', { kind: aes.kind }, progress);
+    }).then(render);
+  }
+  if (action === 'resetcam') { aes.adj = NO_ADJ(); return send('aesthetics/camera/reset', {}); }
   if (action === 'horizon') {
     const h = arg === 'zero' ? 0 : Math.round(((p?.horizon_deg || 0) + Number(arg)) * 100) / 100;
     return send('aesthetics/set', { horizon_deg: Math.max(-45, Math.min(45, h)) });
@@ -308,20 +397,45 @@ export async function aestheticAction(action, arg) {
   if (action === 'facereset') return send('aesthetics/set', { face: Object.fromEntries(FACE_STEPS.map(([k]) => [k, null])) });
 }
 
+// поля панели: расстояние до камеры, доводка моделью (событие change — app.js)
+export function aestheticChange(e) {
+  const t = e.target;
+  if (t.matches('[data-aes-distance]')) return send('aesthetics/set', { distance_mm: Number(t.value) || 0 });
+  if (t.matches('[data-aes-auto]')) return send('aesthetics/set', { auto: t.checked });
+}
+
 const side = (mm, right, left) => (mm > 0 ? right : left);
 
 function cameraHtml(p) {
   if (!p.camera) {
     const why = p.fit_error && !p.fit_error.startsWith('пар точек') ? `<div class="warning warn">${icons.warn}<span>${hide(p.fit_error)}</span></div>` : '';
-    return `${why}<p class="muted small">Камера фото — после ${p.need} пар${p.focal ? '' : ' (в EXIF нет фокусного расстояния — оно подбирается, поэтому пар 6)'}.</p>`;
+    return `${why}<p class="muted small">Камера фото — после ${p.need} пар (как в exocad: две сходные точки, лучше подальше друг от друга —
+      например, бугры клыков); дальше доводит нейросеть по зубам.</p>`;
   }
   const c = p.camera;
+  const a = p.auto_info;
+  const auto = c.fixed ? (a?.manual ? 'Поправлено вручную — камера запомнена.' : 'Уточнено по зубам — камера запомнена.')
+    : a?.used ? `Доводка по зубам ${a.teeth.join(', ')}: совпадение ${fmt(a.iou_before, 2)} → ${fmt(a.iou_after, 2)}, край ${fmt(a.edge_px, 1)} px.`
+      : a?.error ? `Без доводки: ${hide(a.error)}.` : '';
   return `<div class="metrics">
-      <div class="metric"><span>Ошибка, px</span><b class="${c.check ? 'warn' : 'ok'}">${fmt(c.residual_px, 1)}</b></div>
-      <div class="metric"><span>Фокус, мм (35)</span><b>${fmt(c.focal_35mm, 0)}</b></div>
-      <div class="metric"><span>Пар</span><b>${p.pairs.length}</b></div></div>
-    ${c.check ? '<div class="warning warn">' + icons.warn + '<span>Ошибка совмещения большая — проверьте пары (номера на фото и точки в 3D).</span></div>' : ''}
+      <div class="metric"><span>По парам, px</span><b class="${c.check ? 'warn' : 'ok'}">${fmt(c.residual_px, 1)}</b></div>
+      <div class="metric"><span>До камеры, мм</span><b>${fmt(c.distance_mm, 0)}</b></div>
+      <div class="metric"><span>Фокус, мм (35)</span><b>${fmt(c.focal_35mm, 0)}</b></div></div>
+    ${auto ? `<p class="muted small">${auto}</p>` : ''}
+    ${c.check ? '<div class="warning warn">' + icons.warn + '<span>Точки пар легли далеко — проверьте пары (номера на фото и точки в 3D).</span></div>' : ''}
     ${c.mirrored ? '<p class="muted small">Фото зеркальное (фронтальная камера) — учтено.</p>' : ''}`;
+}
+
+function alignHtml(p) {
+  return `<div class="label">Совмещение</div>
+    <div class="aes-row"><span>Расстояние до камеры</span><b>${fmt(p.distance_mm, 0)} мм${p.distance_set ? '' : ' (как exocad)'}</b></div>
+    <input type="range" class="rehab-range" min="300" max="3000" step="50" value="${p.distance_mm}" data-aes-distance>
+    <label class="joint-toggle ${p.auto_ready ? '' : 'disabled'}"><input type="checkbox" data-aes-auto ${p.auto ? 'checked' : ''} ${p.auto_ready ? '' : 'disabled'}>
+      <span>Доводка нейросетью по зубам</span><small>${p.auto_ready ? 'SAM 2.1: контуры каждого зуба' : 'нет модели SAM 2.1 (models/sam2.1-tiny)'}</small></label>
+    ${p.camera ? `<div class="row" style="gap:4px;margin-top:4px">
+      <button class="btn ghost grow" data-aes="refine" ${p.auto_ready ? '' : 'disabled'}>Уточнить по зубам</button>
+      ${p.camera.fixed ? '<button class="btn ghost" data-aes="resetcam" title="Снова по парам и доводке">Сбросить поправку</button>' : ''}</div>
+      <p class="muted small">Поправить вручную — поверх фото: ПКМ — повернуть скан, Shift + ЛКМ — сдвинуть, Shift + колесо — масштаб.</p>` : ''}`;
 }
 
 function aestheticHtml(p) {
@@ -376,9 +490,9 @@ export function renderAesthetics() {
       <div class="label" style="margin-top:4px">Пары «фото — скан»: ${p.pairs.length} из ${p.need}+</div>
       <div class="row">${mode('pair', `${icons.target}Ставить пары`, 'Готово')}
         ${p.pairs.length ? '<button class="btn ghost" data-aes="unpair" data-arg="all">Убрать все</button>' : ''}</div>
-      ${aes.mode === 'pair' ? '<p class="muted small">Щёлкните точку на фото и ту же точку на зубах в 3D (порядок любой). Лучше всего — режущие края и контакты резцов, бугры клыков и премоляров по всей ширине улыбки.</p>' : ''}
+      ${aes.mode === 'pair' ? '<p class="muted small">Щёлкните точку на фото и ту же точку на зубах в 3D (порядок любой). Хватит двух подальше друг от друга — бугры клыков; остальное доводит нейросеть.</p>' : ''}
       ${pairs ? `<div class="row" style="flex-wrap:wrap;gap:4px;margin-top:6px">${pairs}</div>` : ''}
-      ${cameraHtml(p)}
+      ${cameraHtml(p)}${alignHtml(p)}
       ${p.camera ? `<button class="btn ghost wide sm" data-aes="overlay">${aes.overlay ? 'Скрыть' : 'Показать'} наложение скана</button>` : ''}
       <div class="label">Горизонт: ${fmt(p.horizon_deg, 1)}°</div>
       <div class="row"><button class="btn ghost" data-aes="horizon" data-arg="-0.5">−0,5°</button>

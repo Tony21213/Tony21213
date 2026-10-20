@@ -117,8 +117,39 @@ def test_photo_exif_orientation_and_focal(tmp_path):
 
 def test_too_few_points():
     cam, px, _mid, _face = scene()
-    with pytest.raises(ValueError, match="6 пар"):
-        ae.fit_camera(px[:5], POINTS[:5], SIZE, np.eye(4))
+    with pytest.raises(ValueError, match="2 пары"):
+        ae.fit_camera(px[:1], POINTS[:1], SIZE, np.eye(4))
+    with pytest.raises(ValueError, match="4 пары"):
+        ae.fit_camera(px[:3], POINTS[:3], SIZE, np.eye(4), focal_px=F_PX)
+
+
+def _error(cam, fit):
+    return float(np.linalg.norm(fit.project(POINTS) - cam.project(POINTS), axis=1).max())
+
+
+def test_two_pairs_like_exocad():
+    """Как в exocad Smile Creator: две пары (клыки), взгляд спереди, расстояние до камеры задано — масштаб, крен и
+    положение по паре; остальные зубы ложатся сами. Неверное расстояние — ошибка растёт к жевательным зубам."""
+    cam, px, _mid, _face = scene(roll_deg=3.0, yaw_deg=0.0, pitch_deg=0.0, noise=0.0)
+    canines = [4, 5]
+    fit = ae.fit_camera(px[canines], POINTS[canines], SIZE, np.eye(4), distance_mm=300.0, anchor=INCISAL)
+    assert _error(cam, fit) < 1.5 and not fit.mirrored
+    assert np.linalg.norm(fit.centre - cam.centre) < 3.0
+    far = ae.fit_camera(px[canines], POINTS[canines], SIZE, np.eye(4), distance_mm=1000.0, anchor=INCISAL)
+    assert _error(cam, far) > 3 * _error(cam, fit) + 5  # перспектива: моляры уходят
+
+
+def test_more_pairs_refine_the_view():
+    cam, px, _mid, _face = scene(roll_deg=3.0, yaw_deg=2.0, pitch_deg=-5.0, noise=0.2)
+    fit = ae.fit_camera(px, POINTS, SIZE, np.eye(4), distance_mm=300.0, anchor=INCISAL)
+    angle = np.degrees(np.arccos(np.clip((np.trace(fit.R.T @ cam.R) - 1) / 2, -1, 1)))
+    assert angle < 1.0 and fit.residual_px < 1.5
+    fixed = ae.fit_camera(px, POINTS, SIZE, np.eye(4), distance_mm=300.0, view_deg=(0.0, 0.0), anchor=INCISAL)
+    assert fixed.residual_px > fit.residual_px  # взгляд задан спереди — по точкам не уточняется
+    turned = ae.fit_camera(px, POINTS, SIZE, np.eye(4), distance_mm=300.0, view_deg=(5.0, -2.0), anchor=INCISAL)
+    assert turned.residual_px < 1.5 < fixed.residual_px  # тот же наклон (сверху) и разворот (левее), что у камеры
+    with pytest.raises(ValueError, match="расстояние"):
+        ae.fit_camera(px, POINTS, SIZE, np.eye(4), distance_mm=50.0)
 
 
 MODEL = os.environ.get("CCD_FACE_MODEL", os.path.join(os.path.dirname(__file__), "..", "models",

@@ -9,9 +9,11 @@ exocad пишет этот XML («Набор изображений XML (*.treat
 Без фото снимок — светлая сетка с красной средней линией лица и синей эстетической горизонталью; он стоит за
 головой (фон за моделями, перекрестье — на резцовой точке). С фото пациента (``photo_view``, «Эстетика», часть 1) —
 настоящие снимки по камере совмещения (``aesthetic.fit_camera``): с улыбкой — ``SmileImage`` (кнопка «Вид Smile
-Design»), с ретрактором — ``SmileImageRetracted`` (в exocad — «показать/скрыть»). exocad показывает снимок в
-ортогональном виде по ``ViewDirection``: фото точно ложится на модели на глубине резцовой точки. Пустые числовые
-поля exocad читает только как ``xsi:nil="true"``; пустой ``imageHash`` принимает.
+Design»), с ретрактором — ``SmileImageRetracted`` (в exocad — «показать/скрыть»). Перспектива — как у exocad
+Smile Creator: камера на ``DistanceToCamera`` мм от ``FovFocalPoint`` (точка на оси камеры на глубине резцов) по
+``ViewDirection``; так пишет сам exocad (на ПК — 1072,55 мм по умолчанию, ползунок поля зрения меняет его), без
+них вид ортогональный и боковые зубы с фото расходятся. Пустые числовые поля exocad читает только как
+``xsi:nil="true"``; пустой ``imageHash`` принимает.
 """
 
 import os
@@ -88,8 +90,11 @@ def photo_view(camera, anchor, to_scene=None, behind_mm: float = DEPTH_MM) -> di
         corners[key] = T[:3, :3] @ p + T[:3, 3]
     view_s, up_s = _unit(T[:3, :3] @ view), _unit(T[:3, :3] @ up)
     center = sum(corners.values()) / 4
+    o = -R.T @ cam.t  # центр камеры
+    depth = float((a - o) @ view)
+    focal = o + depth * view  # на оси камеры, на глубине резцов
     return {"view": view_s, "axis_x": _unit(np.cross(view_s, up_s)), "axis_y": up_s, "center": center,
-            "corners": corners}
+            "corners": corners, "focal_point": T[:3, :3] @ focal + T[:3, 3], "distance": depth}
 
 
 def _vec(parent, tag, v):
@@ -135,8 +140,12 @@ def _image(parent, image_file: str, geometry: dict, pixels, kind: str, display: 
     _vec(im, "ViewDirection", geometry["view"])
     _vec(im, "ViewAxisX", geometry["axis_x"])
     _vec(im, "ViewAxisY", geometry["axis_y"])
-    ET.SubElement(im, "FovFocalPoint", {"xsi:nil": "true"})
-    ET.SubElement(im, "DistanceToCamera", {"xsi:nil": "true"})
+    if geometry.get("focal_point") is not None:  # перспектива — как пишет exocad Smile Creator
+        _vec(im, "FovFocalPoint", geometry["focal_point"])
+        ET.SubElement(im, "DistanceToCamera").text = repr(float(geometry["distance"]))
+    else:
+        ET.SubElement(im, "FovFocalPoint", {"xsi:nil": "true"})
+        ET.SubElement(im, "DistanceToCamera", {"xsi:nil": "true"})
     ET.SubElement(im, "ImagePixelsX").text = str(pixels[0])
     ET.SubElement(im, "ImagePixelsY").text = str(pixels[1])
 

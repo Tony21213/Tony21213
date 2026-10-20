@@ -6,7 +6,7 @@ import { articulationAction, editCondyle, endCondyleEdit, endRehab, handleCondyl
 import { helpDialog, openCase, saveCase, settingsDialog } from './steps/case.js';
 import { downloadModels, intakeCheck, intakeSave, openCt, partsDialog, renderCt, segment } from './steps/ct.js';
 import { chooseExocadProject, doExport, doExportExocadArticulator, prepareExport, renderExport, toggleGum, toggleRoots } from './steps/export.js';
-import { aestheticAction, aestheticPick, aestheticPointerDown, endAesthetics, prepareAesthetics, renderAesthetics } from './steps/aesthetics.js';
+import { aestheticAction, aestheticChange, aestheticPick, aestheticPointerDown, endAesthetics, prepareAesthetics, renderAesthetics } from './steps/aesthetics.js';
 import { renderObjectBar } from './objectbar.js';
 import { cancelPlacing, endLandmarks, landmarkAction, landmarkPlacing, landmarkPoints, placeLandmark, prepareLandmarks, renderLandmarks } from './steps/landmarks.js';
 import { accept, addScans, biteCorrect, biteDecide, endCorrection, refine, register, removeScan, renderScans, resetAuto, revertCorrection, startCorrection, stepHistory, toggleBite } from './steps/scans.js';
@@ -125,6 +125,7 @@ document.addEventListener('change', (e) => {
   const select = e.target.closest('[data-mount-plane]');
   if (select) selectMountPlane(select.value);
   if (e.target.matches('[data-rehab-raise]')) rehabAction('raise', e.target.value); // подъём прикуса по оси пациента
+  if (e.target.matches('[data-aes-distance],[data-aes-auto]')) aestheticChange(e); // «Эстетика»: расстояние до камеры, доводка
   if (e.target.matches('[data-rehab-template]')) rehabAction('template', e.target.checked);
 });
 
