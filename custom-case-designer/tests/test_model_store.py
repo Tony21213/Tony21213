@@ -128,6 +128,41 @@ def test_bundled_specs_match_sources():
         assert {lab for labs in bundled["outputs"].values() for lab in labs} <= set(bundled["labels"]), name
 
 
+def test_photo_models_from_zip_and_checksum(monkeypatch, tmp_path):
+    """Нейросети для фото: SAM — из архива (кодировщик и декодер), MediaPipe — файлом; подменённый файл не ложится."""
+    import io
+    import zipfile
+
+    enc, dec, face = os.urandom(40_000), os.urandom(30_000), os.urandom(20_000)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("sam21_tiny/sam2.1_hiera_tiny.encoder.onnx", enc)
+        z.writestr("sam21_tiny/sam2.1_hiera_tiny.decoder.onnx", dec)
+        z.writestr("sam21_tiny/config.yaml", b"input_size: 1024")
+    sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+    monkeypatch.setattr(ms, "PHOTO_MODELS", {
+        "sam": ("SAM", "https://example.invalid/sam.zip", 90_000,
+                {"sam2.1-tiny/sam2.1_hiera_tiny.encoder.onnx": sha(enc), "sam2.1-tiny/sam2.1_hiera_tiny.decoder.onnx": sha(dec)}),
+        "face": ("лицо", "https://example.invalid/face_landmarker.task", 20_000, {"face_landmarker.task": sha(face)})})
+    monkeypatch.setattr(ms, "CHUNK", 8192)
+    st = ms.photo_status(str(tmp_path))
+    assert not st["ready"] and st["left_bytes"] == 110_000
+    srv, url = serve({"sam.zip": buf.getvalue(), "face_landmarker.task": face})
+    seen = []
+    st = ms.download_photo(str(tmp_path), lambda f, m, **i: seen.append(f), base_url=url)
+    srv.shutdown()
+    assert st["ready"] and st["left_bytes"] == 0 and seen[-1] == pytest.approx(1.0)
+    assert (tmp_path / "sam2.1-tiny" / "sam2.1_hiera_tiny.encoder.onnx").read_bytes() == enc
+    assert (tmp_path / "face_landmarker.task").read_bytes() == face and not list(tmp_path.rglob("*.part"))
+    (tmp_path / "face_landmarker.task").unlink()
+    srv, url = serve({"face_landmarker.task": bytes(len(face))})
+    with pytest.raises(RuntimeError, match="контрольная сумма"):
+        ms.download_photo(str(tmp_path), base_url=url)
+    srv.shutdown()
+    assert not (tmp_path / "face_landmarker.task").exists() and not list(tmp_path.rglob("*.part"))
+    assert ms.photo_status(str(tmp_path))["models"][0]["installed"]  # SAM уже был — не тронут
+
+
 def test_landmark_models_download_and_status(monkeypatch, tmp_path):
     blobs = {"RPo/1.onnx": os.urandom(50_000), "RPo/0-3.onnx": os.urandom(60_000)}
     monkeypatch.setattr(ms, "LANDMARK_FILES", {k: (len(b), hashlib.sha256(b).hexdigest()) for k, b in blobs.items()})

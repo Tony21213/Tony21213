@@ -1,9 +1,11 @@
 """Шаг «Эстетика»: фото анфас с улыбкой и с ретрактором — методы Session (docs/handoff/archive/aesthetics-photo.md).
 
-Каждое фото совмещается со сканом верхней челюсти, как в exocad Smile Design: 2+ пары точек «фото — скан» дают
-грубую камеру (aesthetic.fit_camera, расстояние до камеры — задано), доводит модель — маски зубов на фото по SAM 2.1
-и подгонка камеры по контурам каждого зуба (photo_teeth.align; номера зубов — из сегментации КТ); поправить можно
-мышью поверх фото (поворот скана — ПКМ, сдвиг и масштаб — с Shift) — тогда камера запоминается как есть.
+Каждое фото совмещается со сканом верхней челюсти, как в exocad Smile Design: без пар точек — автоматически
+(грубо — силуэт зубов скана по зубам на фото, photo_teeth.coarse_camera), а 2+ пары точек «фото — скан» дают
+грубую камеру (aesthetic.fit_camera, расстояние до камеры — задано); доводит модель — маски зубов на фото по SAM 2.1
+и подгонка камеры по контурам каждого зуба (photo_teeth.align; номера зубов — из сегментации КТ; на фото с улыбкой —
+в вырезе губ); поправить можно мышью поверх фото (поворот скана — ПКМ, сдвиг и масштаб — с Shift) — тогда камера
+запоминается как есть.
 Горизонт, средняя линия лица и точки лица отмечаются на фото. Камера фото с улыбкой даёт эстетическую систему
 монтажа (шаг «Артикулятор»: photo_aesthetic), оба фото с камерами — набор Smile Design exocad (шаг «Экспорт»)."""
 
@@ -25,6 +27,11 @@ OCCLUDER_REACH_MM = 6.0  # нижние зубы, что загораживаю�
 OCCLUDER_POINTS = 150_000
 FACE_MODEL = "face_landmarker.task"  # MediaPipe Face Landmarker (Google, Apache-2.0) — в папке моделей
 EYE_LINE_MAX_DEG = 10.0  # линия глаз круче — не горизонт (лицо повёрнуто или точки сбились)
+# Вырез рта — внутренний контур губ MediaPipe, только на фото с улыбкой и если рот раскрыт (высота выреза — не
+# меньше этой доли ширины рта): с ретрактором губы растянуты, и MediaPipe рисует рот закрытым (кейс 7: 0,03).
+MOUTH_OPEN_MIN = 0.08
+FREE_PASSES = 2  # без пар: доводок по маскам (вторая — от первой: грубое положение дальше, чем по парам)
+FREE_MIN_TEETH = 2  # без пар: совпало меньше зубов — совмещение не принимается (нужны пары)
 ON_SCAN_MM = 2.0  # точка пары — на скане верхней челюсти: не дальше от его вершин
 FIT_WARN_SHARE = 0.004  # ошибка совмещения больше этой доли диагонали фото — пары стоит проверить
 PREVIEW_PX = 1600  # длинная сторона снимка для окна
@@ -115,6 +122,32 @@ class AestheticsSteps:
         item["face_auto"] = True
         return None
 
+    def photo_models_status(self) -> dict:
+        """Нейросети для фото (SAM 2.1, MediaPipe): скачаны ли; есть ли пакет mediapipe."""
+        from ... import model_store
+
+        st = model_store.photo_status(self.models_dir or model_store.default_dir())
+        try:
+            import mediapipe  # noqa: F401
+
+            st["mediapipe"] = True
+        except ImportError:
+            st["mediapipe"] = False
+        return st
+
+    def download_photo_models(self, progress=None) -> dict:
+        """Скачать нейросети для фото (проверка SHA-256); после — доводка и поиск лица доступны."""
+        import threading
+
+        from ... import model_store
+
+        folder = self.models_dir or model_store.default_dir()
+        self._download_cancel = threading.Event()
+        model_store.download_photo(folder, progress, self._download_cancel)
+        self.models_dir = folder
+        self._sam2 = None
+        return self.aesthetics_info()
+
     def aesthetic_face(self, kind: str) -> dict:
         """«Найти лицо»: точки лица, губы и горизонт по линии глаз — заново (MediaPipe)."""
         item = self._photo(kind)
@@ -128,7 +161,7 @@ class AestheticsSteps:
         return {"path": path, "photo": photo, "pairs": [], "horizon_deg": 0.0, "midline_px": [], "face": {},
                 "upper_n": None, "version": self._photo_version, "_cam_key": None, "_cam": None, "_overlay": None,
                 "distance_mm": None, "auto": True, "override": None, "_auto": None, "_refined": None,
-                "lips": None, "horizon_source": None, "face_auto": False, "face_note": None}
+                "lips": None, "horizon_source": None, "face_auto": False, "face_note": None, "_free": None}
 
     def aesthetic_remove_photo(self, kind: str) -> dict:
         self.photos.pop(_kind(kind), None)
@@ -281,9 +314,12 @@ class AestheticsSteps:
             cache["teeth_key"], cache["teeth"] = key, (labels, normals)
         return cache["teeth"]
 
-    def _aes_occluders(self):
-        """Нижние зубы в прикусе (координаты КТ) — загораживают верхние на фото с ретрактором: (точки, нормали)."""
+    def _aes_occluders(self, crowns: bool = False):
+        """Нижние зубы в прикусе (координаты КТ) — загораживают верхние на фото с ретрактором: (точки, нормали);
+        crowns — только их коронки (по зубам КТ; нет сегментации — все), для силуэта без пар точек."""
         from scipy.spatial import cKDTree
+
+        from ... import photo_teeth as pt
 
         _up, lo = self._jaw_items()
         if lo is None or lo.get("reg") is None:
@@ -292,16 +328,26 @@ class AestheticsSteps:
         if getattr(self, "bite_motion", None) is not None:
             T = np.asarray(self.bite_motion, float) @ T
         _u, _T, cache = self._upper_ct()
-        key = (id(lo["scan"]), T.tobytes(), cache["key"])
+        key = (id(lo["scan"]), T.tobytes(), cache["key"], len(self.structures))
         if cache.get("occ_key") != key:
             v = apply(T, lo["scan"].vertices)
             n = np.asarray(trimesh.Trimesh(v, lo["scan"].faces, process=False).vertex_normals)
             near = np.isfinite(cKDTree(cache["v"]).query(v, distance_upper_bound=OCCLUDER_REACH_MM)[0])
+            # коронки — по зубам КТ в положении совмещения (прикус их не двигает)
+            lower = {int(k.rsplit("_", 1)[1]): np.asarray(m.vertices) for k, m in self.structures.items()
+                     if k.startswith("teeth/tooth_") and k.rsplit("_", 1)[1].isdigit()
+                     and int(k.rsplit("_", 1)[1]) // 10 in (3, 4, 7, 8)}
+            crown = (pt.crown_labels(apply(np.asarray(lo["reg"].transform, float), lo["scan"].vertices[near]), lower) > 0
+                     if lower else np.ones(int(near.sum()), bool))
             v, n = v[near], n[near]
             if len(v) > OCCLUDER_POINTS:
                 k = np.random.default_rng(0).choice(len(v), OCCLUDER_POINTS, replace=False)
-                v, n = v[k], n[k]
-            cache["occ_key"], cache["occ"] = key, (v, n)
+                v, n, crown = v[k], n[k], crown[k]
+            if crown.sum() < 100:
+                crown = np.ones(len(v), bool)
+            cache["occ_key"], cache["occ"], cache["occ_crown"] = key, (v, n), crown
+        if crowns:
+            return cache["occ"][0][cache["occ_crown"]], cache["occ"][1][cache["occ_crown"]]
         return cache["occ"]
 
     def _sam(self):
@@ -329,12 +375,75 @@ class AestheticsSteps:
         anchor = self._upper_incisal(self._base_frame())
         try:
             r = pt.align(sam, item["photo"].image, camera, self._upper_ct()[2]["v"], labels, anchor,
-                         self._distance(item), normals, occ, occ_n)
+                         self._distance(item), normals, occ, occ_n, self._mouth(kind, item))
         except ValueError as e:
             return None, str(e)
         if not r.teeth:
             return None, "зубы на фото не совпали со сканом — проверьте пары точек"
         return r, None
+
+    @staticmethod
+    def _mouth(kind: str, item: dict):
+        """Вырез рта (внутренний контур губ MediaPipe, px снимка) — на фото с улыбкой, если рот раскрыт; иначе None."""
+        lips = item.get("lips") or {}
+        inner, outer = lips.get("inner"), lips.get("outer")
+        if kind != "smile" or not inner or not outer or len(inner) < 3:
+            return None
+        q, o = np.asarray(inner, float), np.asarray(outer, float)
+        if np.ptp(q[:, 1]) < MOUTH_OPEN_MIN * max(float(np.ptp(o[:, 0])), 1.0):
+            return None
+        return q
+
+    def _free_key(self, kind: str, item: dict):
+        """Ключ совмещения без пар точек: скан, расстояние, сегментация, губы; с ретрактором — и нижние зубы в прикусе."""
+        T = np.asarray(self._upper()["reg"].transform, float)
+        lower = None
+        if kind == "retracted":
+            lo = self._jaw_items()[1]
+            bite = getattr(self, "bite_motion", None)
+            lower = (None if lo is None or lo.get("reg") is None else np.asarray(lo["reg"].transform, float).tobytes(),
+                     None if bite is None else np.asarray(bite, float).tobytes())
+        return (T.tobytes(), "без пар", kind, self._distance(item), len(self.structures), repr(item.get("lips")), lower)
+
+    def _free_camera(self, kind: str, item: dict):
+        """Совмещение без пар точек, как «Automatic alignment» exocad Smile Creator: грубо — силуэт зубов скана по
+        зубам на фото (photo_teeth.coarse_camera: окно рта — по губам MediaPipe), затем доводка по маскам SAM;
+        (камера | None, Refined | None, отчёт)."""
+        from ... import photo_teeth as pt
+
+        sam = self._sam()
+        labels, normals = self._aes_teeth()
+        if labels is None:
+            return None, None, {"used": False, "error": "нет номеров зубов: нужна сегментация зубов на КТ", "free": True}
+        try:
+            base = self._base_frame()
+            anchor = self._upper_incisal(base)
+            v = self._upper_ct()[2]["v"]
+            mouth = self._mouth(kind, item)
+            others = self._aes_occluders(crowns=True)[0] if kind == "retracted" else None
+            cam, score = pt.coarse_camera(item["photo"].image, v, labels, base, anchor, self._distance(item), normals,
+                                          others, (item.get("lips") or {}).get("outer"), mouth)
+        except (ValueError, np.linalg.LinAlgError) as e:
+            return None, None, {"used": False, "error": str(e), "free": True}
+        occ, occ_n = self._aes_occluders() if kind == "retracted" else (None, None)
+        mean = lambda d: float(np.mean(list(d.values()))) if d else 0.0  # noqa: E731
+        r, why = None, None
+        for _ in range(FREE_PASSES):
+            try:
+                nxt = pt.align(sam, item["photo"].image, cam if r is None else r.camera, v, labels, anchor,
+                               self._distance(item), normals, occ, occ_n, mouth)
+            except ValueError as e:
+                why = str(e)
+                break
+            if r is not None and mean(nxt.iou_after) <= mean(r.iou_after):
+                break
+            r = nxt
+        if r is None or len(r.teeth) < FREE_MIN_TEETH:
+            return None, None, {"used": False, "free": True, "coarse_iou": round(score, 3),
+                                "error": why or "зубы на фото и на скане не совпали"}
+        report = self._auto_report(r)
+        report.update(free=True, coarse_iou=round(score, 3))
+        return r.camera, r, report
 
     def _camera(self, kind: str, refine: bool = False):
         """Камера совмещения фото (aesthetic.Camera, координаты КТ) или None; вторым — почему её нет.
@@ -352,7 +461,27 @@ class AestheticsSteps:
                              bool(o.get("mirrored")), tuple(item["photo"].size)), None
         if not self._pairs_valid(item) or len(item["pairs"]) < self._need_pairs(item):
             n = len(item["pairs"]) if self._pairs_valid(item) else 0
-            return None, f"пар точек {n} из {self._need_pairs(item)}"
+            short = f"пар точек {n} из {self._need_pairs(item)}"
+            if not item["auto"] or self._sam() is None or self._jaw_items()[0] is None:
+                return None, short
+            if refine and item.get("lips") is None and not item.get("face_note") and self._face_model():
+                self._auto_face(item)  # окно рта — по губам (кейс, сохранённый до поиска лица)
+            key = self._free_key(kind, item)
+            free = item.get("_free")
+            if (free is None or free["key"] != key) and refine:
+                with self._aes_lock():
+                    free = item.get("_free")
+                    if free is None or free["key"] != key:  # пока ждали — посчитал другой запрос
+                        cam, r, report = self._free_camera(kind, item)
+                        free = item["_free"] = {"key": key, "cam": cam, "refined": r, "auto": report}
+            if free is None or free["key"] != key:
+                return None, short  # посчитает фоновая задача окна (aesthetic_auto)
+            if item["_cam_key"] != key:
+                item["_cam_key"], item["_auto_key"], item["_cam"], item["_coarse"] = key, key, free["cam"], free["cam"]
+                item["_refined"], item["_auto"], item["_overlay"] = free["refined"], free["auto"], None
+            if free["cam"] is None:
+                return None, f"{short}; автоматически не совместилось: {free['auto'].get('error')}"
+            return free["cam"], None
         _up, T, _cache = self._upper_ct()
         px = np.array([p["px"] for p in item["pairs"]], float)
         pts = apply(T, np.array([p["local"] for p in item["pairs"]], float))
@@ -387,10 +516,16 @@ class AestheticsSteps:
             lock = self._aes_refine_lock = threading.Lock()
         return lock
 
-    def _auto_pending(self, item) -> bool:
-        """Доводку для этих пар ещё не считали (окно запустит фоновую задачу)."""
-        return bool(item.get("auto") and item.get("override") is None and item.get("_cam") is not None
-                    and item.get("_auto_key") != item.get("_cam_key") and self._sam() is not None)
+    def _auto_pending(self, kind: str, item: dict) -> bool:
+        """Доводку для этих пар (или совмещение без пар) ещё не считали — окно запустит фоновую задачу."""
+        if not item.get("auto") or item.get("override") is not None or self._sam() is None:
+            return False
+        if self._pairs_valid(item) and len(item["pairs"]) >= self._need_pairs(item):
+            return item.get("_cam") is not None and item.get("_auto_key") != item.get("_cam_key")
+        if self._jaw_items()[0] is None:
+            return False
+        free = item.get("_free")
+        return free is None or free["key"] != self._free_key(kind, item)
 
     def aesthetic_auto(self, kind: str | None = None) -> dict:
         """Фоновая задача окна: доводка нейросетью для фото, где она ещё не посчитана."""
@@ -502,7 +637,7 @@ class AestheticsSteps:
                     window = pt.teeth_window(cam, P, item["photo"].size)
                     grid = pt.grid_for(cam, P, L, window, N)
                     occ, occ_n = self._aes_occluders() if kind == "retracted" else (None, None)
-                    view = pt.project(cam, P, L, window, grid, N, occ, occ_n)
+                    view = pt.project(cam, P, L, window, grid, N, occ, occ_n, self._mouth(kind, item))
                     out["scan"] = [{"tooth": c["tooth"], "points": c["points"].round(3).tolist()}
                                    for c in pt.scan_contours(view, P, CONTOUR_STEP)]
                 except ValueError:
@@ -560,7 +695,9 @@ class AestheticsSteps:
                     "overlay": {"scan": [], "photo": [], "points": []}, "widths": {}, "guide": [], "aesthetic": None}
             if item["pairs"] and not valid:
                 info["notes"].append("скан верхней челюсти заменён — пары точек нужно поставить заново")
-            info["auto_pending"] = self._auto_pending(item)
+            info["auto_pending"] = self._auto_pending(kind, item)
+            info["free"] = cam is not None and not (valid and len(item["pairs"]) >= self._need_pairs(item))
+            info["mouth"] = self._mouth(kind, item) is not None
             if cam is not None:
                 diag = float(np.hypot(w, h))
                 px_ = np.array([p["px"] for p in item["pairs"]], float) if valid and item["pairs"] else np.zeros((0, 2))
@@ -654,7 +791,8 @@ class AestheticsSteps:
                         midline_px=list(saved.get("midline_px") or []), face=dict(saved.get("face") or {}),
                         distance_mm=saved.get("distance_mm"), auto=bool(saved.get("auto", True)),
                         override=saved.get("override"), lips=saved.get("lips"),
-                        horizon_source=saved.get("horizon_source"), face_auto=bool(saved.get("face_auto")))
+                        horizon_source=saved.get("horizon_source") or ("вручную" if saved.get("horizon_deg") else None),
+                        face_auto=bool(saved.get("face_auto")))
             self.photos[kind] = item
 
 
@@ -664,6 +802,8 @@ def route(h, s, p, method, q):
         return False
     if p == ["aesthetics"] and method == "GET":
         return h.json(s.aesthetics_info())
+    if p == ["aesthetics", "models"] and method == "GET":
+        return h.json(s.photo_models_status())
     if len(p) == 3 and p[2] == "image" and method == "GET":
         return h.send(s.aesthetic_image(p[1]), "image/jpeg")
     if method != "POST":
@@ -690,4 +830,6 @@ def route(h, s, p, method, q):
         return h.job("Уточнение по зубам", lambda progress: s.aesthetic_refine(b.get("kind")))
     if p == ["aesthetics", "camera", "reset"]:
         return h.json(s.aesthetic_reset_camera(b.get("kind")))
+    if p == ["aesthetics", "models", "download"]:  # SAM 2.1 и MediaPipe — с хранилищ авторов, проверка SHA-256
+        return h.job("Загрузка нейросетей для фото", lambda progress: s.download_photo_models(progress))
     return False

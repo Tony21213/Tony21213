@@ -125,6 +125,55 @@ def test_pairs_fit_camera_and_overlay(files, tmp_path):
     assert s.aesthetic_unpair("smile")["photos"]["smile"]["camera"] is None
 
 
+def test_auto_alignment_without_pairs(files, tmp_path, monkeypatch):
+    """Без пар точек — автоматически, как «Automatic alignment» exocad Smile Creator: грубо по силуэту зубов, затем
+    доводка; считает фоновая задача, окно не ждёт; пары — по ним, убрали пары — снова автоматическое, без пересчёта
+    (нейросети подменены: проверяются порядок, кэш и переходы)."""
+    from casedesigner import photo_teeth as pt
+
+    s = _session(files, tmp_path)
+    s.aesthetic_add_photo("smile", str(files / "smile.jpg"))
+    s.aesthetic_set("smile", distance_mm=300)
+    cam, _base = _camera(s)
+    n = len(s._upper_ct()[2]["v"])
+    calls = []
+    monkeypatch.setattr(s, "_sam", lambda: object())
+    monkeypatch.setattr(s, "_aes_teeth", lambda compute=True: (np.full(n, 11, np.int32), np.zeros((n, 3))))
+    monkeypatch.setattr(pt, "coarse_camera", lambda *a, **k: calls.append("грубо") or (cam, 0.7))
+
+    def align(sam, image, camera, *a, **k):
+        calls.append("доводка")
+        return pt.Refined(camera, {11: 0.5, 21: 0.5}, {11: 0.8, 21: 0.8}, 1.5, [11, 21], {}, (0, 0, 10, 10), 1)
+    monkeypatch.setattr(pt, "align", align)
+    smile = s.aesthetics_info()["photos"]["smile"]
+    assert smile["camera"] is None and smile["auto_pending"] and calls == []
+    smile = s.aesthetic_auto("smile")["photos"]["smile"]
+    assert calls == ["грубо", "доводка", "доводка"]  # вторая доводка не лучше первой — берётся первая
+    assert smile["camera"] and smile["free"] and not smile["auto_pending"] and smile["auto_info"]["free"]
+    points = _front_points(s, cam)
+    assert np.allclose(s._camera("smile")[0].project(points), cam.project(points), atol=1e-6)
+    s.aesthetic_auto("smile")
+    assert calls.count("грубо") == 1  # посчитано — не заново
+    for p in points:
+        s.aesthetic_pair("smile", cam.project(p[None])[0], p)
+    smile = s.aesthetics_info()["photos"]["smile"]
+    assert not smile["free"] and smile["camera"]["residual_px"] < 1.0
+    smile = s.aesthetic_unpair("smile")["photos"]["smile"]
+    assert smile["free"] and smile["camera"] and calls.count("грубо") == 1
+    s.aesthetic_set("smile", auto=False)  # доводка выключена — без пар камеры нет
+    assert s.aesthetics_info()["photos"]["smile"]["camera"] is None
+
+
+def test_mouth_only_on_open_smile():
+    from casedesigner.app.steps.aesthetics import AestheticsSteps
+
+    lips = {"outer": [[0, 0], [100, 0], [50, 30]], "inner": [[10, 10], [90, 10], [50, 20]]}
+    assert AestheticsSteps._mouth("smile", {"lips": lips}) is not None
+    assert AestheticsSteps._mouth("retracted", {"lips": lips}) is None  # с ретрактором губы растянуты
+    closed = {"outer": lips["outer"], "inner": [[10, 10], [90, 10], [50, 12]]}
+    assert AestheticsSteps._mouth("smile", {"lips": closed}) is None and AestheticsSteps._mouth("smile", {}) is None
+
+
 def test_horizon_midline_and_face_widths(files, tmp_path):
     s, cam, base = _paired(files, tmp_path)
     inc = s._upper_incisal(base)

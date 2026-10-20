@@ -74,6 +74,58 @@ def test_projection_occluders_and_refine():
     assert np.mean(list(r.iou_after.values())) > np.mean(list(r.iou_before.values())) + 0.1
 
 
+def _ellipse(cam, z_top, z_bottom, half_mm, n=40):
+    """Контур губ на фото (px): эллипс по ширине half_mm от середины и по высоте — от z_top до z_bottom (мм)."""
+    (ul, vt), (ur, vb) = cam.project(np.array([[half_mm, 0.0, z_top], [-half_mm, 0.0, z_bottom]]))
+    a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    return np.c_[(ul + ur) / 2 + abs(ur - ul) / 2 * np.cos(a), (vt + vb) / 2 + (vb - vt) / 2 * np.sin(a)]
+
+
+def _smile(cam, P, N, L):
+    """Фото с улыбкой: кожа, губы, тёмный рот, зубы — проекция камерой cam; верхняя губа закрывает шейки зубов."""
+    inner = _ellipse(cam, 6.0, -7.0, 24.0)
+    outer = _ellipse(cam, 10.0, -12.0, 30.0)
+    window = pt.teeth_window(cam, P, SIZE)
+    grid = pt.grid_for(cam, P, L, window, N)
+    view = pt.project(cam, P, L, window, grid, N, mouth=inner)
+    from skimage.draw import polygon2mask
+
+    img = np.empty((SIZE[1], SIZE[0], 3), np.uint8)
+    img[:] = (150, 100, 85)
+    img[polygon2mask(SIZE[::-1], outer[:, ::-1])] = (165, 55, 65)
+    img[polygon2mask(SIZE[::-1], inner[:, ::-1])] = (50, 15, 20)
+    teeth = np.kron(view.labels > 0, np.ones((grid, grid), bool))
+    x0, y0 = window[:2]
+    img[y0:y0 + teeth.shape[0], x0:x0 + teeth.shape[1]][teeth] = (235, 230, 220)
+    return img, inner, outer, view, window, grid
+
+
+def test_lips_hide_teeth_and_coarse_camera_without_pairs():
+    """Вырез губ: зубы вне него закрыты (−2), край по губе в уточнении не участвует; без пар точек — грубое
+    положение по силуэту зубов, затем уточнение по маскам."""
+    P, N, L = teeth()
+    true = camera()
+    img, inner, outer, view, window, grid = _smile(true, P, N, L)
+    seen = view.index[view.labels > 0]
+    assert (view.labels == -2).sum() > 0 and P[seen[seen >= 0], 2].max() < 6.5  # шейки — под губой
+    err = lambda c: float(np.median(np.linalg.norm(c.project(P) - true.project(P), axis=1)))  # noqa: E731
+    cam, score = pt.coarse_camera(img, P, L, np.eye(4), np.zeros(3), 1000.0, N, lips=outer, mouth=inner)
+    assert score > 0.6 and err(cam) < 12.0
+    masks = {n: (view.labels == n, 0.99) for n in ARCH if (view.labels == n).sum() >= pt.MIN_CELLS}
+    r = pt.refine(cam, P, L, masks, window, grid, anchor=np.zeros(3), distance_mm=1000.0, normals=N, mouth=inner)
+    assert err(r.camera) < 3.0 and np.mean(list(r.iou_after.values())) > 0.85  # премоляры — почти под губой
+
+
+def test_teeth_color_mask_and_mouth_box():
+    img = np.full((200, 300, 3), (150, 100, 85), np.uint8)
+    img[80:120, 100:200] = (235, 230, 220)
+    img[120:130, 100:200] = (165, 55, 65)
+    m = pt.teeth_color_mask(img, (50, 50, 250, 150))
+    assert m[35:65, 55:145].all() and not m[75:, :].any()
+    assert pt.mouth_box((300, 200), [[100, 90], [200, 90], [150, 130]]) == (85, 76, 215, 144)
+    assert pt.mouth_box((300, 200)) == (60, 90, 240, 170)
+
+
 MODELS = os.environ.get("CCD_MODELS", os.path.join(os.path.dirname(__file__), "..", "models"))
 
 
