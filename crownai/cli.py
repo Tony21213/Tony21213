@@ -316,6 +316,43 @@ def cmd_benchmark(a) -> int:
     return 0
 
 
+def cmd_scan_teeth(a) -> int:
+    """FDI numbers on an intraoral scan (DentalModelSeg): which teeth it finds."""
+    from .mesh import load_mesh
+    from .models import ensure_dentalmodelseg
+    from .scan_seg import DentalModelSeg
+
+    mesh = load_mesh(a.file)
+    folder = ensure_dentalmodelseg(a.models)
+    labels = DentalModelSeg(str(folder)).labels(mesh.vertices, mesh.faces, jaw=a.jaw)
+    numbers, counts = np.unique(labels, return_counts=True)
+    teeth = {int(t): int(c) for t, c in zip(numbers, counts) if t > 0 and c >= 200}
+    print(json.dumps({"teeth": sorted(teeth), "vertices_per_tooth": teeth,
+                      "gingiva_vertices": int((labels == 0).sum())}, ensure_ascii=False))
+    if a.out:
+        Path(a.out).write_text(json.dumps({"labels": labels.astype(int).tolist()}))
+    if a.picture:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        v = mesh.vertices - mesh.vertices.mean(axis=0)
+        axes = np.linalg.svd(v[::max(1, len(v) // 20000)], full_matrices=False)[2]  # view along the thinnest axis
+        xy = v @ axes[:2].T
+        fig, ax = plt.subplots(figsize=(8, 7))
+        ax.scatter(xy[labels == 0, 0], xy[labels == 0, 1], s=0.2, c="lightgray")
+        cmap = plt.get_cmap("tab20")
+        for i, t in enumerate(sorted(teeth)):
+            k = labels == t
+            ax.scatter(xy[k, 0], xy[k, 1], s=0.3, color=cmap(i % 20))
+            ax.text(*xy[k].mean(axis=0), str(t), fontsize=12, weight="bold")
+        ax.set_aspect("equal")
+        ax.set_axis_off()
+        plt.savefig(a.picture, dpi=70)
+    return 0
+
+
 def cmd_learn_webview(a) -> int:
     from .learning import CrownLearner
     from .webview import learn_from_webview
@@ -498,6 +535,14 @@ def main(argv=None) -> int:
     p.add_argument("--rules-profile", type=Path, help="lab profile (for the profile variant)")
     p.add_argument("--pictures", type=int, default=20, help="crowns to draw next to the technician's")
     p.set_defaults(func=cmd_benchmark)
+
+    p = sub.add_parser("scan-teeth", help="FDI tooth numbers on an intraoral scan (DentalModelSeg, CPU)")
+    p.add_argument("file", type=Path, help="STL / PLY / OBJ scan of one jaw")
+    p.add_argument("--jaw", choices=("upper", "lower"), help="the scan's jaw, if known (other jaw's numbers dropped)")
+    p.add_argument("--out", type=Path, help="write the per-vertex FDI labels as JSON")
+    p.add_argument("--picture", type=Path, help="draw the numbered scan (keep it local: patient anatomy)")
+    p.add_argument("--models", type=Path, help="models folder (default ~/.crownai/models, or CROWNAI_MODELS)")
+    p.set_defaults(func=cmd_scan_teeth)
 
     p = sub.add_parser("learn-webview", help="learn the technician's wax-ups from exocad webview HTML files")
     p.add_argument("files", type=Path, nargs="+")
