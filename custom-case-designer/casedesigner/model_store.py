@@ -279,8 +279,9 @@ def download_landmarks(folder: str, progress=None, cancel: threading.Event | Non
 # --- нейросети для фото и сканов (шаг «Эстетика») ---------------------------------------------
 # Готовые файлы с хранилищ их авторов: SAM 2.1 — архив ONNX (кодировщик и декодер), MediaPipe — файл .task,
 # MoGe-2 — ONNX авторов. Проверяется SHA-256 каждого файла, который ложится в папку моделей; размер — примерный,
-# для окна. GeoCalib и DentalModelSeg авторы выкладывают только для PyTorch: адреса нет (None) — наш перевод в ONNX
-# (tools/prepare_camera_models.py, tools/prepare_scan_seg.py) ляжет в релиз проекта, тогда — адрес и сумма.
+# для окна. GeoCalib и DentalModelSeg авторы выкладывают только для PyTorch — наш перевод в ONNX
+# (tools/prepare_camera_models.py, tools/prepare_scan_seg.py) лежит в релизе проекта PHOTO_RELEASE (с лицензиями).
+PHOTO_RELEASE = "https://github.com/Tony21213/Tony21213/releases/download/photo-v1/"
 PHOTO_TITLE = "Нейросети для фото"
 PHOTO_MODELS: dict[str, tuple[str, str | None, int, dict[str, str | None]]] = {
     # имя → (название, адрес, примерно байт, {файл в папке моделей: SHA-256})
@@ -296,10 +297,12 @@ PHOTO_MODELS: dict[str, tuple[str, str | None, int, dict[str, str | None]]] = {
     "moge": ("Расстояние до лица — MoGe-2 ViT-S (Microsoft, MIT)",
              "https://huggingface.co/Ruicheng/moge-2-vits-normal-onnx/resolve/main/model.onnx", 140_852_051,
              {"moge2-vits/model.onnx": "24eacb5dc7a2c54c7bc98f7de085ffbed79ad006ea5b664c2c2cdc02ff3a52f0"}),
-    "geocalib": ("Фокус и вертикаль снимка — GeoCalib (ETH Zürich; код Apache-2.0, веса CC BY 4.0)", None,
-                 117_050_816, {"geocalib/model.onnx": None}),
-    "dentalmodelseg": ("Зубы на скане без КТ — DentalModelSeg (UNC, Univ. of Michigan; Apache-2.0)", None,
-                       6_632_040, {"dentalmodelseg/model.onnx": None}),
+    "geocalib": ("Фокус и вертикаль снимка — GeoCalib (ETH Zürich; код Apache-2.0, веса CC BY 4.0)",
+                 PHOTO_RELEASE + "geocalib-pinhole.onnx", 117_050_816,
+                 {"geocalib/model.onnx": "daeb17ead2834283f8574a7c2280971dd2fd2b00c816f9ce35c76b43c514d5fc"}),
+    "dentalmodelseg": ("Зубы на скане без КТ — DentalModelSeg (UNC, Univ. of Michigan; Apache-2.0)",
+                       PHOTO_RELEASE + "dentalmodelseg-v3.0.onnx", 6_632_040,
+                       {"dentalmodelseg/model.onnx": "8c3aaf7c381c9c84a0f24aa9dad007c5da29f8869293d020d89a21bbd847e82c"}),
 }
 PHOTO_CONVERT = {"geocalib": "tools/prepare_camera_models.py geocalib", "dentalmodelseg": "tools/prepare_scan_seg.py"}
 
