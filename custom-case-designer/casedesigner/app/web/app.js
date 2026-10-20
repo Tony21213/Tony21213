@@ -122,6 +122,9 @@ document.addEventListener('click', async (e) => {
   action?.();
 });
 
+document.addEventListener('input', (e) => { // ползунки, что меняют вид сразу, пока их тянут
+  if (e.target.matches('[data-aes-opacity]')) aestheticChange(e); // «Эстетика»: прозрачность скана поверх фото
+});
 document.addEventListener('change', (e) => {
   const select = e.target.closest('[data-mount-plane]');
   if (select) selectMountPlane(select.value);
