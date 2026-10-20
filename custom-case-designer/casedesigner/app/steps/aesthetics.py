@@ -32,6 +32,9 @@ EYE_LINE_MAX_DEG = 10.0  # линия глаз круче — не горизо�
 MOUTH_OPEN_MIN = 0.08
 FREE_PASSES = 2  # без пар: доводок по маскам (вторая — от первой: грубое положение дальше, чем по парам)
 FREE_MIN_TEETH = 2  # без пар: совпало меньше зубов — совмещение не принимается (нужны пары)
+# Камера по самому снимку (photo_camera: GeoCalib, MoGe-2): фокус по зубам при расстоянии MoGe-2 и фокус GeoCalib
+# расходятся больше этой доли — расстояние под вопросом (кейс 7: 52 и 55 мм экв., 951 и 994 мм).
+LENS_WARN_SHARE = 0.25
 ON_SCAN_MM = 2.0  # точка пары — на скане верхней челюсти: не дальше от его вершин
 FIT_WARN_SHARE = 0.004  # ошибка совмещения больше этой доли диагонали фото — пары стоит проверить
 PREVIEW_PX = 1600  # длинная сторона снимка для окна
@@ -161,7 +164,8 @@ class AestheticsSteps:
         return {"path": path, "photo": photo, "pairs": [], "horizon_deg": 0.0, "midline_px": [], "face": {},
                 "upper_n": None, "version": self._photo_version, "_cam_key": None, "_cam": None, "_overlay": None,
                 "distance_mm": None, "auto": True, "override": None, "_auto": None, "_refined": None,
-                "lips": None, "horizon_source": None, "face_auto": False, "face_note": None, "_free": None}
+                "lips": None, "horizon_source": None, "face_auto": False, "face_note": None, "_free": None,
+                "lens": None}
 
     def aesthetic_remove_photo(self, kind: str) -> dict:
         self.photos.pop(_kind(kind), None)
@@ -224,10 +228,10 @@ class AestheticsSteps:
         return self.aesthetics_info()
 
     def aesthetic_set(self, kind: str, horizon_deg=None, midline_px=None, face=None, distance_mm=None,
-                      auto=None) -> dict:
-        """Горизонт (угол истинной горизонтали в кадре, градусы), точки средней линии лица, точки лица
-        ({"pupil_right": [x, y] | None, …} — меняются только названные), расстояние до камеры (мм; 0 — по
-        умолчанию) и доводка моделью (auto)."""
+                      auto=None, horizon_lens=None) -> dict:
+        """Горизонт (угол истинной горизонтали в кадре, градусы; horizon_lens — по вертикали снимка, GeoCalib),
+        точки средней линии лица, точки лица ({"pupil_right": [x, y] | None, …} — меняются только названные),
+        расстояние до камеры (мм; 0 — по снимку или по умолчанию) и доводка моделью (auto)."""
         from ... import aesthetic as ae
 
         item = self._photo(kind)
@@ -245,6 +249,11 @@ class AestheticsSteps:
             if not np.isfinite(h) or abs(h) > 45:
                 raise ValueError("горизонт: угол от −45° до 45°")
             item["horizon_deg"], item["horizon_source"] = round(h, 2), ("кадр" if h == 0 else "вручную")
+        if horizon_lens:
+            h = (item.get("lens") or {}).get("horizon_deg")
+            if h is None:
+                raise ValueError("вертикали снимка нет: нужна нейросеть GeoCalib (models/geocalib)")
+            item["horizon_deg"], item["horizon_source"] = round(float(h), 2), "вертикаль"
         if midline_px is not None:
             item["midline_px"] = [_xy(p, size, "средняя линия") for p in midline_px][:8]
         if face is not None:
@@ -286,9 +295,54 @@ class AestheticsSteps:
         return ae.MIN_PAIRS
 
     def _distance(self, item) -> float:
+        """Расстояние до резцов: заданное врачом; иначе — по снимку (MoGe-2); иначе — 1 м, как exocad."""
         from ... import aesthetic as ae
 
-        return float(item.get("distance_mm") or ae.DEFAULT_DISTANCE_MM)
+        if item.get("distance_mm"):
+            return float(item["distance_mm"])
+        lens = item.get("lens") or {}
+        return float(lens.get("distance_mm") or ae.DEFAULT_DISTANCE_MM)
+
+    @staticmethod
+    def _distance_source(item) -> str:
+        if item.get("distance_mm"):
+            return "вручную"
+        return "по снимку (MoGe-2)" if (item.get("lens") or {}).get("distance_mm") else "как exocad"
+
+    def _lens_ready(self) -> bool:
+        from ... import photo_camera as pc
+
+        folder = getattr(self, "models_dir", None)
+        return pc.geocalib_available(folder) or pc.moge_available(folder)
+
+    def _auto_lens(self, item: dict) -> None:
+        """Камера по самому снимку — один раз на фото (photo_camera): фокус и вертикаль (GeoCalib), расстояние до
+        рта в мм (MoGe-2; рот — по губам MediaPipe, без них — середина кадра)."""
+        from ... import aesthetic as ae
+        from ... import photo_camera as pc
+
+        if item.get("lens") is not None or not self._lens_ready():
+            return
+        if item.get("lips") is None and not item.get("face_note") and self._face_model():
+            self._auto_face(item)
+        lips = (item.get("lips") or {}).get("outer")
+        point = np.asarray(lips, float).mean(0) if lips else None
+        try:
+            lens = pc.estimate(item["photo"].image, self.models_dir, point)
+        except Exception as e:  # noqa: BLE001 — сбой нейросети (onnxruntime) не должен ронять окно
+            item["lens"] = {"error": f"{type(e).__name__}: {e}"}
+            return
+        d = lens.distance_mm
+        lo, hi = ae.DISTANCE_RANGE_MM
+        r1 = lambda x: None if x is None else round(float(x), 1)  # noqa: E731
+        item["lens"] = {"focal_px": r1(lens.focal_px), "focal_35mm": r1(lens.focal_35mm),
+                        "focal_sigma_px": r1(lens.focal_sigma_px), "roll_deg": r1(lens.roll_deg),
+                        "pitch_deg": r1(lens.pitch_deg),
+                        "horizon_deg": None if lens.roll_deg is None else round(-float(lens.roll_deg), 2),
+                        "distance_mm": round(d) if d and lo <= d <= hi else None,
+                        "distance_raw_mm": None if d is None else round(d),
+                        "point_px": None if point is None else [round(float(c), 1) for c in point],
+                        "notes": list(lens.notes)}
 
     def _aes_teeth(self, compute: bool = True):
         """Зубы верхнего скана для доводки: номера вершин (сегментация КТ), нормали — кэш; None — номеров нет
@@ -517,7 +571,10 @@ class AestheticsSteps:
         return lock
 
     def _auto_pending(self, kind: str, item: dict) -> bool:
-        """Доводку для этих пар (или совмещение без пар) ещё не считали — окно запустит фоновую задачу."""
+        """Камеру по снимку, доводку для этих пар (или совмещение без пар) ещё не считали — окно запустит фоновую
+        задачу."""
+        if item.get("lens") is None and self._lens_ready():
+            return True
         if not item.get("auto") or item.get("override") is not None or self._sam() is None:
             return False
         if self._pairs_valid(item) and len(item["pairs"]) >= self._need_pairs(item):
@@ -531,6 +588,7 @@ class AestheticsSteps:
         """Фоновая задача окна: доводка нейросетью для фото, где она ещё не посчитана."""
         for k in ([kind] if kind else list(PHOTO_KINDS)):
             if self.photos.get(k) is not None:
+                self._auto_lens(self.photos[k])  # сначала расстояние по снимку: от него — камера
                 self._camera(k, refine=True)
         return self.aesthetics_info()
 
@@ -686,6 +744,8 @@ class AestheticsSteps:
                     "notes": list(item["photo"].notes), "version": item["version"], "pairs": pairs,
                     "need": self._need_pairs(item), "fit_error": why, "camera": None,
                     "distance_mm": self._distance(item), "distance_set": item.get("distance_mm") is not None,
+                    "distance_source": self._distance_source(item), "lens": item.get("lens"),
+                    "lens_ready": self._lens_ready(),
                     "auto": bool(item.get("auto", True)), "auto_info": item.get("_auto"), "auto_pending": False,
                     "auto_ready": self._sam() is not None,
                     "horizon_deg": item["horizon_deg"], "midline_px": item["midline_px"], "face": item["face"],
@@ -710,6 +770,11 @@ class AestheticsSteps:
                                   "check": residual > FIT_WARN_SHARE * diag and not item.get("override"),
                                   "K": cam.K.round(6).tolist(), "R": cam.R.round(9).tolist(), "t": cam.t.round(6).tolist(),
                                   "anchor": anchor.round(4).tolist(), "fixed": item.get("override") is not None}
+                lens_f = (item.get("lens") or {}).get("focal_px")
+                if lens_f:  # фокус по зубам при этом расстоянии против фокуса GeoCalib
+                    share = float(cam.K[0, 0]) / float(lens_f) - 1.0
+                    info["camera"]["lens_share"] = round(share, 3)
+                    info["camera"]["lens_check"] = abs(share) > LENS_WARN_SHARE
                 info["overlay"] = self._overlay(kind, cam)
                 try:
                     base = self._base_frame()
@@ -765,7 +830,8 @@ class AestheticsSteps:
                        "horizon_deg": item["horizon_deg"], "midline_px": item["midline_px"], "face": item["face"],
                        "distance_mm": item.get("distance_mm"), "auto": bool(item.get("auto", True)),
                        "override": item.get("override"), "lips": item.get("lips"),
-                       "horizon_source": item.get("horizon_source"), "face_auto": bool(item.get("face_auto"))}
+                       "horizon_source": item.get("horizon_source"), "face_auto": bool(item.get("face_auto")),
+                       "lens": item.get("lens")}
                 for kind, item in self.photos.items()}
 
     def _load_photos_meta(self, meta: dict | None):
@@ -792,7 +858,7 @@ class AestheticsSteps:
                         distance_mm=saved.get("distance_mm"), auto=bool(saved.get("auto", True)),
                         override=saved.get("override"), lips=saved.get("lips"),
                         horizon_source=saved.get("horizon_source") or ("вручную" if saved.get("horizon_deg") else None),
-                        face_auto=bool(saved.get("face_auto")))
+                        face_auto=bool(saved.get("face_auto")), lens=saved.get("lens"))
             self.photos[kind] = item
 
 
@@ -819,7 +885,7 @@ def route(h, s, p, method, q):
         return h.json(s.aesthetic_unpair(b.get("kind"), b.get("index")))
     if p == ["aesthetics", "set"]:
         return h.json(s.aesthetic_set(b.get("kind"), b.get("horizon_deg"), b.get("midline_px"), b.get("face"),
-                                      b.get("distance_mm"), b.get("auto")))
+                                      b.get("distance_mm"), b.get("auto"), b.get("horizon_lens")))
     if p == ["aesthetics", "adjust"]:  # ручная поправка поверх фото (ПКМ — поворот скана, Shift — сдвиг и масштаб)
         return h.json(s.aesthetic_adjust(b.get("kind"), b.get("manual") or {}))
     if p == ["aesthetics", "face"]:  # «Найти лицо» — MediaPipe: точки лица, губы, горизонт по линии глаз

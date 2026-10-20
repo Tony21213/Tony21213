@@ -511,6 +511,8 @@ export async function aestheticAction(action, arg) {
   if (action === 'midreset') return send('aesthetics/set', { midline_px: [] });
   if (action === 'facereset') return send('aesthetics/set', { face: Object.fromEntries(FACE_STEPS.map(([k]) => [k, null])) });
   if (action === 'face') return send('aesthetics/face', {});
+  if (action === 'horizonlens') return send('aesthetics/set', { horizon_lens: true });
+  if (action === 'distlens') return send('aesthetics/set', { distance_mm: 0 });
   if (action === 'models') {
     return busy('Загрузка нейросетей для фото', async (progress) => {
       state.aesthetics = await run('aesthetics/models/download', {}, progress);
@@ -535,9 +537,9 @@ function modelsHtml() {
   if (!m || m.ready) return m && !m.mediapipe ? '<p class="muted small">Пакет mediapipe не установлен — точки лица ставятся вручную.</p>' : '';
   const missing = m.models.filter((x) => !x.installed);
   return `<div class="card"><div class="card-head">${icons.eye}<h3>Нейросети для фото</h3></div>
-    ${missing.map((x) => `<p class="muted small" style="margin:0 0 4px">${hide(x.title)} — около ${mb(x.approx_bytes)} МБ</p>`).join('')}
-    <button class="btn wide" data-aes="models">${icons.plus}Скачать (около ${mb(m.left_bytes)} МБ)</button>
-    <p class="muted small">Совмещение фото без пар точек, доводка по зубам и поиск лица. С хранилищ авторов (Apache-2.0), каждый файл проверяется по SHA-256.</p></div>`;
+    ${missing.map((x) => `<p class="muted small" style="margin:0 0 4px">${hide(x.title)} — ${x.downloadable ? `около ${mb(x.approx_bytes)} МБ` : `переводом: ${hide(x.convert || '')}`}</p>`).join('')}
+    ${m.downloadable ? `<button class="btn wide" data-aes="models">${icons.plus}Скачать (около ${mb(m.left_bytes)} МБ)</button>` : ''}
+    <p class="muted small">Совмещение фото без пар точек, доводка по зубам, поиск лица, расстояние до камеры по снимку. С хранилищ авторов, каждый файл проверяется по SHA-256.</p></div>`;
 }
 
 function cameraHtml(p) {
@@ -566,13 +568,29 @@ function cameraHtml(p) {
     ${p.mouth ? '<p class="muted small">Зубы — в вырезе губ (контур губ MediaPipe): закрытое губами в доводке не участвует.</p>' : ''}`;
 }
 
+function lensHtml(p) {
+  const l = p.lens;
+  if (!l) return p.lens_ready && p.auto_pending ? '<p class="muted small">Камера по снимку… (GeoCalib, MoGe-2)</p>' : '';
+  if (l.error) return `<p class="muted small">Камера по снимку не определилась: ${hide(l.error)}.</p>`;
+  const parts = [];
+  if (l.focal_35mm) parts.push(`фокус ${fmt(l.focal_35mm, 0)} мм экв. (GeoCalib)`);
+  if (l.distance_raw_mm) parts.push(`до рта ${fmt(l.distance_raw_mm, 0)} мм (MoGe-2)${l.distance_mm ? '' : ' — вне допустимого, не взято'}`);
+  const c = p.camera;
+  const check = c?.lens_check ? `<div class="warning warn">${icons.warn}<span>Фокус по зубам (${fmt(c.focal_35mm, 0)} мм экв.) и по снимку (${fmt(l.focal_35mm, 0)}) расходятся на ${fmt(Math.abs(c.lens_share) * 100, 0)} % — проверьте расстояние до камеры.</span></div>` : '';
+  const horizon = l.horizon_deg !== null && l.horizon_deg !== undefined
+    ? `<button class="btn ghost wide sm" data-aes="horizonlens" title="Истинная горизонталь — по вертикали снимка (GeoCalib: крен камеры ${fmt(l.roll_deg, 1)}°)">Горизонт по вертикали снимка: ${fmt(l.horizon_deg, 1)}°</button>` : '';
+  return `${parts.length ? `<p class="muted small">Камера по снимку: ${parts.join(', ')}.</p>` : ''}${check}${horizon}`;
+}
+
 function alignHtml(p) {
   const opacity = p.camera ? `<div class="aes-row"><span>Скан поверх фото</span><b>${Math.round(aes.scanOpacity * 100)} %</b></div>
     <input type="range" class="rehab-range" min="0" max="100" step="5" value="${Math.round(aes.scanOpacity * 100)}" data-aes-opacity>
     <button class="btn ghost wide sm" data-aes="natural">${aes.scanNatural ? 'Скан — голубым (виднее, легло ли)' : 'Скан — в цвете со сканера'}</button>` : '';
   return `${opacity}<div class="label">Совмещение</div>
-    <div class="aes-row"><span>Расстояние до камеры</span><b>${fmt(p.distance_mm, 0)} мм${p.distance_set ? '' : ' (как exocad)'}</b></div>
+    <div class="aes-row"><span>Расстояние до камеры</span><b>${fmt(p.distance_mm, 0)} мм (${hide(p.distance_source || 'как exocad')})</b></div>
     <input type="range" class="rehab-range" min="300" max="3000" step="50" value="${p.distance_mm}" data-aes-distance>
+    ${p.distance_set && p.lens?.distance_mm ? '<button class="btn ghost wide sm" data-aes="distlens">Расстояние — по снимку</button>' : ''}
+    ${lensHtml(p)}
     <label class="joint-toggle ${p.auto_ready ? '' : 'disabled'}"><input type="checkbox" data-aes-auto ${p.auto ? 'checked' : ''} ${p.auto_ready ? '' : 'disabled'}>
       <span>Доводка нейросетью по зубам</span><small>${p.auto_ready ? 'SAM 2.1: контуры каждого зуба' : 'нет модели SAM 2.1 (models/sam2.1-tiny)'}</small></label>
     ${p.camera ? `<div class="row" style="gap:4px;margin-top:4px">
@@ -637,7 +655,7 @@ export function renderAesthetics() {
       ${pairs ? `<div class="row" style="flex-wrap:wrap;gap:4px;margin-top:6px">${pairs}</div>` : ''}
       ${cameraHtml(p)}${alignHtml(p)}
       ${p.camera ? `<button class="btn ghost wide sm" data-aes="overlay">${aes.overlay ? 'Скрыть' : 'Показать'} контуры зубов</button>` : ''}
-      <div class="label">Горизонт: ${fmt(p.horizon_deg, 1)}°${{ 'глаза': ' — по линии глаз', 'кадр': ' — по кадру', 'вручную': ' — вручную' }[p.horizon_source] || ''}</div>
+      <div class="label">Горизонт: ${fmt(p.horizon_deg, 1)}°${{ 'глаза': ' — по линии глаз', 'кадр': ' — по кадру', 'вручную': ' — вручную', 'вертикаль': ' — по вертикали снимка' }[p.horizon_source] || ''}</div>
       <div class="row"><button class="btn ghost" data-aes="horizon" data-arg="-0.5">−0,5°</button>
         <button class="btn ghost" data-aes="horizon" data-arg="0.5">+0,5°</button>
         ${mode('horizon', 'По двум точкам', 'Отмена')}

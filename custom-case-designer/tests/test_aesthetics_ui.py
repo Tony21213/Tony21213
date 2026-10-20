@@ -164,6 +164,43 @@ def test_auto_alignment_without_pairs(files, tmp_path, monkeypatch):
     assert s.aesthetics_info()["photos"]["smile"]["camera"] is None
 
 
+def test_camera_from_photo_sets_distance_and_horizon(files, tmp_path, monkeypatch):
+    """Камера по снимку (GeoCalib, MoGe-2) — фоновой задачей, один раз: расстояние до рта — по снимку, пока врач
+    не задал своё; горизонт — по вертикали снимка по кнопке; фокус по зубам сверяется с фокусом снимка; камера по
+    снимку хранится в кейсе (нейросети подменены)."""
+    from casedesigner import photo_camera as pc
+
+    s = _session(files, tmp_path)
+    s.aesthetic_add_photo("smile", str(files / "smile.jpg"))
+    calls = []
+    monkeypatch.setattr(s, "_lens_ready", lambda: True)
+    monkeypatch.setattr(pc, "estimate", lambda image, models, point=None: calls.append(point) or pc.Lens(
+        size=(W, H), focal_px=2400.0, roll_deg=-3.0, pitch_deg=1.0, distance_mm=620.0))
+    p = s.aesthetics_info()["photos"]["smile"]
+    assert p["auto_pending"] and p["lens"] is None and p["distance_source"] == "как exocad"
+    p = s.aesthetic_auto("smile")["photos"]["smile"]
+    assert len(calls) == 1 and p["distance_mm"] == 620 and p["distance_source"] == "по снимку (MoGe-2)"
+    assert not p["auto_pending"] and p["lens"]["horizon_deg"] == 3.0 and p["lens"]["focal_35mm"] > 0
+    s.aesthetic_auto("smile")
+    assert len(calls) == 1  # посчитано — не заново
+    p = s.aesthetic_set("smile", horizon_lens=True)["photos"]["smile"]
+    assert p["horizon_deg"] == 3.0 and p["horizon_source"] == "вертикаль"
+    p = s.aesthetic_set("smile", distance_mm=300)["photos"]["smile"]
+    assert p["distance_mm"] == 300 and p["distance_source"] == "вручную"
+    assert s.aesthetic_set("smile", distance_mm=0)["photos"]["smile"]["distance_mm"] == 620
+    cam, _base = _camera(s)  # сцена — в 300 мм, фокус 2400 px: при 620 мм фокус по зубам вдвое больше снимочного
+    for pnt in _front_points(s, cam):
+        s.aesthetic_pair("smile", cam.project(pnt[None])[0], pnt)
+    c = s.aesthetics_info()["photos"]["smile"]["camera"]
+    assert c["lens_check"] and c["lens_share"] > 0.5
+    s.aesthetic_set("smile", distance_mm=300)
+    assert not s.aesthetics_info()["photos"]["smile"]["camera"]["lens_check"]
+    path = s.save_case(str(tmp_path / "case.ccdcase"))["path"]
+    other = Session(memory_path=str(tmp_path / "memory2.jsonl"))
+    other.open_case(path)
+    assert other.aesthetics_info()["photos"]["smile"]["lens"]["distance_mm"] == 620
+
+
 def test_mouth_only_on_open_smile():
     from casedesigner.app.steps.aesthetics import AestheticsSteps
 
