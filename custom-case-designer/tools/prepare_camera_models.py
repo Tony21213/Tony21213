@@ -28,9 +28,23 @@ def _check(path, run_ref, feeds):
 def geocalib(weights, src, out):
     import torch
 
+    import numpy as np
+
     sys.path.insert(0, src)
+    from geocalib import modules
     from geocalib.geocalib import GeoCalib
 
+    # Начальный базис NMF у авторов — torch.rand при каждом запуске (итог «плавает» в доли градуса); в ONNX —
+    # один постоянный образец того же распределения (seed 0): итог воспроизводим.
+    fixed = {}
+
+    def bases(self, B, S, D, R, device="cpu"):
+        key = (int(B) * int(S), int(D), int(R))  # при трассировке размеры — тензоры
+        if key not in fixed:
+            fixed[key] = torch.from_numpy(np.random.default_rng(0).random(key).astype(np.float32))
+        return torch.nn.functional.normalize(fixed[key].to(device), dim=1)
+
+    modules.NMF2D._build_bases = bases
     model = GeoCalib()
     model.flexible_load(torch.load(weights, map_location="cpu")["model"])
     model.eval()

@@ -297,7 +297,7 @@ PHOTO_MODELS: dict[str, tuple[str, str | None, int, dict[str, str | None]]] = {
              "https://huggingface.co/Ruicheng/moge-2-vits-normal-onnx/resolve/main/model.onnx", 140_852_051,
              {"moge2-vits/model.onnx": "24eacb5dc7a2c54c7bc98f7de085ffbed79ad006ea5b664c2c2cdc02ff3a52f0"}),
     "geocalib": ("Фокус и вертикаль снимка — GeoCalib (ETH Zürich; код Apache-2.0, веса CC BY 4.0)", None,
-                 116_238_176, {"geocalib/model.onnx": None}),
+                 117_050_816, {"geocalib/model.onnx": None}),
     "dentalmodelseg": ("Зубы на скане без КТ — DentalModelSeg (UNC, Univ. of Michigan; Apache-2.0)", None,
                        6_632_040, {"dentalmodelseg/model.onnx": None}),
 }
