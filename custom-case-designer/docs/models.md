@@ -138,7 +138,7 @@
 
 | Модель | Что делает | Код | Веса | Данные обучения | Итог |
 |---|---|---|---|---|---|
-| **DentalModelSeg / CrownSegmentation** (DCBIA-OrthoLab, UNC + Univ. of Michigan) | зубы с номерами (Universal или FDI) и десна, верхняя и нижняя челюсть | Apache-2.0 (https://github.com/DCBIA-OrthoLab/SlicerDentalModelSeg) | релиз https://github.com/DCBIA-OrthoLab/Fly-by-CNN/releases/tag/3.0 — **лицензия не указана** (в репозитории Fly-by-CNN нет файла LICENSE) | данные челленджа MICCAI 3DTeethSeg | лучший кандидат; нужен письменный ответ авторов о лицензии весов |
+| **DentalModelSeg / CrownSegmentation** (DCBIA-OrthoLab, UNC + Univ. of Michigan) | зубы с номерами (Universal или FDI) и десна, верхняя и нижняя челюсть | Apache-2.0 (https://github.com/DCBIA-OrthoLab/SlicerDentalModelSeg) | релиз https://github.com/DCBIA-OrthoLab/Fly-by-CNN/releases/tag/3.0 — **лицензия не указана** (в репозитории Fly-by-CNN нет файла LICENSE) | данные челленджа MICCAI 3DTeethSeg | лучший кандидат; 20.10.2026: те же веса — в релизе `v3.0` самого SlicerDentalModelSeg (Apache-2.0), см. ниже |
 | **MeshSegNet** (Lian C., Wu T.-H.) | 14 зубов и десна | MIT (https://github.com/Tai-Hsien/MeshSegNet) | в репозитории, под той же MIT | небольшой собственный набор авторов | лицензия чистая, но модель слабая для чужих сканеров |
 | **TSegFormer** (Xiong H. и др., MICCAI 2023) | зубы и десна | MIT (https://github.com/huiminxiong/TSegFormer) | публичных весов не нашёл | — | только код |
 | **ToothGroupNetwork** (победитель 3DTeethSeg'22) | зубы с номерами и десна | лицензии нет (https://github.com/limhoyeon/ToothGroupNetwork) | Google Drive, без лицензии | 3DTeethSeg | без разрешения авторов использовать нельзя |
@@ -164,6 +164,28 @@ Hugging Face и Google Drive закрыты — их качаем в локал�
 | **SegmentAnyTooth** (Nguyen K. D.) | зубы на внутриротовых фото | код MIT, веса некоммерческие по подписанному соглашению | по почте от автора | низкий приоритет |
 | **ASO-IOS** (DCBIA-OrthoLab) | автоматическая ориентация сканов | Apache-2.0 | GitHub | пока не нужна: ориентацию даёт КТ |
 | **AMASSS, ALI-IOS, ASO-CBCT, AReg** (DCBIA-OrthoLab), **ToothGroupNetwork**, **toothwear** | сегментация КЛКТ, точки на сканах, ориентация и совмещение, стёртость | в исходных репозиториях нет файла лицензии | GitHub, Google Drive | не берём без разрешения авторов, как и OdentAI |
+
+### Ещё найдено 20.10.2026 (фото, камера, сканы, правка сегментации)
+
+Уже подключены SAM 2.1 Hiera-Tiny и MediaPipe Face Landmarker (шаг «Эстетика»). Проект некоммерческий —
+некоммерческие веса подходят; соглашения и письма авторам — только владелец.
+
+| Модель | Для чего у нас | Лицензия | Где веса | Итог |
+|---|---|---|---|---|
+| **DentalModelSeg v3.0** (DCBIA-OrthoLab, 2-е место 3DTeethSeg'22) | зубы с номерами FDI и десна на скане без КТ | Apache-2.0 (репозиторий SlicerDentalModelSeg, веса — в его релизе) | GitHub, релиз `v3.0`, `07-21-22_val-loss0.169.pth`, 6,6 МБ | **первый кандидат** для кейсов без КТ: снимки скана с 12 сторон → 2D U-Net (MONAI) → номера вершин; рендер — свой (z-буфер как в `photo_teeth`), сеть — в ONNX |
+| **GeoCalib** (Veicht A. и др., ECCV 2024) | фокус и вертикаль (крен, наклон) по одному фото — перспектива и расстояние до камеры, истинная горизонталь без линии глаз | код Apache-2.0, веса CC BY 4.0 | скачиваются при первом запуске (PyTorch) | проверить на фото кейсов: точность фокуса на портрете вблизи |
+| **MoGe-2 ViT-S** (Microsoft, 35 млн параметров) | поле зрения и карта точек в метрах по одному фото — расстояние до лица в мм | MIT (код и веса) | Hugging Face `Ruicheng/moge-2-vits-normal`; есть ONNX (docs/onnx.md) | вместе с GeoCalib — замена «1 м по умолчанию» |
+| **Face parsing SegFormer** (jonathandinu, ONNX — Xenova) | рот между губами, верхняя и нижняя губа — маской, точнее контура MediaPipe (вырез губ на фото с улыбкой) | обучена на CelebAMask-HQ — некоммерческое использование | Hugging Face, ONNX ~89 МБ (квантованная) | если контур MediaPipe на фото с улыбкой окажется грубым |
+| **MediaPipe — матрица положения головы** | поворот головы к камере (анфас ли фото, естественное положение головы) | Apache-2.0 | уже есть (`face_landmarker.task`, `output_facial_transformation_matrixes`) | без скачивания; проверка фото «голова прямо» |
+| **RoMa / Tiny RoMa** (Edstedt J. и др., CVPR 2024) | плотные совпадения «фото — снимок цветного скана» — пары точек сами | MIT (DINOv2 — Apache-2.0) | `pip install romatch`, веса — при первом запуске | тяжёлая на процессоре; для цветных сканов, если совмещение без пар не ляжет |
+| **Depth Anything V2 Small** | относительная глубина по фото | Apache-2.0 (Base/Large — CC BY-NC) | GitHub/Hugging Face, ONNX — от сообщества | слабее MoGe для наших задач |
+| **nnInteractive** (MIC-DKFZ) | правка сегментации КТ щелчками и рамкой в 3D (мыщелок и ямка, недосегментированные зубы, импланты) | код Apache-2.0, веса CC BY-NC-SA 4.0 | Hugging Face `MIC-DKFZ/nnInteractive` | нужна видеокарта ~10 ГБ; на процессоре — медленно |
+| **MedSAM2** (Wang lab, на основе SAM 2.1) | сегментация КТ по рамке на срезе с переносом на соседние | CC BY-SA 4.0, «для исследований и обучения» | Hugging Face `wanglab/MedSAM2` | если архитектура — Hiera-Tiny, пойдёт в наш ONNX как SAM 2.1; проверить |
+| **SegmentAnyTooth** (Nguyen K. D.) | зубы с номерами на фото с ретрактором (вид спереди: DSC 0,92) | код MIT, веса некоммерческие по подписанному соглашению; YOLO — пакет ultralytics (AGPL-3.0) | по почте от автора | только по решению владельца (соглашение подписывает он) |
+
+Не нашлось открытых весов для сегментации ВНЧС (мыщелок, ямка) на КЛКТ — статьи с nnU-Net есть, веса не
+выложены. Набор **IOP-Compass** (5000 внутриротовых фото с масками зубов FDI) — CC BY-NC-SA 4.0, по регистрации, без
+обученной модели: на нём можно дообучить свою.
 
 Для исправления прикуса и генерации движений открытых весов нет: Bite-Finder
 закрыт, открытые работы (Bits2Bites) только классифицируют прикус. Эти пункты
