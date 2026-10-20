@@ -276,11 +276,13 @@ def download_landmarks(folder: str, progress=None, cancel: threading.Event | Non
     return landmarks_status(folder)
 
 
-# --- нейросети для фото (шаг «Эстетика») -------------------------------------------------------
-# Готовые файлы с хранилищ их авторов (Apache-2.0): SAM 2.1 — архив ONNX (кодировщик и декодер), MediaPipe — файл
-# .task. Проверяется SHA-256 каждого файла, который ложится в папку моделей; размер — примерный, для окна.
+# --- нейросети для фото и сканов (шаг «Эстетика») ---------------------------------------------
+# Готовые файлы с хранилищ их авторов: SAM 2.1 — архив ONNX (кодировщик и декодер), MediaPipe — файл .task,
+# MoGe-2 — ONNX авторов. Проверяется SHA-256 каждого файла, который ложится в папку моделей; размер — примерный,
+# для окна. GeoCalib и DentalModelSeg авторы выкладывают только для PyTorch: адреса нет (None) — наш перевод в ONNX
+# (tools/prepare_camera_models.py, tools/prepare_scan_seg.py) ляжет в релиз проекта, тогда — адрес и сумма.
 PHOTO_TITLE = "Нейросети для фото"
-PHOTO_MODELS: dict[str, tuple[str, str, int, dict[str, str]]] = {
+PHOTO_MODELS: dict[str, tuple[str, str | None, int, dict[str, str | None]]] = {
     # имя → (название, адрес, примерно байт, {файл в папке моделей: SHA-256})
     "sam": ("Контуры зубов — SAM 2.1 Hiera-Tiny (Meta, Apache-2.0)",
             "https://huggingface.co/vietanhdev/segment-anything-2.1-onnx-models/resolve/main/"
@@ -291,17 +293,27 @@ PHOTO_MODELS: dict[str, tuple[str, str, int, dict[str, str]]] = {
              "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/"
              "face_landmarker.task", 3_800_000,
              {"face_landmarker.task": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"}),
+    "moge": ("Расстояние до лица — MoGe-2 ViT-S (Microsoft, MIT)",
+             "https://huggingface.co/Ruicheng/moge-2-vits-normal-onnx/resolve/main/model.onnx", 140_852_051,
+             {"moge2-vits/model.onnx": "24eacb5dc7a2c54c7bc98f7de085ffbed79ad006ea5b664c2c2cdc02ff3a52f0"}),
+    "geocalib": ("Фокус и вертикаль снимка — GeoCalib (ETH Zürich; код Apache-2.0, веса CC BY 4.0)", None,
+                 116_238_176, {"geocalib/model.onnx": None}),
+    "dentalmodelseg": ("Зубы на скане без КТ — DentalModelSeg (UNC, Univ. of Michigan; Apache-2.0)", None,
+                       6_632_040, {"dentalmodelseg/model.onnx": None}),
 }
+PHOTO_CONVERT = {"geocalib": "tools/prepare_camera_models.py geocalib", "dentalmodelseg": "tools/prepare_scan_seg.py"}
 
 
 def photo_status(folder: str | None) -> dict:
     """Скачаны ли нейросети для фото и сколько примерно осталось."""
     items = []
-    for name, (title, _url, approx, files) in PHOTO_MODELS.items():
+    for name, (title, url, approx, files) in PHOTO_MODELS.items():
         ok = bool(folder) and all(os.path.isfile(os.path.join(folder, rel)) for rel in files)
-        items.append({"name": name, "title": title, "installed": ok, "approx_bytes": approx})
+        items.append({"name": name, "title": title, "installed": ok, "approx_bytes": approx,
+                      "downloadable": url is not None, "convert": PHOTO_CONVERT.get(name)})
     return {"folder": folder, "ready": all(i["installed"] for i in items), "models": items, "title": PHOTO_TITLE,
-            "left_bytes": sum(i["approx_bytes"] for i in items if not i["installed"])}
+            "left_bytes": sum(i["approx_bytes"] for i in items if not i["installed"] and i["downloadable"]),
+            "downloadable": any(not i["installed"] and i["downloadable"] for i in items)}
 
 
 def _get(url: str, part: str, on_bytes, cancel) -> None:
@@ -355,7 +367,7 @@ def download_photo(folder: str, progress=None, cancel: threading.Event | None = 
     import tempfile
     import zipfile
 
-    todo = [n for n, i in zip(PHOTO_MODELS, photo_status(folder)["models"]) if not i["installed"]]
+    todo = [n for n, i in zip(PHOTO_MODELS, photo_status(folder)["models"]) if not i["installed"] and i["downloadable"]]
     plan = sum(PHOTO_MODELS[n][2] for n in todo) or 1  # примерно байт всего
     done, planned, started = 0, 0, time.monotonic()  # скачано байт; примерно байт в уже скачанных моделях
     for index, name in enumerate(todo, 1):
