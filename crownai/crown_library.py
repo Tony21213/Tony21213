@@ -44,7 +44,7 @@ GRID_R = 7.0  # height map half-size (mm)
 GRID_RES = 0.1
 N_THETA = 180
 Z_STEP = 0.2
-LIBRARY_VERSION = 1
+LIBRARY_VERSION = 2  # 2: case context (neighbours' relief and level, room to the antagonist)
 
 
 @dataclass
@@ -61,6 +61,7 @@ class LibraryCrown:
     cerv_md: float = 0.0  # crown size at the cervical line (what the finish line fixes)
     cerv_bl: float = 0.0
     offset: tuple[float, float] = (0.0, 0.0)  # where the crown stood relative to its case's axis (u, w)
+    context: dict = field(default_factory=dict)  # its case's surroundings (case_context)
 
     def save(self, folder: Path) -> None:
         np.savez_compressed(folder / f"{self.id.replace('/', '_')}.npz", top=self.top.astype(np.float16),
@@ -71,7 +72,66 @@ class LibraryCrown:
         d = np.load(folder / entry["file"])
         return cls(entry["id"], entry["key"], entry["tooth"], entry["md"], entry["bl"], entry["height"],
                    d["top"].astype(float), d["outline"].astype(float), float(d["z0"]),
-                   entry.get("cerv_md", 0.0), entry.get("cerv_bl", 0.0), tuple(entry.get("offset", (0.0, 0.0))))
+                   entry.get("cerv_md", 0.0), entry.get("cerv_bl", 0.0), tuple(entry.get("offset", (0.0, 0.0))),
+                   entry.get("context", {}))
+
+
+def case_context(jaw: Mesh | None, antagonist: Mesh | None, frame, md: float, fdi: int) -> dict:
+    """What a technician sees around the site, as a few numbers (mm, tooth frame).
+
+    * ``mesial_level`` / ``distal_level``: how high the neighbouring crowns stand
+      above the finish line;
+    * ``mesial_relief`` / ``distal_relief``: the relief of their occlusal surface -
+      sharp young cusps or worn flat ones (technicians match it);
+    * ``room``: distance from the finish line up to the antagonist over the site.
+
+    ``frame``: origin at the margin centre, z occlusal, x mesial.
+    """
+    from .anatomy_model import WHEELER
+
+    ctx = {}
+    arch = "upper" if fdi // 10 in (1, 2, 5, 6) else "lower"
+    pos = fdi % 10
+    g = np.arange(-2.5, 2.51, 0.25)
+    if jaw is not None:
+        top = frame.to_local(jaw.vertices)[:, 2].max() + 5.0
+        for side, sign, npos in (("mesial", 1.0, max(pos - 1, 1)), ("distal", -1.0, min(pos + 1, 7))):
+            c = sign * (md / 2 + WHEELER[arch][npos][1] / 2)
+            X, Y = np.meshgrid(c + g, g, indexing="ij")
+            xy = np.column_stack([X.ravel(), Y.ravel()])
+            t = raycast(frame.to_world(np.column_stack([xy, np.full(len(xy), top)])),
+                        np.broadcast_to(-frame.z, (len(xy), 3)), jaw)
+            ok = np.isfinite(t)
+            if ok.mean() < 0.6:
+                continue
+            z = top - t[ok]
+            level = float(np.percentile(z, 95))
+            if level < 2.0:  # gingiva only: no tooth there
+                continue
+            ctx[f"{side}_level"] = round(level, 3)
+            ctx[f"{side}_relief"] = round(float(np.percentile(z, 95) - np.percentile(z, 20)), 3)
+    if antagonist is not None:
+        X, Y = np.meshgrid(g * md / 6, g * 0.6, indexing="ij")
+        xy = np.column_stack([X.ravel(), Y.ravel()])
+        low = -30.0
+        t = raycast(frame.to_world(np.column_stack([xy, np.full(len(xy), low)])),
+                    np.broadcast_to(frame.z, (len(xy), 3)), antagonist)
+        if np.isfinite(t).mean() > 0.5:
+            ctx["room"] = round(float(np.median(low + t[np.isfinite(t)])), 3)
+    return ctx
+
+
+def context_distance(a: dict, b: dict) -> float:
+    """How different two cases' surroundings are (0 = alike; missing values are skipped)."""
+    c = 0.0
+    for side in ("mesial", "distal"):
+        if f"{side}_relief" in a and f"{side}_relief" in b:
+            c += 0.8 * abs(a[f"{side}_relief"] - b[f"{side}_relief"])
+        if f"{side}_level" in a and f"{side}_level" in b:
+            c += 0.25 * abs(a[f"{side}_level"] - b[f"{side}_level"])
+    if a.get("room", 0) > 0.5 and b.get("room", 0) > 0.5:
+        c += 1.0 * abs(np.log(a["room"] / b["room"]))
+    return c
 
 
 def canonical_crown(crown: Mesh, margin: np.ndarray, axis, md_direction, tooth: int, case_id: str = "") -> LibraryCrown:
@@ -252,7 +312,7 @@ class CrownLibrary:
         self.entries.append({"id": crown.id, "key": crown.key, "tooth": crown.tooth, "md": round(crown.md, 3),
                              "bl": round(crown.bl, 3), "height": round(crown.height, 3),
                              "cerv_md": round(crown.cerv_md, 3), "cerv_bl": round(crown.cerv_bl, 3),
-                             "offset": [round(float(v), 3) for v in crown.offset],
+                             "offset": [round(float(v), 3) for v in crown.offset], "context": crown.context,
                              "file": f"{crown.id.replace('/', '_')}.npz", "version": LIBRARY_VERSION})
         (self.folder / "index.json").write_text(json.dumps(self.entries, indent=0))
 
@@ -262,7 +322,7 @@ class CrownLibrary:
         return self._cache[entry["id"]]
 
     def candidates(self, key: str, md: float | None, bl: float | None, height: float | None = None,
-                   exclude=(), cervix: tuple[float, float] | None = None) -> list[dict]:
+                   exclude=(), cervix: tuple[float, float] | None = None, context: dict | None = None) -> list[dict]:
         """Library crowns of this tooth type, closest first.
 
         Compared by what the case fixes: the space (``md``, ``bl``), the
@@ -279,13 +339,16 @@ class CrownLibrary:
                 c += 0.5 * abs(np.log(e["height"] / height))
             if cervix and e.get("cerv_md", 0) > 0 and e.get("cerv_bl", 0) > 0:
                 c += 1.5 * abs(np.log(e["cerv_md"] / cervix[0])) + abs(np.log(e["cerv_bl"] / cervix[1]))
+            if context and e.get("context"):
+                c += context_distance(context, e["context"])  # what the technician did in a similar mouth
             return c
         pool = [e for e in self.entries if e["key"] == key and e["id"] not in set(exclude)]
         return sorted(pool, key=cost)
 
     def choose(self, key: str, md: float | None, bl: float | None, height: float | None = None, *,
-               variant: int = 0, exclude=(), cervix: tuple[float, float] | None = None) -> LibraryCrown | None:
-        c = self.candidates(key, md, bl, height, exclude, cervix)
+               variant: int = 0, exclude=(), cervix: tuple[float, float] | None = None,
+               context: dict | None = None) -> LibraryCrown | None:
+        c = self.candidates(key, md, bl, height, exclude, cervix, context)
         return self.get(c[min(variant, len(c) - 1)]) if c else None
 
 
@@ -312,7 +375,9 @@ def build_library(root, out, *, limit: int | None = None, log=print) -> CrownLib
         info = case.teeth[tooth]
         try:
             crown = crop_to_margin(load_mesh(ref), info.margin, info.axis, radial_pad=2.5, depth=1.0)
-            lib.add(canonical_crown(crown, info.margin, info.axis, info.md_direction, tooth, cid))
+            c = canonical_crown(crown, info.margin, info.axis, info.md_direction, tooth, cid)
+            c.context = _archive_context(case, tooth, c.md)
+            lib.add(c)
             added += 1
         except Exception as exc:
             failed += 1
@@ -324,6 +389,26 @@ def build_library(root, out, *, limit: int | None = None, log=print) -> CrownLib
         counts[e["key"]] = counts.get(e["key"], 0) + 1
     log(f"library: {len(lib)} crowns {dict(sorted(counts.items()))}")
     return lib
+
+
+def _archive_context(case, tooth: int, md: float) -> dict:
+    """case_context of an archive case (empty when its scans cannot be read)."""
+    info = case.teeth[tooth]
+    frame = make_frame(np.asarray(info.margin).mean(axis=0), info.axis, info.md_direction)
+    try:
+        jaw = case.load_prep_scan(tooth)
+    except Exception:
+        jaw = None
+    ant = None
+    try:
+        scan = case.antagonist_scan(tooth)
+        ant = case.load_world(scan) if scan is not None else None
+    except Exception:
+        ant = None
+    try:
+        return case_context(jaw, ant, frame, md, tooth)
+    except Exception:
+        return {}
 
 
 def check_library(root, library, *, n: int = 12, rules_profile: dict | None = None, log=print) -> list[dict]:

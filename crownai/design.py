@@ -247,7 +247,7 @@ def design_crown(prep: Mesh, *, tooth: int | ToothType | None = None,
             and p.posterior_anatomy == "rules":
         # Premolars and molars: cusp model from the rules of anatomy, sized and set
         # by the patient's neighbours and antagonist (the mirror image only lends its size)
-        shape, source, anatomy_fit = _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist,
+        shape, source, anatomy_fit = _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, jaw,
                                                         arch_orientation, prep_top, p, warnings)
         placed = True
     elif neighbors is not None and neighbors.template is not None:
@@ -687,7 +687,8 @@ def _resample_occlusal(shape, frame, outer, pole, v, start: float = 0.6, span: f
     return frame.to_world(loc.reshape(-1, 3)).reshape(outer.shape), frame.to_world(pl)
 
 
-def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, arch_orientation, prep_top, p, warnings):
+def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, jaw, arch_orientation, prep_top, p,
+                       warnings):
     """Premolar/molar from the anatomical cusp model, set into the patient's arch by rules.
 
     * size: mesiodistal = the space between the neighbours (or the measured
@@ -793,9 +794,14 @@ def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, arch_or
         # a crown on a preparation meets its finish line: the margin's size says which
         # crown fits (not for a virtual implant/pontic margin)
         cervix = None if p.follow_arch_line else (float(np.ptp(mm[:, 0])), float(np.ptp(mm[:, 1])))
+        from .crown_library import case_context
+
+        ctx = case_context(jaw, antagonist, frame, md, fdi) if (jaw is not None or antagonist is not None) else None
         src = p.crown_library.choose(profile_key(fdi), md if md_known else md_hint, bl if "bl_from" in info else None,
                                      H if nbs else None, variant=p.library_variant, exclude=p.library_exclude,
-                                     cervix=cervix)
+                                     cervix=cervix, context=ctx)
+        if ctx:
+            info["case_context"] = ctx
         if src is not None:
             if not nbs:
                 H = max(src.height, need)
@@ -811,6 +817,8 @@ def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, arch_or
                 su = 1.0
             sw = su * (float(np.clip(bl / (src.bl * su), 0.85, 1.15)) ** 0.5 if "bl_from" in info else 1.0)
             lo_z, hi_z = max(need, 0.6 * base.height) / src.height, 1.35
+            if nbs:  # never grow more than 1 mm above the neighbours' level towards the antagonist
+                hi_z = min(hi_z, max((H + 1.0) / src.height, lo_z))
             tpl = TemplateCrown(src, su=su, sw=sw, sz=float(np.clip(H / src.height, lo_z, hi_z)))
             info.update(library_crown=src.id, library_variant=p.library_variant)
             if info.get("md_position") == "against the mesial neighbour":
@@ -887,6 +895,10 @@ def _posterior_anatomy(fdi, frame, m_loc, offset, neighbors, antagonist, arch_or
         if np.isfinite(c[func]).any():
             gap = c - tips[:, 2]
             dz = float(np.nanmin(np.where(func & np.isfinite(gap), gap, np.nan)))
+            # the antagonist may lower the crown as far as needed, but lift it only a little
+            # above the neighbours' occlusal level: a far-away antagonist (its tooth missing,
+            # the opposing gum) is no contact to grow towards
+            dz = min(dz, 1.0 if nbs else 1.5)
             H = float(np.clip(H + dz, max(need, 0.6 * base.height), 1.8 * base.height))
             model = replace(model, height=H)
             tips = local_tips(model, shift)

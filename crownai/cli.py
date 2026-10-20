@@ -307,6 +307,15 @@ def cmd_check_library(a) -> int:
     return 0
 
 
+def cmd_benchmark(a) -> int:
+    from .benchmark import run_benchmark
+
+    run_benchmark(a.root, a.out, n=a.n, variants=tuple(a.variants.split(",")), library=a.library,
+                  rules_profile=_rules_profile(a), pictures=a.pictures)
+    print(f"report in {a.out}: summary.json, results.jsonl, pictures/ (hashed ids, no scans)")
+    return 0
+
+
 def cmd_learn_webview(a) -> int:
     from .learning import CrownLearner
     from .webview import learn_from_webview
@@ -478,6 +487,17 @@ def main(argv=None) -> int:
     p.add_argument("--n", type=int, default=12, help="crowns to check")
     p.add_argument("--rules-profile", type=Path, help="also compare the rules with this lab profile")
     p.set_defaults(func=cmd_check_library)
+
+    p = sub.add_parser("benchmark",
+                       help="design archive crowns, report successes, failure causes and distance to the technician")
+    p.add_argument("root", type=Path)
+    p.add_argument("--out", type=Path, default=Path("benchmark_report"))
+    p.add_argument("--n", type=int, default=40, help="crowns to design (random sample)")
+    p.add_argument("--variants", default="rules,library", help="comma list of: rules, profile, library")
+    p.add_argument("--library", type=Path, help="crown library (for the library variant)")
+    p.add_argument("--rules-profile", type=Path, help="lab profile (for the profile variant)")
+    p.add_argument("--pictures", type=int, default=20, help="crowns to draw next to the technician's")
+    p.set_defaults(func=cmd_benchmark)
 
     p = sub.add_parser("learn-webview", help="learn the technician's wax-ups from exocad webview HTML files")
     p.add_argument("files", type=Path, nargs="+")
