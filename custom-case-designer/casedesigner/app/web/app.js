@@ -38,6 +38,7 @@ document.addEventListener('click', async (e) => {
     endLandmarks();
     endRehab(); // поднятая нижняя челюсть и шаблон — только в шаге «Артикулятор»
     slices.forEach((v) => v.draw());
+    render(); // панель шага — сразу, данные дорисуются по мере ответа сервера
     return d.step === 'articulation' ? prepareArticulation() : d.step === 'export' ? prepareExport()
       : d.step === 'aesthetics' ? prepareAesthetics() : d.step === 'landmarks' ? prepareLandmarks() : render();
   }

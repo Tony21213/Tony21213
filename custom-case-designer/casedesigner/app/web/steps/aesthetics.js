@@ -80,6 +80,7 @@ export async function prepareAesthetics() {
   try { state.aesthetics = await get('aesthetics'); }
   catch (e) { toast(e.message); }
   render();
+  autoRefine();
 }
 
 async function send(path, body) {
@@ -89,6 +90,21 @@ async function send(path, body) {
     toast(e.message);
   }
   render();
+  autoRefine();
+}
+
+// Доводка нейросетью — фоновой задачей (десятки секунд): окно не ждёт, по готовности обновляется само.
+let autoRunning = false;
+async function autoRefine() {
+  if (autoRunning || !Object.values(info()?.photos || {}).some((p) => p?.auto_pending)) return;
+  autoRunning = true;
+  try {
+    const result = await run('aesthetics/auto', {});
+    if (result) state.aesthetics = result;
+  } catch (e) { toast(e.message); }
+  autoRunning = false;
+  if (state.step === 'aesthetics') render();
+  if (Object.values(info()?.photos || {}).some((p) => p?.auto_pending)) setTimeout(autoRefine, 500); // пары меняли, пока считали
 }
 
 // ---------- окно фото ----------
@@ -415,6 +431,7 @@ function cameraHtml(p) {
   const c = p.camera;
   const a = p.auto_info;
   const auto = c.fixed ? (a?.manual ? 'Поправлено вручную — камера запомнена.' : 'Уточнено по зубам — камера запомнена.')
+    : p.auto_pending ? 'Доводка по зубам… (нейросеть, до полуминуты; пока — по парам)'
     : a?.used ? `Доводка по зубам ${a.teeth.join(', ')}: совпадение ${fmt(a.iou_before, 2)} → ${fmt(a.iou_after, 2)}, край ${fmt(a.edge_px, 1)} px.`
       : a?.error ? `Без доводки: ${hide(a.error)}.` : '';
   return `<div class="metrics">

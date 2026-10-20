@@ -205,14 +205,17 @@ class AestheticsSteps:
 
         return float(item.get("distance_mm") or ae.DEFAULT_DISTANCE_MM)
 
-    def _aes_teeth(self):
-        """Зубы верхнего скана для доводки: номера вершин (сегментация КТ), нормали — кэш; None — номеров нет."""
+    def _aes_teeth(self, compute: bool = True):
+        """Зубы верхнего скана для доводки: номера вершин (сегментация КТ), нормали — кэш; None — номеров нет
+        (или ещё не посчитаны: compute=False — не считать, для окна)."""
         from ... import photo_teeth as pt
 
         up, _T, cache = self._upper_ct()
         teeth = {int(k.rsplit("_", 1)[1]): np.asarray(m.vertices) for k, m in self.structures.items()
                  if k.startswith("teeth/tooth_") and k.rsplit("_", 1)[1].isdigit() and int(k.rsplit("_", 1)[1]) // 10 in (1, 2, 5, 6)}
         key = (cache["key"], tuple(sorted((k, len(v)) for k, v in teeth.items())))
+        if cache.get("teeth_key") != key and not compute:
+            return None, None
         if cache.get("teeth_key") != key:
             labels = normals = None
             if teeth:
@@ -283,9 +286,11 @@ class AestheticsSteps:
             return None, "зубы на фото не совпали со сканом — проверьте пары точек"
         return r, None
 
-    def _camera(self, kind: str):
+    def _camera(self, kind: str, refine: bool = False):
         """Камера совмещения фото (aesthetic.Camera, координаты КТ) или None; вторым — почему её нет.
-        Запомненная (ручная поправка или «Уточнить по зубам») — как есть; иначе — по парам, затем доводка моделью."""
+        Запомненная (ручная поправка или «Уточнить по зубам») — как есть; иначе — по парам, а если доводка уже
+        посчитана для этих пар — доведённая. Доводку (десятки секунд: нейросеть) считает только refine=True —
+        фоновая задача окна (aesthetic_auto) и выгрузка; окно, монтаж и плоскости её не ждут."""
         from ... import aesthetic as ae
 
         item = self.photos.get(kind)
@@ -310,15 +315,39 @@ class AestheticsSteps:
                                     anchor=self._upper_incisal(base))
             except (ValueError, np.linalg.LinAlgError) as e:
                 return None, str(e)
-            item["_auto"], item["_refined"] = None, None
-            if item["auto"]:
-                r, why = self._auto_refine(kind, item, cam)
-                if r is not None and np.mean(list(r.iou_after.values()) or [0]) >= np.mean(list(r.iou_before.values()) or [0]):
-                    cam = r.camera
-                    item["_refined"] = r
-                item["_auto"] = self._auto_report(r, why)
-            item["_cam_key"], item["_cam"], item["_overlay"] = key, cam, None
+            item["_auto"], item["_refined"], item["_auto_key"] = None, None, None
+            item["_cam_key"], item["_cam"], item["_coarse"], item["_overlay"] = key, cam, cam, None
+        if refine and item["auto"] and item.get("_auto_key") != key:
+            with self._aes_lock():
+                if item.get("_auto_key") != key:  # пока ждали — посчитал другой запрос
+                    r, why = self._auto_refine(kind, item, item["_coarse"])
+                    cam = item["_coarse"]
+                    if r is not None and np.mean(list(r.iou_after.values()) or [0]) >= np.mean(list(r.iou_before.values()) or [0]):
+                        cam = r.camera
+                        item["_refined"] = r
+                    item["_auto"] = self._auto_report(r, why)
+                    item["_cam"], item["_overlay"], item["_auto_key"] = cam, None, key
         return item["_cam"], None
+
+    def _aes_lock(self):
+        import threading
+
+        lock = getattr(self, "_aes_refine_lock", None)
+        if lock is None:
+            lock = self._aes_refine_lock = threading.Lock()
+        return lock
+
+    def _auto_pending(self, item) -> bool:
+        """Доводку для этих пар ещё не считали (окно запустит фоновую задачу)."""
+        return bool(item.get("auto") and item.get("override") is None and item.get("_cam") is not None
+                    and item.get("_auto_key") != item.get("_cam_key") and self._sam() is not None)
+
+    def aesthetic_auto(self, kind: str | None = None) -> dict:
+        """Фоновая задача окна: доводка нейросетью для фото, где она ещё не посчитана."""
+        for k in ([kind] if kind else list(PHOTO_KINDS)):
+            if self.photos.get(k) is not None:
+                self._camera(k, refine=True)
+        return self.aesthetics_info()
 
     @staticmethod
     def _auto_report(r, why=None) -> dict:
@@ -355,7 +384,8 @@ class AestheticsSteps:
         cam, why = self._camera(kind)
         if cam is None:
             raise ValueError(f"уточнять нечего: {why}")
-        r, why = self._auto_refine(kind, item, cam)
+        with self._aes_lock():  # не вместе с фоновой доводкой
+            r, why = self._auto_refine(kind, item, cam)
         if r is None:
             raise ValueError(why)
         self._remember_camera(item, r.camera)
@@ -371,7 +401,11 @@ class AestheticsSteps:
     def _upper_incisal(self, base: np.ndarray) -> np.ndarray:
         """Точка между центральными резцами верхней челюсти (координаты КТ): самая передняя у режущих краёв."""
         R = np.asarray(base, float)[:3, :3]
-        return mo._incisal(self._upper_ct()[2]["v"], R[1], -R[2], mo.INCISAL_TILT_DEG)
+        cache = self._upper_ct()[2]
+        key = R.round(9).tobytes()
+        if cache.get("incisal_key") != key:
+            cache["incisal_key"], cache["incisal"] = key, mo._incisal(cache["v"], R[1], -R[2], mo.INCISAL_TILT_DEG)
+        return cache["incisal"]
 
     def _mount_kind(self) -> str | None:
         """Фото для монтажа: с улыбкой, без него — с ретрактором (запасной вариант)."""
@@ -406,7 +440,7 @@ class AestheticsSteps:
         item = self.photos[kind]
         if item["_overlay"] is None:
             up, _T, cache = self._upper_ct()
-            labels, normals = self._aes_teeth()
+            labels, normals = self._aes_teeth(compute=False)
             out = {"scan": [], "photo": [], "points": []}
             if labels is not None:
                 on = labels > 0
@@ -441,7 +475,7 @@ class AestheticsSteps:
         """Фото с камерами — для ArticulatorCase.photos (набор Smile Design exocad)."""
         out, photos = [], getattr(self, "photos", {})  # сессия без шага «Эстетика» (тесты выгрузки) — фото нет
         for kind in PHOTO_KINDS:
-            cam = self._camera(kind)[0] if photos.get(kind) is not None else None
+            cam = self._camera(kind, refine=True)[0] if photos.get(kind) is not None else None
             if cam is not None:
                 out.append({"kind": kind, "image": self.photos[kind]["photo"].image, "camera": cam})
         return out
@@ -467,12 +501,13 @@ class AestheticsSteps:
                     "notes": list(item["photo"].notes), "version": item["version"], "pairs": pairs,
                     "need": self._need_pairs(item), "fit_error": why, "camera": None,
                     "distance_mm": self._distance(item), "distance_set": item.get("distance_mm") is not None,
-                    "auto": bool(item.get("auto", True)), "auto_info": item.get("_auto"),
+                    "auto": bool(item.get("auto", True)), "auto_info": item.get("_auto"), "auto_pending": False,
                     "auto_ready": self._sam() is not None,
                     "horizon_deg": item["horizon_deg"], "midline_px": item["midline_px"], "face": item["face"],
                     "overlay": {"scan": [], "photo": [], "points": []}, "widths": {}, "guide": [], "aesthetic": None}
             if item["pairs"] and not valid:
                 info["notes"].append("скан верхней челюсти заменён — пары точек нужно поставить заново")
+            info["auto_pending"] = self._auto_pending(item)
             if cam is not None:
                 diag = float(np.hypot(w, h))
                 px_ = np.array([p["px"] for p in item["pairs"]], float) if valid and item["pairs"] else np.zeros((0, 2))
@@ -592,6 +627,8 @@ def route(h, s, p, method, q):
                                       b.get("distance_mm"), b.get("auto")))
     if p == ["aesthetics", "adjust"]:  # ручная поправка поверх фото (ПКМ — поворот скана, Shift — сдвиг и масштаб)
         return h.json(s.aesthetic_adjust(b.get("kind"), b.get("manual") or {}))
+    if p == ["aesthetics", "auto"]:  # доводка нейросетью для новых пар — фоновой задачей окна
+        return h.job("Доводка по зубам", lambda progress: s.aesthetic_auto(b.get("kind")))
     if p == ["aesthetics", "refine"]:  # «Уточнить по зубам» — доводка моделью от текущей камеры
         return h.job("Уточнение по зубам", lambda progress: s.aesthetic_refine(b.get("kind")))
     if p == ["aesthetics", "camera", "reset"]:
