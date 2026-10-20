@@ -3,6 +3,7 @@
 import { $, busy, choose, fmt, hide, render, state, toast, viewer } from '../core.js';
 import { get, post, run } from '../api.js';
 import { icons } from '../icons.js';
+import * as THREE from '../vendor/three/three.module.js';
 
 const KINDS = { smile: 'С улыбкой', retracted: 'С ретрактором' };
 // Точки лица по порядку отметки: пары справа и слева пациента (на фото анфас правая сторона пациента — слева).
@@ -22,7 +23,86 @@ const aes = {
   view: null, // { k, ox, oy } — пиксели фото → точки окна; null — по размеру окна
   image: null, imageKey: '', drag: null, down3d: null,
   adj: NO_ADJ(), adjTimer: null, // ручная поправка скана поверх фото — пока тянут мышью (сервер получает по отпусканию)
+  scanOpacity: 0.5, // скан поверх фото (как в exocad Smile Design) — прозрачность
+  scanNatural: false, // цвет скана со сканера; иначе — голубой: на фото так виднее, легло ли
 };
+
+// ---------- скан поверх фото: отрисовка камерой фото (свой WebGL; сетки — из окна 3D, в их положении) ----------
+let gl = null;
+function overlayGL() {
+  if (gl) return gl;
+  const canvas = document.createElement('canvas');
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
+  renderer.setClearColor(0x000000, 0);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera();
+  camera.matrixAutoUpdate = false;
+  const light = new THREE.DirectionalLight(0xffffff, 2.2);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.9), light, light.target);
+  gl = { canvas, renderer, scene, camera, light, meshes: new Map() };
+  return gl;
+}
+
+function jawMeshes() {
+  // верхний и нижний сканы челюстей так, как они стоят в окне 3D (прикус — как там)
+  const g = overlayGL();
+  const want = state.scans.filter((s) => s.registered && s.role !== 'bite' && (s.jaw === 'upper' || s.jaw === 'lower'))
+    .map((s) => s.id).filter((id) => viewer.objects.has(id));
+  for (const [id, m] of g.meshes) if (!want.includes(id) || m.userData.geometry !== viewer.objects.get(id)?.geometry) {
+    g.scene.remove(m); m.material.dispose(); g.meshes.delete(id);
+  }
+  for (const id of want) {
+    const src = viewer.objects.get(id);
+    let m = g.meshes.get(id);
+    if (!m) {
+      m = new THREE.Mesh(src.geometry, new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }));
+      m.matrixAutoUpdate = false;
+      m.userData.geometry = src.geometry;
+      g.scene.add(m);
+      g.meshes.set(id, m);
+    }
+    src.updateMatrixWorld();
+    m.matrix.copy(src.matrixWorld);
+    m.matrixWorldNeedsUpdate = true;
+    const colored = aes.scanNatural && !!src.material.vertexColors && !!src.geometry.getAttribute('color');
+    if (m.material.vertexColors !== colored) { m.material.vertexColors = colored; m.material.needsUpdate = true; }
+    m.material.color.set(colored ? '#ffffff' : aes.scanNatural ? (src.userData.color || '#d8d0c0') : '#6fc3ff');
+  }
+  return g;
+}
+
+// Снимок скана в пикселях окна фото: камера фото (K, R, t, поправка) → проекция OpenGL; зеркальное — по x.
+function renderScan(cam, size, v, cw, ch, dpr) {
+  const g = jawMeshes();
+  if (!g.meshes.size) return null;
+  const W = Math.round(cw * dpr), H = Math.round(ch * dpr);
+  if (g.canvas.width !== W || g.canvas.height !== H) g.renderer.setSize(W, H, false);
+  let fx = cam.K[0][0] * v.k * dpr, cx = (v.ox + v.k * cam.K[0][2]) * dpr;
+  const fy = cam.K[1][1] * v.k * dpr, cy = (v.oy + v.k * cam.K[1][2]) * dpr;
+  if (cam.mirrored) { fx = -fx; cx = (v.ox + v.k * (size[0] - cam.K[0][2])) * dpr; }
+  const n = 10, f = 20000;
+  const P = new THREE.Matrix4().set(
+    2 * fx / W, 0, 1 - 2 * cx / W, 0,
+    0, 2 * fy / H, 2 * cy / H - 1, 0,
+    0, 0, -(f + n) / (f - n), -2 * f * n / (f - n),
+    0, 0, -1, 0);
+  const [r, t] = [cam.R, cam.t];
+  const V = new THREE.Matrix4().set( // мир → камера OpenGL: оси камеры фото (x вправо, y вниз, z вперёд) → (x, −y, −z)
+    r[0][0], r[0][1], r[0][2], t[0],
+    -r[1][0], -r[1][1], -r[1][2], -t[1],
+    -r[2][0], -r[2][1], -r[2][2], -t[2],
+    0, 0, 0, 1);
+  g.camera.projectionMatrix.copy(P);
+  g.camera.projectionMatrixInverse.copy(P).invert();
+  g.camera.matrixWorldInverse.copy(V);
+  g.camera.matrixWorld.copy(V).invert();
+  const pos = new THREE.Vector3().setFromMatrixPosition(g.camera.matrixWorld);
+  g.light.position.copy(pos);
+  g.light.target.position.set(...cam.anchor);
+  g.light.target.updateMatrixWorld();
+  g.renderer.render(g.scene, g.camera);
+  return g.canvas;
+}
 
 // ---------- камера фото в окне: поправка и проекция, как aesthetic.adjust_camera / Camera.project ----------
 function mat(a, b) { return a.map((r) => b[0].map((_, j) => r.reduce((s, x, k) => s + x * b[k][j], 0))); }
@@ -225,6 +305,18 @@ export function drawPhoto() {
   const at = (q) => [v.ox + q[0] * v.k, v.oy + q[1] * v.k];
   g.drawImage(aes.image, v.ox, v.oy, p.size[0] * v.k, p.size[1] * v.k);
   const cam = p.camera ? adjustCamera({ ...p.camera, size: p.size }, aes.adj) : null;
+  if (cam && aes.scanOpacity > 0.01) { // скан поверх фото, как в exocad Smile Design
+    try {
+      const img = renderScan(cam, p.size, v, cw, ch, dpr);
+      if (img) {
+        g.save();
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.globalAlpha = aes.scanOpacity;
+        g.drawImage(img, 0, 0);
+        g.restore();
+      }
+    } catch (e) { /* нет WebGL — только контуры */ }
+  }
   if (aes.overlay && cam) {
     const o = p.overlay || {};
     const poly = (pts, color, width) => {
@@ -399,6 +491,7 @@ export async function aestheticAction(action, arg) {
   }
   if (action === 'unpair') return send('aesthetics/pair/remove', { index: arg === 'all' ? null : Number(arg) });
   if (action === 'overlay') { aes.overlay = !aes.overlay; return render(); }
+  if (action === 'natural') { aes.scanNatural = !aes.scanNatural; return render(); }
   if (action === 'refine') {
     return busy('Уточнение по зубам', async (progress) => {
       state.aesthetics = await run('aesthetics/refine', { kind: aes.kind }, progress);
@@ -416,6 +509,7 @@ export async function aestheticAction(action, arg) {
 // поля панели: расстояние до камеры, доводка моделью (событие change — app.js)
 export function aestheticChange(e) {
   const t = e.target;
+  if (t.matches('[data-aes-opacity]')) { aes.scanOpacity = Number(t.value) / 100; return drawPhoto(); }
   if (t.matches('[data-aes-distance]')) return send('aesthetics/set', { distance_mm: Number(t.value) || 0 });
   if (t.matches('[data-aes-auto]')) return send('aesthetics/set', { auto: t.checked });
 }
@@ -444,7 +538,10 @@ function cameraHtml(p) {
 }
 
 function alignHtml(p) {
-  return `<div class="label">Совмещение</div>
+  const opacity = p.camera ? `<div class="aes-row"><span>Скан поверх фото</span><b>${Math.round(aes.scanOpacity * 100)} %</b></div>
+    <input type="range" class="rehab-range" min="0" max="100" step="5" value="${Math.round(aes.scanOpacity * 100)}" data-aes-opacity>
+    <button class="btn ghost wide sm" data-aes="natural">${aes.scanNatural ? 'Скан — голубым (виднее, легло ли)' : 'Скан — в цвете со сканера'}</button>` : '';
+  return `${opacity}<div class="label">Совмещение</div>
     <div class="aes-row"><span>Расстояние до камеры</span><b>${fmt(p.distance_mm, 0)} мм${p.distance_set ? '' : ' (как exocad)'}</b></div>
     <input type="range" class="rehab-range" min="300" max="3000" step="50" value="${p.distance_mm}" data-aes-distance>
     <label class="joint-toggle ${p.auto_ready ? '' : 'disabled'}"><input type="checkbox" data-aes-auto ${p.auto ? 'checked' : ''} ${p.auto_ready ? '' : 'disabled'}>
@@ -510,7 +607,7 @@ export function renderAesthetics() {
       ${aes.mode === 'pair' ? '<p class="muted small">Щёлкните точку на фото и ту же точку на зубах в 3D (порядок любой). Хватит двух подальше друг от друга — бугры клыков; остальное доводит нейросеть.</p>' : ''}
       ${pairs ? `<div class="row" style="flex-wrap:wrap;gap:4px;margin-top:6px">${pairs}</div>` : ''}
       ${cameraHtml(p)}${alignHtml(p)}
-      ${p.camera ? `<button class="btn ghost wide sm" data-aes="overlay">${aes.overlay ? 'Скрыть' : 'Показать'} наложение скана</button>` : ''}
+      ${p.camera ? `<button class="btn ghost wide sm" data-aes="overlay">${aes.overlay ? 'Скрыть' : 'Показать'} контуры зубов</button>` : ''}
       <div class="label">Горизонт: ${fmt(p.horizon_deg, 1)}°</div>
       <div class="row"><button class="btn ghost" data-aes="horizon" data-arg="-0.5">−0,5°</button>
         <button class="btn ghost" data-aes="horizon" data-arg="0.5">+0,5°</button>

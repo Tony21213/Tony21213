@@ -219,11 +219,9 @@ class AestheticsSteps:
         if cache.get("teeth_key") != key:
             labels = normals = None
             if teeth:
-                dev = getattr(up["reg"], "deviation", None)
-                crown = None if dev is None or len(dev) != len(cache["v"]) else np.isfinite(np.asarray(dev, float))
-                if crown is not None and crown.sum() < 1000:  # коронок по совмещению почти нет — по близости к зубам КТ
-                    crown = None
-                labels = pt.crown_labels(cache["v"], teeth, crown)
+                # по близости к зубам КТ (до photo_teeth.REACH_MM): признак «на коронке» по совмещению
+                # (Registration.deviation) бывает почти пустым — тогда от зубов оставались обрывки контуров
+                labels = pt.crown_labels(cache["v"], teeth)
                 if (labels > 0).sum() < 200:
                     labels = None
                 else:
