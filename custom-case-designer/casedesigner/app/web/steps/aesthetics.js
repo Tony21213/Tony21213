@@ -558,7 +558,8 @@ function cameraHtml(p) {
     : a?.used && p.free ? `Совмещено автоматически, без пар — по зубам ${a.teeth.join(', ')}: совпадение ${fmt(a.iou_after, 2)}, край ${fmt(a.edge_px, 1)} px. Проверьте поверх фото; не так — поправьте мышью или поставьте 2 пары.`
     : a?.used ? `Доводка по зубам ${a.teeth.join(', ')}: совпадение ${fmt(a.iou_before, 2)} → ${fmt(a.iou_after, 2)}, край ${fmt(a.edge_px, 1)} px.`
       : a?.error ? `Без доводки: ${hide(a.error)}.` : '';
-  return `<div class="metrics">
+  const src = a?.teeth_source && a.teeth_source !== 'КТ' ? `<p class="muted small">Номера зубов — по самому скану (нейросеть ${hide(a.teeth_source)}): сегментации зубов на КТ нет.</p>` : '';
+  return `${src}<div class="metrics">
       ${p.pairs.length ? `<div class="metric"><span>По парам, px</span><b class="${c.check ? 'warn' : 'ok'}">${fmt(c.residual_px, 1)}</b></div>` : ''}
       <div class="metric"><span>До камеры, мм</span><b>${fmt(c.distance_mm, 0)}</b></div>
       <div class="metric"><span>Фокус, мм (35)</span><b>${fmt(c.focal_35mm, 0)}</b></div></div>
