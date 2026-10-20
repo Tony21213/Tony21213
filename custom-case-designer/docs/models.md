@@ -187,7 +187,8 @@ Hugging Face и Google Drive закрыты — их качаем в локал�
 
 Все — ONNX в папке моделей; в кнопке «Скачать» шага «Эстетика» — то, что авторы выкладывают готовым (SAM 2.1,
 MediaPipe, MoGe-2; SHA-256 каждого файла). GeoCalib и DentalModelSeg авторы дают только для PyTorch — переводим
-сами (`tools/prepare_camera_models.py`, `tools/prepare_scan_seg.py`), для кнопки нужен релиз проекта.
+сами (`tools/prepare_camera_models.py`, `tools/prepare_scan_seg.py`) и выкладываем в релиз проекта `photo-v1`
+(20.10.2026, с текстами лицензий; изменения против оригинала — в описании релиза).
 
 | Модель | Папка | Что у нас | Проверка |
 |---|---|---|---|
