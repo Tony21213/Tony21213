@@ -24,10 +24,14 @@
 
 ### L0. Подготовка (10 мин)
 
+crownai работает **в своей рабочей папке** (git worktree), отдельно от папок
+Case Designer: ветку в чужой папке не переключать.
+
 ```
 cd <папка репозитория>
 git fetch origin
-git checkout claude/dental-ai-0me2qf
+git worktree add ..\crownai claude/dental-ai-0me2qf
+cd ..\crownai
 git pull
 py -3.11 -m venv .venv
 .venv\Scripts\activate

@@ -13,6 +13,8 @@ crownai — некоммерческий аналог exocad AI Design: пред
 ## Ветка и соседний проект
 
 - Работа идёт в ветке `claude/dental-ai-0me2qf`, push: `git push -u origin claude/dental-ai-0me2qf`.
+- На ПК crownai живёт в **своей рабочей папке** (`git worktree add ..\crownai claude/dental-ai-0me2qf`).
+  В папках Case Designer ветку не переключать: там работают его сессии.
 - В этом же репозитории живёт отдельный проект **KStom Case Designer**: папка
   `custom-case-designer/`, ветки `claude/lucid-euler-8zyldi`, `lead/*`,
   `follower/*`. **В нём ничего не менять:** ни файлов, ни веток, ни его доски.
