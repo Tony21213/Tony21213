@@ -23,6 +23,8 @@ FACE_KEYS = ("pupil", "endocanthion", "canthus", "ala", "commissure")  # пар�
 CONTOUR_STEP = 2  # контуры зубов в окне — каждая вторая клетка
 OCCLUDER_REACH_MM = 6.0  # нижние зубы, что загораживают верхние на фото с ретрактором: не дальше этого от верхнего скана
 OCCLUDER_POINTS = 150_000
+FACE_MODEL = "face_landmarker.task"  # MediaPipe Face Landmarker (Google, Apache-2.0) — в папке моделей
+EYE_LINE_MAX_DEG = 10.0  # линия глаз круче — не горизонт (лицо повёрнуто или точки сбились)
 ON_SCAN_MM = 2.0  # точка пары — на скане верхней челюсти: не дальше от его вершин
 FIT_WARN_SHARE = 0.004  # ошибка совмещения больше этой доли диагонали фото — пары стоит проверить
 PREVIEW_PX = 1600  # длинная сторона снимка для окна
@@ -70,13 +72,63 @@ class AestheticsSteps:
         except OSError:
             raise ValueError("не удалось открыть фото: нужен JPEG или PNG") from None
         self.photos[kind] = self._new_photo(path, photo)
+        self._auto_face(self.photos[kind])
+        return self.aesthetics_info()
+
+    def _face_model(self) -> str | None:
+        folder = getattr(self, "models_dir", None)
+        path = os.path.join(folder, FACE_MODEL) if folder else None
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            import mediapipe  # noqa: F401
+        except ImportError:
+            return None
+        return path
+
+    def _auto_face(self, item: dict, force: bool = False) -> str | None:
+        """Лицо на фото — автоматически (MediaPipe), как exocad Smile Creator: зрачки, углы глаз, нос, углы рта,
+        средняя линия, контур губ; горизонт — по линии глаз. Поставленное врачом не трогает (force — заменить
+        всё). Возвращает причину, если не вышло."""
+        from ... import aesthetic as ae
+
+        model = self._face_model()
+        if model is None:
+            return "нет модели MediaPipe (models/face_landmarker.task) или пакета mediapipe"
+        try:
+            hints = ae.face_hints(item["photo"].image, model)
+        except (ValueError, RuntimeError) as e:
+            item["face_note"] = str(e)
+            return str(e)
+        size = item["photo"].size
+        inside = lambda q: 0 <= q[0] <= size[0] and 0 <= q[1] <= size[1]  # noqa: E731
+        for key in (f"{k}_{s_}" for k in FACE_KEYS for s_ in ("right", "left")):
+            if (force or key not in item["face"]) and key in hints and inside(hints[key]):
+                item["face"][key] = [round(float(c), 2) for c in hints[key]]
+        if force or not item["midline_px"]:
+            item["midline_px"] = [[round(float(c), 2) for c in q] for q in hints["midline"] if inside(q)][:8]
+        item["lips"] = {k: [[round(float(c), 1) for c in q] for q in hints[f"lips_{k}"]] for k in ("inner", "outer")}
+        eye = float(hints["eye_line_deg"])
+        if (force or item.get("horizon_source") in (None, "глаза")) and abs(eye) <= EYE_LINE_MAX_DEG:
+            item["horizon_deg"], item["horizon_source"] = round(eye, 2), "глаза"
+        item["face_note"] = None
+        item["face_auto"] = True
+        return None
+
+    def aesthetic_face(self, kind: str) -> dict:
+        """«Найти лицо»: точки лица, губы и горизонт по линии глаз — заново (MediaPipe)."""
+        item = self._photo(kind)
+        why = self._auto_face(item, force=True)
+        if why:
+            raise ValueError(f"лицо не найдено: {why}")
         return self.aesthetics_info()
 
     def _new_photo(self, path: str, photo) -> dict:
         self._photo_version = getattr(self, "_photo_version", 0) + 1
         return {"path": path, "photo": photo, "pairs": [], "horizon_deg": 0.0, "midline_px": [], "face": {},
                 "upper_n": None, "version": self._photo_version, "_cam_key": None, "_cam": None, "_overlay": None,
-                "distance_mm": None, "auto": True, "override": None, "_auto": None, "_refined": None}
+                "distance_mm": None, "auto": True, "override": None, "_auto": None, "_refined": None,
+                "lips": None, "horizon_source": None, "face_auto": False, "face_note": None}
 
     def aesthetic_remove_photo(self, kind: str) -> dict:
         self.photos.pop(_kind(kind), None)
@@ -159,7 +211,7 @@ class AestheticsSteps:
             h = float(horizon_deg)
             if not np.isfinite(h) or abs(h) > 45:
                 raise ValueError("горизонт: угол от −45° до 45°")
-            item["horizon_deg"] = round(h, 2)
+            item["horizon_deg"], item["horizon_source"] = round(h, 2), ("кадр" if h == 0 else "вручную")
         if midline_px is not None:
             item["midline_px"] = [_xy(p, size, "средняя линия") for p in midline_px][:8]
         if face is not None:
@@ -502,6 +554,9 @@ class AestheticsSteps:
                     "auto": bool(item.get("auto", True)), "auto_info": item.get("_auto"), "auto_pending": False,
                     "auto_ready": self._sam() is not None,
                     "horizon_deg": item["horizon_deg"], "midline_px": item["midline_px"], "face": item["face"],
+                    "horizon_source": item.get("horizon_source"), "lips": item.get("lips"),
+                    "face_auto": bool(item.get("face_auto")), "face_note": item.get("face_note"),
+                    "face_ready": self._face_model() is not None,
                     "overlay": {"scan": [], "photo": [], "points": []}, "widths": {}, "guide": [], "aesthetic": None}
             if item["pairs"] and not valid:
                 info["notes"].append("скан верхней челюсти заменён — пары точек нужно поставить заново")
@@ -572,7 +627,8 @@ class AestheticsSteps:
         return {kind: {"path": item["path"], "pairs": item["pairs"], "upper_n": item["upper_n"],
                        "horizon_deg": item["horizon_deg"], "midline_px": item["midline_px"], "face": item["face"],
                        "distance_mm": item.get("distance_mm"), "auto": bool(item.get("auto", True)),
-                       "override": item.get("override")}
+                       "override": item.get("override"), "lips": item.get("lips"),
+                       "horizon_source": item.get("horizon_source"), "face_auto": bool(item.get("face_auto"))}
                 for kind, item in self.photos.items()}
 
     def _load_photos_meta(self, meta: dict | None):
@@ -597,7 +653,8 @@ class AestheticsSteps:
                         horizon_deg=float(saved.get("horizon_deg") or 0.0),
                         midline_px=list(saved.get("midline_px") or []), face=dict(saved.get("face") or {}),
                         distance_mm=saved.get("distance_mm"), auto=bool(saved.get("auto", True)),
-                        override=saved.get("override"))
+                        override=saved.get("override"), lips=saved.get("lips"),
+                        horizon_source=saved.get("horizon_source"), face_auto=bool(saved.get("face_auto")))
             self.photos[kind] = item
 
 
@@ -625,6 +682,8 @@ def route(h, s, p, method, q):
                                       b.get("distance_mm"), b.get("auto")))
     if p == ["aesthetics", "adjust"]:  # ручная поправка поверх фото (ПКМ — поворот скана, Shift — сдвиг и масштаб)
         return h.json(s.aesthetic_adjust(b.get("kind"), b.get("manual") or {}))
+    if p == ["aesthetics", "face"]:  # «Найти лицо» — MediaPipe: точки лица, губы, горизонт по линии глаз
+        return h.json(s.aesthetic_face(b.get("kind")))
     if p == ["aesthetics", "auto"]:  # доводка нейросетью для новых пар — фоновой задачей окна
         return h.job("Доводка по зубам", lambda progress: s.aesthetic_auto(b.get("kind")))
     if p == ["aesthetics", "refine"]:  # «Уточнить по зубам» — доводка моделью от текущей камеры

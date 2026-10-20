@@ -2,6 +2,7 @@
 монтаж по фото, фото в выгрузке для exocad, кейс, HTTP — на фантоме с синтетической камерой."""
 
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -250,3 +251,28 @@ def test_http_routes(files, tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+FACE_MODELS = os.environ.get("CCD_MODELS", os.path.join(os.path.dirname(__file__), "..", "models"))
+
+
+@pytest.mark.skipif(not os.path.isfile(os.path.join(FACE_MODELS, "face_landmarker.task")), reason="нет модели MediaPipe")
+def test_face_found_automatically_like_smile_creator(files, tmp_path):
+    """Лицо — само при загрузке фото (MediaPipe), как в exocad Smile Creator: точки лица, средняя линия, губы;
+    горизонт — по линии глаз; «0» — по кадру; «Найти лицо» — заново."""
+    pytest.importorskip("mediapipe")
+    from skimage import data
+
+    Image.fromarray(data.astronaut()).save(tmp_path / "portrait.jpg")  # фото NASA, общественное достояние
+    s = _session(files, tmp_path)
+    s.models_dir = FACE_MODELS
+    info = s.aesthetic_add_photo("smile", str(tmp_path / "portrait.jpg"))
+    p = info["photos"]["smile"]
+    assert p["face_ready"] and p["face_auto"] and p["horizon_source"] == "глаза"
+    assert {"pupil_right", "pupil_left", "endocanthion_right", "ala_left"} <= set(p["face"])
+    assert len(p["midline_px"]) >= 5 and len(p["lips"]["inner"]) == 20 and abs(p["horizon_deg"]) < 10
+    p = s.aesthetic_set("smile", horizon_deg=0)["photos"]["smile"]
+    assert p["horizon_source"] == "кадр"
+    s.aesthetic_set("smile", face={"pupil_left": None})
+    p = s.aesthetic_face("smile")["photos"]["smile"]  # заново — всё по MediaPipe
+    assert p["horizon_source"] == "глаза" and "pupil_left" in p["face"]
