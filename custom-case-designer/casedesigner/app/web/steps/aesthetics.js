@@ -13,7 +13,7 @@ const FACE_STEPS = [
   ['ala_right', 'правое крыло носа'], ['ala_left', 'левое крыло носа'],
 ];
 const COLORS = { pair: '#5ec8ff', pending: '#ffd166', midline: '#ff8fab', horizon: '#9be564', face: '#c3a6ff', overlay: 'rgba(94, 200, 255, 0.55)',
-  scan: 'rgba(80, 220, 255, 0.95)', photo: 'rgba(255, 214, 0, 0.9)' };
+  scan: 'rgba(80, 220, 255, 0.95)', photo: 'rgba(255, 214, 0, 0.9)', lips: 'rgba(255, 120, 170, 0.8)' };
 const ROTATE_DEG_PER_PX = 0.1; // ПКМ: поворот скана, как в exocad Smile Design
 const NO_ADJ = () => ({ pitch: 0, yaw: 0, roll: 0, dx: 0, dy: 0, scale: 1 });
 
@@ -341,6 +341,11 @@ export function drawPhoto() {
     line(g, pts[0], pts[pts.length - 1], COLORS.midline, []);
   }
   p.midline_px.forEach((q) => dot(g, at(q), COLORS.midline, 3.5));
+  if (p.lips?.inner?.length > 2) { // контур губ (MediaPipe) — вырез рта
+    g.strokeStyle = COLORS.lips; g.lineWidth = 1; g.setLineDash([3, 3]); g.beginPath();
+    p.lips.inner.forEach((q, i) => { const [x, y] = at(q); if (i) g.lineTo(x, y); else g.moveTo(x, y); });
+    g.closePath(); g.stroke(); g.setLineDash([]);
+  }
   aes.horizon.forEach((q) => dot(g, at(q), COLORS.horizon, 4));
   Object.values(p.face || {}).forEach((q) => dot(g, at(q), COLORS.face, 4));
   p.pairs.forEach((pair, i) => { dot(g, at(pair.px), COLORS.pair, 5); label(g, at(pair.px), String(i + 1)); });
@@ -504,6 +509,7 @@ export async function aestheticAction(action, arg) {
   }
   if (action === 'midreset') return send('aesthetics/set', { midline_px: [] });
   if (action === 'facereset') return send('aesthetics/set', { face: Object.fromEntries(FACE_STEPS.map(([k]) => [k, null])) });
+  if (action === 'face') return send('aesthetics/face', {});
 }
 
 // поля панели: расстояние до камеры, доводка моделью (событие change — app.js)
@@ -608,7 +614,7 @@ export function renderAesthetics() {
       ${pairs ? `<div class="row" style="flex-wrap:wrap;gap:4px;margin-top:6px">${pairs}</div>` : ''}
       ${cameraHtml(p)}${alignHtml(p)}
       ${p.camera ? `<button class="btn ghost wide sm" data-aes="overlay">${aes.overlay ? 'Скрыть' : 'Показать'} контуры зубов</button>` : ''}
-      <div class="label">Горизонт: ${fmt(p.horizon_deg, 1)}°</div>
+      <div class="label">Горизонт: ${fmt(p.horizon_deg, 1)}°${{ 'глаза': ' — по линии глаз', 'кадр': ' — по кадру', 'вручную': ' — вручную' }[p.horizon_source] || ''}</div>
       <div class="row"><button class="btn ghost" data-aes="horizon" data-arg="-0.5">−0,5°</button>
         <button class="btn ghost" data-aes="horizon" data-arg="0.5">+0,5°</button>
         ${mode('horizon', 'По двум точкам', 'Отмена')}
@@ -618,6 +624,9 @@ export function renderAesthetics() {
         ${p.midline_px.length ? '<button class="btn ghost" data-aes="midreset">Сбросить</button>' : ''}</div>
       <div class="label">Точки лица: ${facePoints} из ${FACE_STEPS.length}</div>
       <div class="row">${mode('face', 'Зрачки, углы глаз, нос', 'Готово')}
+        <button class="btn ghost" data-aes="face" ${p.face_ready ? '' : 'disabled'} title="${p.face_ready ? 'Нейросеть MediaPipe: точки лица, губы, горизонт по линии глаз' : 'нет модели MediaPipe (models/face_landmarker.task)'}">Найти лицо</button>
         ${facePoints ? '<button class="btn ghost" data-aes="facereset">Сбросить</button>' : ''}</div>
+      ${p.face_auto ? '<p class="muted small">Лицо найдено автоматически (MediaPipe): точки, средняя линия, губы; горизонт — по линии глаз, как в exocad. «0» — по кадру.</p>' : ''}
+      ${p.face_note ? `<p class="muted small">Лицо: ${hide(p.face_note)}.</p>` : ''}
       ${aestheticHtml(p)}${guideHtml(p)}</div>${mount}`;
 }

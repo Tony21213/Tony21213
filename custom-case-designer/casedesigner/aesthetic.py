@@ -51,6 +51,10 @@ FACE_POINTS = {"pupil_right": 468, "pupil_left": 473, "canthus_right": 33, "cant
                "ala_right": 64, "ala_left": 294, "commissure_right": 61, "commissure_left": 291}
 MIDLINE_POINTS = {"glabella": 9, "nasion": 168, "pronasale": 1, "subnasale": 2, "labrale_superius": 0,
                   "labrale_inferius": 17, "menton": 152}
+# Контуры губ MediaPipe (по кругу): внутренний — край открытого рта (вырез рта на фото с улыбкой), наружный.
+LIPS_INNER = (78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191)
+LIPS_OUTER = (61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185)
+FACE_DETECT_PX = 1600  # MediaPipe — на уменьшенном снимке (быстрее, точность та же)
 FACE_LINES = {"зрачковая": ("pupil_right", "pupil_left"), "углов глаз": ("canthus_right", "canthus_left"),
               "крыльев носа": ("ala_right", "ala_left"), "углов рта": ("commissure_right", "commissure_left")}
 
@@ -512,24 +516,33 @@ def _wrap(a: float) -> float:
 
 
 def face_hints(image: np.ndarray, model_path: str) -> dict:
-    """Точки лица по MediaPipe Face Landmarker: зрачки, углы глаз, крылья носа, углы рта и срединные точки (пиксели)."""
+    """Точки лица по MediaPipe Face Landmarker: зрачки, углы глаз, крылья носа, углы рта, срединные точки,
+    контуры губ (lips_inner — край открытого рта, lips_outer), пиксели снимка; горизонт по линии глаз — eye_line_deg
+    (как exocad Smile Creator: линия глаз — горизонталь кадра)."""
     import mediapipe as mp
     from mediapipe.tasks.python import BaseOptions, vision
+    from PIL import Image
 
+    h, w = image.shape[:2]
+    k = min(1.0, FACE_DETECT_PX / max(w, h))
+    small = image if k == 1.0 else np.asarray(Image.fromarray(np.ascontiguousarray(image[..., :3])).resize(
+        (max(1, int(w * k)), max(1, int(h * k))), Image.BILINEAR))
     options = vision.FaceLandmarkerOptions(base_options=BaseOptions(model_asset_path=model_path), num_faces=1)
     landmarker = vision.FaceLandmarker.create_from_options(options)
     try:
-        result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(image)))
+        result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(small[..., :3])))
     finally:
         landmarker.close()
     if not result.face_landmarks:
         raise ValueError("лицо на фото не найдено")
     lm = result.face_landmarks[0]
-    h, w = image.shape[:2]
 
     def px(i):
         return (lm[i].x * w, lm[i].y * h)
 
     points = {name: px(i) for name, i in FACE_POINTS.items()}
     points["midline"] = [px(i) for i in MIDLINE_POINTS.values()]
+    points["lips_inner"] = [px(i) for i in LIPS_INNER]
+    points["lips_outer"] = [px(i) for i in LIPS_OUTER]
+    points["eye_line_deg"] = horizon_from_points(points["pupil_right"], points["pupil_left"])
     return points
