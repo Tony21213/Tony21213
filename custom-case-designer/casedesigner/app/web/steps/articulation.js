@@ -291,6 +291,8 @@ export async function playArticulation(id) {
     for (const frame of motion.frames) {
       viewer.setTransform(lower.id, matMul(frame, base));
       for (const s of lowerStructures) viewer.setObjectTransform(s.key, matMul(frame, raise));
+      for (const key of ['roots:lower', 'axes:lower', 'joint:right:head', 'joint:left:head'])
+        viewer.setObjectTransform(key, matMul(frame, raise));
       await new Promise((ok) => setTimeout(ok, 28));
     }
     applyRaise();
@@ -315,7 +317,7 @@ export function applyRaise(M = raiseMatrix()) {
   const lower = state.scans.find((s) => s.jaw === 'lower' && s.role !== 'bite' && s.transform);
   if (lower) viewer.setTransform(lower.id, matMul(M, lower.transform));
   for (const s of state.structures.filter((x) => x.jaw === 'lower')) viewer.setObjectTransform(s.key, M);
-  for (const key of ['roots:lower', 'axes:lower']) viewer.setObjectTransform(key, M);
+  for (const key of ['roots:lower', 'axes:lower', 'joint:right:head', 'joint:left:head']) viewer.setObjectTransform(key, M);
 }
 
 async function drawTemplate() {

@@ -106,3 +106,39 @@ def test_case_roundtrip_and_legacy_defaults(tmp_path):
     s.save_case(str(tmp_path / "old.ccdcase"))
     again.open_case(str(tmp_path / "old.ccdcase"))
     assert again._rehab()["distraction_right_mm"] == again._rehab()["distraction_left_mm"] == 0
+
+
+def test_movements_start_at_distracted_condyles(tmp_path, monkeypatch):
+    import trimesh
+    from casedesigner import kinematics as kin
+    from casedesigner.jawcase import Mesh
+
+    s = session(tmp_path)
+    # Небольшие замкнутые поверхности: расчёт ведения доступен и без КТ.
+    mesh = trimesh.creation.box((40, 30, 2))
+    s.jaw.upper = Mesh(mesh.vertices + [0, -15, -25], mesh.faces, "верх")
+    s.jaw.lower = Mesh(mesh.vertices + [0, -15, -30], mesh.faces, "низ")
+    a = s.jaw.anatomy
+    s.articulation_rehab(distraction_right_mm=2, distraction_left_mm=1, raise_mm=1)
+    base = s.rehab_transform()
+    heads = rh.moved_anatomy(a, base)
+    observed = []
+    original = kin.protrusion
+
+    def capture(anatomy, settings, travel, occ):
+        observed.append((anatomy, occ))
+        return original(anatomy, settings, travel, None)
+
+    monkeypatch.setattr(kin, "protrusion", capture)
+    s.articulation_generate(travel=1)
+    assert len(s.jaw.movements) == 3
+    assert s.jaw.anatomy is a and np.array_equal(s.jaw.lower_fix, np.eye(4))
+    for key in ("condyle_right", "condyle_left", "incisal"):
+        assert np.allclose(observed[0][0].points[key], heads.points[key])
+    guides = s.articulation_guides()
+    assert np.allclose(guides["points"]["condyle_right"], heads.points["condyle_right"], atol=.001)
+    path = next(p for p in guides["paths"] if "протруз" in p["name"].lower())
+    assert np.allclose(path["condyle_right"][0], heads.points["condyle_right"], atol=.001)
+    assert np.linalg.norm(np.array(path["condyle_right"][-1]) - path["condyle_right"][0]) > .5
+    s.articulation_rehab(distraction_right_mm=0)
+    assert not s.jaw.movements  # старые рассчитанные пути больше не соответствуют положению

@@ -488,23 +488,37 @@ class ArticulationSteps:
         """Построить виртуальные движения для просмотра до экспорта."""
         if not self._articulation_ready:
             self._prepare_jawcase()
-        self.jaw.generate(travel=float(travel), guided=True)
+        from ... import kinematics as kin
+
+        active = self._rehab_jaw()
+        if active is self.jaw:
+            self.jaw.generate(travel=float(travel), guided=True)
+        else:
+            occ = active.occlusion
+            records = [kin.protrusion(active.anatomy, active.settings, float(travel), occ),
+                       kin.laterotrusion(active.anatomy, active.settings, "right", float(travel), occ),
+                       kin.laterotrusion(active.anatomy, active.settings, "left", float(travel), occ)]
+            self.jaw._edit("движения после реабилитации")
+            self.jaw.movements = {k: m for k, m in self.jaw.movements.items() if m.recorded}
+            for rec in records:
+                self.jaw._add(rec, recorded=False)
         return self.jaw.state()
 
     def articulation_analysis(self) -> dict:
         """Рассчитать сводку суставных путей и контактов."""
         if not self._articulation_ready:
             self._prepare_jawcase()
-        return self.jaw.analysis()
+        return self._rehab_jaw().analysis()
 
     def articulation_report(self) -> dict:
         """Рассчитать траектории и карту контактов по каждому движению."""
         if not self._articulation_ready:
             self._prepare_jawcase()
-        analysis = self.jaw.analysis()
+        active = self._rehab_jaw()
+        analysis = active.analysis()
         contacts = []
         for movement in self.jaw.movements.values():
-            result = self.jaw.contacts(movement.id)
+            result = active.contacts(movement.id)
             contacts.append({"id": movement.id, "name": movement.recording.name,
                              "sectors": result["sectors"], "teeth": result["teeth"],
                              "pairs": len(result["teeth"])})
@@ -520,7 +534,7 @@ class ArticulationSteps:
         if not self._articulation_ready or self.jaw.anatomy is None:
             return {"available": False, "points": {}, "paths": [], "axes": fallback_axes,
                     "ct_axes": ct_axes(fallback_axes)}
-        a = self.jaw.anatomy
+        a = self.rehab_anatomy()
         axes = {name: np.asarray(a.frame, float)[i, :3].round(6).tolist()
                 for i, name in enumerate(("right", "forward", "up"))}
         points = {k: np.asarray(v, float).round(3).tolist() for k, v in a.points.items()
@@ -569,6 +583,19 @@ class ArticulationSteps:
 
         T = self.rehab_transform()
         return self.jaw.anatomy if T is None else rh.moved_anatomy(self.jaw.anatomy, T)
+
+    def _rehab_jaw(self):
+        """Отдельная сцена расчёта: монтаж и посадка исходного кейса не изменяются."""
+        import copy
+
+        T = self.rehab_transform()
+        if T is None:
+            return self.jaw
+        active = copy.copy(self.jaw)
+        active.anatomy = self.rehab_anatomy()
+        active.lower_fix = T @ np.asarray(self.jaw.lower_fix, float)
+        active._occlusion = None
+        return active
 
     def rehab_template(self):
         """Шаблон окклюзионной плоскости (rehab.template) через мыщелки и резцовую точку после подъёма или None."""
