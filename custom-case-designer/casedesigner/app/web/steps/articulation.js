@@ -169,13 +169,15 @@ export function drawArticulationGuides() {
   const current = state.articulationCondyles?.points || {};
   const p = g?.points || {};
   const space = condyleSpace();
-  const right = current.right?.[space] || (!state.articulationCondyles?.available ? p.condyle_right : null);
-  const left = current.left?.[space] || (!state.articulationCondyles?.available ? p.condyle_left : null);
+  const rehabActive = !!(state.rehab?.raise_mm || state.rehab?.distraction_right_mm || state.rehab?.distraction_left_mm);
+  const rehabilitated = !state.condyleEditing && rehabActive;
+  const right = (rehabilitated ? p.condyle_right : null) || current.right?.[space] || (!state.articulationCondyles?.available ? p.condyle_right : null);
+  const left = (rehabilitated ? p.condyle_left : null) || current.left?.[space] || (!state.articulationCondyles?.available ? p.condyle_left : null);
   if (right) viewer.setMarker('art:condyle_right', right, '#ff6b6b');
   if (left) viewer.setMarker('art:condyle_left', left, '#6ba8ff');
   if (p.incisal) viewer.setMarker('art:incisal', p.incisal, '#f5d76e');
   if (right && left) viewer.setPath('art:hinge', [right, left], '#ffffff');
-  if ((space === 'ct' && state.articulationCondyles?.bite === 'scan') || !g?.available
+  if ((state.condyleEditing && rehabActive) || (!rehabilitated && space === 'ct' && state.articulationCondyles?.bite === 'scan') || !g?.available
       || (state.articulationCondyles?.available && !state.articulationCondyles.applied)) return;
   drawJoint3dPaths(); // путь головки от прикуса — по черепу КТ
   const colors = { condyle_right: '#ff6b6b', condyle_left: '#6ba8ff', incisal: '#f5d76e' };
@@ -291,6 +293,8 @@ export async function playArticulation(id) {
     for (const frame of motion.frames) {
       viewer.setTransform(lower.id, matMul(frame, base));
       for (const s of lowerStructures) viewer.setObjectTransform(s.key, matMul(frame, raise));
+      for (const key of ['roots:lower', 'axes:lower', 'joint:right:head', 'joint:left:head'])
+        viewer.setObjectTransform(key, matMul(frame, raise));
       await new Promise((ok) => setTimeout(ok, 28));
     }
     applyRaise();
@@ -302,11 +306,12 @@ export async function playArticulation(id) {
 const IDENTITY4 = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
 const TEMPLATE_KEYS = ['occl:surface', 'occl:curves'];
 let templateKey = '';
+let distractionLinked = true;
 
 // Нижняя челюсть в окне 3D: с прикусом сканов — одна матрица, как на КТ — другая (сервер считает обе).
 export function raiseMatrix() {
   const r = state.rehab;
-  if (state.step !== 'articulation' || !r?.raise_mm) return IDENTITY4;
+  if (state.step !== 'articulation' || state.condyleEditing || !(r?.raise_mm || r?.distraction_right_mm || r?.distraction_left_mm)) return IDENTITY4;
   return state.biteView?.on ? r.display_bite : r.display_ct;
 }
 
@@ -314,7 +319,7 @@ export function applyRaise(M = raiseMatrix()) {
   const lower = state.scans.find((s) => s.jaw === 'lower' && s.role !== 'bite' && s.transform);
   if (lower) viewer.setTransform(lower.id, matMul(M, lower.transform));
   for (const s of state.structures.filter((x) => x.jaw === 'lower')) viewer.setObjectTransform(s.key, M);
-  for (const key of ['roots:lower', 'axes:lower']) viewer.setObjectTransform(key, M);
+  for (const key of ['roots:lower', 'axes:lower', 'joint:right:head', 'joint:left:head']) viewer.setObjectTransform(key, M);
 }
 
 async function drawTemplate() {
@@ -342,10 +347,27 @@ export async function loadRehab() {
 
 export async function rehabAction(kind, value) {
   const r = state.rehab || {};
+  if (kind === 'distraction-linked') {
+    distractionLinked = !!value;
+    if (!distractionLinked) { render(); return; }
+    kind = 'distraction-right'; value = r.distraction_right_mm || 0;
+  }
   const body = kind === 'raise' ? { raise_mm: Number(value) }
     : kind === 'template' ? { template: !!value }
       : { radius: value === 'reset' ? r.monson_mm : Math.max(60, Math.min(160, (r.radius || r.monson_mm) + Number(value))) };
-  try { state.rehab = await post('articulation/rehab', body); } catch (e) { toast(e.message); }
+  if (kind.startsWith('distraction-')) {
+    delete body.radius;
+    const side = kind.endsWith('right') ? 'right' : 'left';
+    body[`distraction_${side}_mm`] = Number(value);
+    if (distractionLinked) body[`distraction_${side === 'right' ? 'left' : 'right'}_mm`] = Number(value);
+  }
+  try {
+    state.rehab = await post('articulation/rehab', body);
+    const updated = await get('state');
+    state.articulation = updated.articulation;
+    state.articulationGuides = updated.articulation_guides;
+    drawArticulationGuides();
+  } catch (e) { toast(e.message); }
   render();
 }
 
@@ -370,6 +392,16 @@ function rehabCard(mounted) {
     <div class="aes-row"><span>Подъём по резцам</span><b>${fmt(r.raise_mm, 1)} мм</b></div>
     <input type="range" class="rehab-range" min="0" max="10" step="0.5" value="${r.raise_mm}" data-rehab-raise>
     <p class="muted small">${raiseText}</p>
+    <div class="distraction-controls"><h4>Дистракция мыщелков</h4>
+      <label class="joint-toggle"><input type="checkbox" data-distraction-linked ${distractionLinked ? 'checked' : ''}>Обе стороны вместе</label>
+      ${['right', 'left'].map((side) => `<label class="distraction-side"><span>${side === 'right' ? 'Справа' : 'Слева'}</span>
+        <b>${fmt(r[`distraction_${side}_mm`] || 0, 1)} мм</b>
+        <input type="range" class="rehab-range" min="0" max="3" step="0.1" value="${r[`distraction_${side}_mm`] || 0}" data-distraction="${side}"></label>`).join('')}
+      <p class="muted small">Головки опускаются по вертикали монтажа; без подъёма резцы остаются на месте.
+        Разобщение: резцы ${fmt(r.report?.incisal_mm || 0, 2)} мм;
+        моляры справа ${m.right == null ? '—' : fmt(m.right, 2)} мм,
+        слева ${m.left == null ? '—' : fmt(m.left, 2)} мм.
+        После изменения рассчитайте движения заново.</p></div>
     <label class="joint-toggle"><input type="checkbox" data-rehab-template ${r.template ? 'checked' : ''}><span>Шаблон окклюзионной плоскости</span>
       <small>сфера через мыщелки и резцы: кривые Шпее и Уилсона</small></label>${tpl}</div>`;
 }

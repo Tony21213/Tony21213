@@ -470,3 +470,9 @@ button.badge:hover { color: var(--text); }
 /* --- высота прикуса и шаблон окклюзионной плоскости (шаг «Артикулятор») --- */
 .rehab-range { width: 100%; margin: 4px 0 2px; accent-color: var(--accent); }
 .joint3d-card .dot { display: inline-block; margin-right: 6px; vertical-align: middle; border-radius: 50%; }
+
+/* Разгрузка суставов по сторонам в карточке реабилитации. */
+.distraction-controls { margin: 12px 0; border-top: 1px solid var(--border, #343a46); padding-top: 10px; }
+.distraction-controls h4 { margin: 0 0 8px; }
+.distraction-side { display: grid; grid-template-columns: 1fr auto; gap: 4px; margin-top: 8px; }
+.distraction-side input { grid-column: 1 / -1; width: 100%; }

@@ -17,6 +17,7 @@ from .register import apply, rigid
 
 MONSON_MM = 101.6  # 4 дюйма: радиус сферы Монсона (Бонвиль — сторона треугольника 4 дюйма)
 MAX_RAISE_MM = 15.0
+MAX_DISTRACTION_MM = 3.0
 MOLAR_BACK_MM = (25.0, 35.0)  # область первых моляров: на столько мм позади резцовой точки
 TEMPLATE_HALF_WIDTH = 30.0  # лоскут шаблона: ±мм вправо-влево от середины
 TEMPLATE_BACK_MM, TEMPLATE_FRONT_MM = 50.0, 3.0  # назад от резцовой точки (до вторых моляров) и вперёд
@@ -68,6 +69,60 @@ def raise_transform(anatomy, incisal_mm: float) -> tuple[np.ndarray, float]:
     deg = sign * (lo + hi) / 2
     return _rotation(p, a, deg), abs(deg)
 
+
+def distraction_transform(anatomy, right_mm: float, left_mm: float) -> tuple[np.ndarray, dict]:
+    """Дистракция 0–3 мм по вертикали монтажа, резцовая точка неподвижна.
+
+    Жёсткий поворот вокруг резцов: два угла вокруг поперечной и передней осей
+    подбираются по вертикальному опусканию центров мыщелков. Горизонтальные
+    координаты могут меняться; длины и межмыщелковое расстояние сохраняются.
+    Возвращает движение в системе кейса и фактическое опускание по сторонам.
+    """
+    from scipy.optimize import least_squares
+    from scipy.spatial.transform import Rotation
+
+    mm = np.array([right_mm, left_mm], dtype=float)
+    if not np.isfinite(mm).all() or np.any(mm < 0) or np.any(mm > MAX_DISTRACTION_MM):
+        raise ValueError("дистракция мыщелков: от 0 до 3 мм")
+    right, ant, up = _axes(anatomy.frame)
+    inc = np.asarray(anatomy.points["incisal"], float)
+    heads = np.array([anatomy.points[f"condyle_{s}"] for s in ("right", "left")], float)
+
+    def pose(angles):
+        R = Rotation.from_rotvec(angles[0] * right + angles[1] * ant).as_matrix()
+        return rigid(R, inc - R @ inc)
+
+    def residual(angles):
+        return (heads - apply(pose(angles), heads)) @ up - mm
+
+    if np.any(mm):
+        fit = least_squares(residual, np.zeros(2), bounds=(-np.pi / 4, np.pi / 4),
+                            xtol=1e-12, ftol=1e-12, gtol=1e-12)
+        if not fit.success or np.max(np.abs(residual(fit.x))) > 0.02:
+            raise ValueError("дистракцию не получить: проверьте мыщелки и резцовую точку монтажа")
+        T = pose(fit.x)
+    else:
+        T = np.eye(4)
+    drops = (heads - apply(T, heads)) @ up
+    return T, {"right_mm": float(drops[0]), "left_mm": float(drops[1]),
+               "incisal_mm": float((inc - apply(T, inc[None])[0]) @ up)}
+
+
+
+def moved_anatomy(anatomy, transform):
+    """Точки нижней челюсти после движения, система монтажа сохраняется."""
+    from .motion import Anatomy
+
+    return Anatomy(np.asarray(anatomy.frame).copy(),
+                   {k: apply(transform, np.asarray(v, float)[None])[0] for k, v in anatomy.points.items()},
+                   anatomy.source)
+
+
+def rehabilitation_transform(anatomy, raise_mm=0.0, right_mm=0.0, left_mm=0.0):
+    """Сначала дистракция, затем подъём вокруг уже опущенных мыщелков."""
+    D, report = distraction_transform(anatomy, right_mm, left_mm)
+    raised, deg = raise_transform(moved_anatomy(anatomy, D), raise_mm)
+    return raised @ D, deg, report
 
 def raise_report(anatomy, T: np.ndarray, lower_vertices) -> dict:
     """Сколько подъём даёт по вертикали монтажа: на резцовой точке и в области первых моляров справа и слева
