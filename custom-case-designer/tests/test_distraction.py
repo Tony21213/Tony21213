@@ -227,3 +227,43 @@ def test_export_builds_movements_from_new_axis(tmp_path):
         point = current.points[f"condyle_{side}"]
         assert np.allclose(apply(opening[1], point[None])[0], point, atol=1e-8)
     assert np.allclose(case.lower.vertices, apply(s.rehab_transform(), s.jaw.lower.vertices))
+
+
+def test_preview_markers_and_editing_keep_their_coordinate_spaces():
+    from pathlib import Path
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("нужен Node.js для проверки окна")
+    source = (Path(__file__).parents[1] / "casedesigner/app/web/steps/articulation.js").read_text(encoding="utf-8")
+    handlers = source[source.index("export function clearArticulationGuides()") : source.index("export const matMul =")]
+    matrix = source[source.index("export function raiseMatrix()") : source.index("export function applyRaise(")]
+    script = r"""
+const assert = require('node:assert/strict');
+const IDENTITY4 = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]];
+const posed = [[1,0,0,0],[0,1,0,0],[0,0,1,-2],[0,0,0,1]];
+const state = {step:'articulation', biteView:{on:true}, rehab:{distraction_right_mm:2, display_bite:posed},
+  articulationGuides:{available:true, points:{condyle_right:[50,-90,-2], condyle_left:[-50,-90,-2]},
+    paths:[{id:'test',condyle_right:[],condyle_left:[],incisal:[]}]},
+  articulationCondyles:{available:true, applied:true, bite:'ct', segmentation:{mandible:true},
+    points:{right:{view:[50,-90,0]},left:{view:[-50,-90,0]}}}};
+const viewer = {objects:new Map(), markers:{}, paths:[], remove(){},
+  setMarker(k,p){this.markers[k]=p},setPath(k){this.paths.push(k)}};
+""" + re.sub(r"^export ", "", handlers + matrix, flags=re.M) + r"""
+drawArticulationGuides();
+assert.deepEqual(viewer.markers['art:condyle_right'], [50,-90,-2]);
+assert.deepEqual(raiseMatrix(), posed);
+state.condyleEditing='right'; viewer.paths=[];
+drawArticulationGuides();
+assert.deepEqual(viewer.markers['art:condyle_right'], [50,-90,0]);
+assert.deepEqual(raiseMatrix(), IDENTITY4);
+assert(!viewer.paths.includes('art:path:test:condyle_right'));
+state.rehab={};
+drawArticulationGuides();
+assert(viewer.paths.includes('art:path:test:condyle_right'));
+"""
+    result = subprocess.run([node, "-"], input=script, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
