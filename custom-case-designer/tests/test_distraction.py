@@ -177,3 +177,53 @@ def test_distraction_in_export(export_case, project, register, tmp_path):
     lower = trimesh.load_mesh(tmp_path / "distraction-export" / "distraction-export-lowerjaw.ply", process=False)
     expected = apply(np.asarray(result["case_to_articulator"]), case.lower.vertices)
     assert np.allclose(lower.vertices, expected, atol=.001)
+
+
+def test_http_distraction_validation_and_pose(tmp_path):
+    import json
+    from urllib.request import build_opener, ProxyHandler, Request
+    from urllib.error import HTTPError
+    from casedesigner.app.server import serve
+
+    s = session(tmp_path)
+    server = serve(s)
+    client = build_opener(ProxyHandler({}))
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/api/articulation/rehab"
+        body = json.dumps({"distraction_right_mm": 2, "distraction_left_mm": 1}).encode()
+        with client.open(Request(url, body, {"Content-Type": "application/json"})) as response:
+            info = json.load(response)
+        assert info["distraction"]["right_mm"] == pytest.approx(2, abs=.02)
+        assert info["report"]["incisal_mm"] == pytest.approx(0, abs=.01)
+        assert not np.allclose(info["display_bite"], np.eye(4))
+        with pytest.raises(HTTPError) as err:
+            client.open(Request(url, b'{"distraction_left_mm":4}', {"Content-Type": "application/json"}))
+        assert err.value.code == 400
+        assert s.rehab["distraction_left_mm"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_export_builds_movements_from_new_axis(tmp_path):
+    import trimesh
+    from types import SimpleNamespace
+    from casedesigner import exocad_articulator_export as xa
+    from casedesigner.jawcase import Mesh
+
+    s = session(tmp_path)
+    box = trimesh.creation.box((40, 30, 2))
+    s.jaw.upper = Mesh(box.vertices + [0, -15, -25], box.faces, "верх")
+    s.jaw.lower = Mesh(box.vertices + [0, -15, -30], box.faces, "низ")
+    for side, own in (("upper", s.jaw.upper), ("lower", s.jaw.lower)):
+        s.scans[side] = {"scan": own, "role": "jaw", "path": None,
+                         "reg": SimpleNamespace(jaw=side, transform=np.eye(4))}
+    s.articulation_rehab(distraction_right_mm=2, distraction_left_mm=1)
+    current = s.rehab_anatomy()
+    case = xa.case_from_session(s)
+    assert len(case.movements) == 4 and not s.jaw.movements
+    opening = next(frames for name, frames, fps in case.movements if "открыв" in name.lower())
+    for side in ("right", "left"):
+        point = current.points[f"condyle_{side}"]
+        assert np.allclose(apply(opening[1], point[None])[0], point, atol=1e-8)
+    assert np.allclose(case.lower.vertices, apply(s.rehab_transform(), s.jaw.lower.vertices))

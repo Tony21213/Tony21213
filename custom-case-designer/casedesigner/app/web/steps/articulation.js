@@ -169,13 +169,14 @@ export function drawArticulationGuides() {
   const current = state.articulationCondyles?.points || {};
   const p = g?.points || {};
   const space = condyleSpace();
-  const right = current.right?.[space] || (!state.articulationCondyles?.available ? p.condyle_right : null);
-  const left = current.left?.[space] || (!state.articulationCondyles?.available ? p.condyle_left : null);
+  const rehabilitated = !state.condyleEditing && !!(state.rehab?.raise_mm || state.rehab?.distraction_right_mm || state.rehab?.distraction_left_mm);
+  const right = (rehabilitated ? p.condyle_right : null) || current.right?.[space] || (!state.articulationCondyles?.available ? p.condyle_right : null);
+  const left = (rehabilitated ? p.condyle_left : null) || current.left?.[space] || (!state.articulationCondyles?.available ? p.condyle_left : null);
   if (right) viewer.setMarker('art:condyle_right', right, '#ff6b6b');
   if (left) viewer.setMarker('art:condyle_left', left, '#6ba8ff');
   if (p.incisal) viewer.setMarker('art:incisal', p.incisal, '#f5d76e');
   if (right && left) viewer.setPath('art:hinge', [right, left], '#ffffff');
-  if ((space === 'ct' && state.articulationCondyles?.bite === 'scan') || !g?.available
+  if (state.condyleEditing || (!rehabilitated && space === 'ct' && state.articulationCondyles?.bite === 'scan') || !g?.available
       || (state.articulationCondyles?.available && !state.articulationCondyles.applied)) return;
   drawJoint3dPaths(); // путь головки от прикуса — по черепу КТ
   const colors = { condyle_right: '#ff6b6b', condyle_left: '#6ba8ff', incisal: '#f5d76e' };
@@ -309,7 +310,7 @@ let distractionLinked = true;
 // Нижняя челюсть в окне 3D: с прикусом сканов — одна матрица, как на КТ — другая (сервер считает обе).
 export function raiseMatrix() {
   const r = state.rehab;
-  if (state.step !== 'articulation' || !(r?.raise_mm || r?.distraction_right_mm || r?.distraction_left_mm)) return IDENTITY4;
+  if (state.step !== 'articulation' || state.condyleEditing || !(r?.raise_mm || r?.distraction_right_mm || r?.distraction_left_mm)) return IDENTITY4;
   return state.biteView?.on ? r.display_bite : r.display_ct;
 }
 
