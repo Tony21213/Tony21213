@@ -548,6 +548,8 @@ class ArticulationSteps:
         state = getattr(self, "rehab", None)
         if state is None:
             state = self.rehab = {"raise_mm": 0.0, "template": False, "radius": rh.MONSON_MM}
+        state.setdefault("distraction_right_mm", 0.0)
+        state.setdefault("distraction_left_mm", 0.0)
         return state
 
     def rehab_transform(self):
@@ -555,9 +557,18 @@ class ArticulationSteps:
         from ... import rehab as rh
 
         st = self._rehab()
-        if not st["raise_mm"] or self.jaw.anatomy is None:
+        if self.jaw.anatomy is None or not any(st[k] for k in
+                ("raise_mm", "distraction_right_mm", "distraction_left_mm")):
             return None
-        return rh.raise_transform(self.jaw.anatomy, st["raise_mm"])[0]
+        return rh.rehabilitation_transform(self.jaw.anatomy, st["raise_mm"],
+                                            st["distraction_right_mm"], st["distraction_left_mm"])[0]
+
+    def rehab_anatomy(self):
+        """Анатомия нижней челюсти после дистракции и подъёма, для движений."""
+        from ... import rehab as rh
+
+        T = self.rehab_transform()
+        return self.jaw.anatomy if T is None else rh.moved_anatomy(self.jaw.anatomy, T)
 
     def rehab_template(self):
         """Шаблон окклюзионной плоскости (rehab.template) через мыщелки и резцовую точку после подъёма или None."""
@@ -568,16 +579,19 @@ class ArticulationSteps:
         if not st["template"] or a is None:
             return None
         R = self.rehab_transform()
+        if R is not None:
+            a = rh.moved_anatomy(a, R)
         inc = np.asarray(a.points["incisal"], float)
-        inc = inc if R is None else apply(R, inc[None])[0]
         key = (np.asarray(a.frame, float).tobytes(), inc.tobytes(), st["radius"],
+               tuple(tuple(a.points[k]) for k in ("condyle_right", "condyle_left")),
                tuple(sorted((k, tuple(np.round(v, 3))) for k, v in self.landmarks.items())))
         cached = getattr(self, "_rehab_cache", None)
         if cached is None or cached[0] != key:
             cached = self._rehab_cache = (key, rh.template(a, inc, st["radius"], self.landmarks))
         return cached[1]
 
-    def articulation_rehab(self, raise_mm=None, template=None, radius=None) -> dict:
+    def articulation_rehab(self, raise_mm=None, template=None, radius=None,
+                           distraction_right_mm=None, distraction_left_mm=None) -> dict:
         """Подъём высоты прикуса по оси пациента (мм по резцам) и шаблон окклюзионной плоскости (вкл., радиус сферы):
         сводка (угол, на резцах и молярах; сфера, глубина кривой Шпее, наклон к FH и SN) и матрицы показа нижней
         челюсти в окне 3D (в прикусе сканов и как на КТ)."""
@@ -589,13 +603,20 @@ class ArticulationSteps:
         new = dict(st)
         if raise_mm is not None:
             new["raise_mm"] = round(float(raise_mm), 2)
-            rh.raise_transform(self.jaw.anatomy, new["raise_mm"])  # проверка диапазона до записи
         if template is not None:
             new["template"] = bool(template)
         if radius is not None:
             new["radius"] = round(float(radius), 1)
             rh.monson_center(self.jaw.anatomy, self.jaw.anatomy.points["incisal"], new["radius"])
+        for side, value in (("right", distraction_right_mm), ("left", distraction_left_mm)):
+            if value is not None:
+                new[f"distraction_{side}_mm"] = float(value)
+        rh.rehabilitation_transform(self.jaw.anatomy, new["raise_mm"],
+                                     new["distraction_right_mm"], new["distraction_left_mm"])
+        changed = any(new[k] != st[k] for k in ("raise_mm", "distraction_right_mm", "distraction_left_mm"))
         st.update(new)
+        if changed:
+            self.jaw.movements = {k: m for k, m in self.jaw.movements.items() if m.recorded}
         return self.rehab_info()
 
     def rehab_info(self) -> dict:
@@ -607,11 +628,13 @@ class ArticulationSteps:
         a = self.jaw.anatomy
         if a is None:
             return out
-        R, deg = rh.raise_transform(a, st["raise_mm"])
+        R, deg, distraction = rh.rehabilitation_transform(a, st["raise_mm"],
+                                                          st["distraction_right_mm"], st["distraction_left_mm"])
+        out["distraction"] = distraction
         out["angle_deg"] = round(deg, 2)
         lower = getattr(self.jaw, "lower_vertices", None)
         out["report"] = rh.raise_report(a, R, lower if lower is not None else np.zeros((0, 3)))
-        if st["raise_mm"]:
+        if self.rehab_transform() is not None:
             M = R @ np.asarray(self.jaw.lower_fix, float)
             bite = np.eye(4) if self.bite_motion is None else np.asarray(self.bite_motion, float)
             out["display_bite"], out["display_ct"] = M.round(9).tolist(), (M @ bite).round(9).tolist()
@@ -654,7 +677,8 @@ def route(h, s, p, method, q):
     if p == ["articulation", "rehab"]:  # подъём прикуса по оси и шаблон окклюзионной плоскости (rehab.py)
         if method == "POST":
             b = h.body()
-            return h.json(s.articulation_rehab(b.get("raise_mm"), b.get("template"), b.get("radius")))
+            return h.json(s.articulation_rehab(b.get("raise_mm"), b.get("template"), b.get("radius"),
+                                                b.get("distraction_right_mm"), b.get("distraction_left_mm")))
         return h.json(s.rehab_info())
     if len(p) == 3 and p[:2] == ["articulation", "template"] and method == "GET":
         return h.binary(s.rehab_mesh(p[2]))

@@ -108,6 +108,22 @@ def distraction_transform(anatomy, right_mm: float, left_mm: float) -> tuple[np.
                "incisal_mm": float((inc - apply(T, inc[None])[0]) @ up)}
 
 
+
+def moved_anatomy(anatomy, transform):
+    """Точки нижней челюсти после движения, система монтажа сохраняется."""
+    from .motion import Anatomy
+
+    return Anatomy(np.asarray(anatomy.frame).copy(),
+                   {k: apply(transform, np.asarray(v, float)[None])[0] for k, v in anatomy.points.items()},
+                   anatomy.source)
+
+
+def rehabilitation_transform(anatomy, raise_mm=0.0, right_mm=0.0, left_mm=0.0):
+    """Сначала дистракция, затем подъём вокруг уже опущенных мыщелков."""
+    D, report = distraction_transform(anatomy, right_mm, left_mm)
+    raised, deg = raise_transform(moved_anatomy(anatomy, D), raise_mm)
+    return raised @ D, deg, report
+
 def raise_report(anatomy, T: np.ndarray, lower_vertices) -> dict:
     """Сколько подъём даёт по вертикали монтажа: на резцовой точке и в области первых моляров справа и слева
     (верхушки бугров нижнего скана в MOLAR_BACK_MM за резцами)."""

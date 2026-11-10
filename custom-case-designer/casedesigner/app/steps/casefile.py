@@ -144,7 +144,9 @@ class CaseFileSteps:
         saved = meta.get("rehab")  # полная реабилитация: подъём прикуса и шаблон
         self.rehab = None if not isinstance(saved, dict) else {
             "raise_mm": float(saved.get("raise_mm") or 0.0), "template": bool(saved.get("template")),
-            "radius": float(saved.get("radius") or 101.6)}
+            "radius": float(saved.get("radius") or 101.6),
+            "distraction_right_mm": float(saved.get("distraction_right_mm") or 0.0),
+            "distraction_left_mm": float(saved.get("distraction_left_mm") or 0.0)}
         self.case_path = path
         self._remember(path)
         return self.state()
