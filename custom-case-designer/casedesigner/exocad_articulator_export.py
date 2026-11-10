@@ -321,6 +321,14 @@ def export(case: ArticulatorCase, project_dir: str, out_dir: str | None = None, 
                                            if {"right", "left"} <= set(molars) else "") +
                      "): нижняя челюсть, её кость, корни и карта десны — в поднятом положении; движения в exocad — от "
                      "него (проверить в exocad)")
+    if r.get("distraction_right_mm") or r.get("distraction_left_mm"):
+        report = r.get("report") or {}
+        notes.append(f"дистракция мыщелков: справа {r.get('distraction_right_mm', 0):g} мм, "
+                     f"слева {r.get('distraction_left_mm', 0):g} мм; разобщение по резцам "
+                     f"{report.get('incisal_mm', 0):g} мм; нижний скан, кость, корни и карта десны "
+                     "перемещены вместе; файл движений — от нового положения. Параметра дистракции "
+                     "в артикуляторе exocad нет: проверяйте импортированные движения из .jawmotion, "
+                     "а не повторный расчёт стандартным артикулятором")
     if r.get("template_info"):
         t = r["template_info"]
         notes.append(f"шаблон окклюзионной плоскости — сфера {t['radius']:g} мм через мыщелки и резцы, кривая Шпее "
@@ -407,7 +415,7 @@ def case_from_session(session) -> ArticulatorCase:
         raise ValueError("нужны совмещённые сканы обеих челюстей")
     bite = np.eye(4) if session.bite_motion is None else np.asarray(session.bite_motion, float)
     lower_T = jaw.lower_fix @ bite
-    raise_T = getattr(session, "rehab_transform", lambda: None)()  # подъём прикуса по оси пациента (rehab.py)
+    raise_T = getattr(session, "rehab_transform", lambda: None)()  # дистракция и подъём прикуса (rehab.py)
     if raise_T is not None:
         lower_T = raise_T @ lower_T
 
@@ -461,11 +469,18 @@ def case_from_session(session) -> ArticulatorCase:
                 break
             paths[side] = info["path"]
     recs = [m.recording for m in jaw.movements.values()]
+    active_anatomy = getattr(session, "rehab_anatomy", lambda: jaw.anatomy)()
+    if raise_T is not None and not recs and hasattr(session, "_rehab_jaw"):
+        active = session._rehab_jaw()
+        occ = active.occlusion
+        recs = [kin.protrusion(active_anatomy, jaw.settings, 6.0, occ),
+                kin.laterotrusion(active_anatomy, jaw.settings, "right", 6.0, occ),
+                kin.laterotrusion(active_anatomy, jaw.settings, "left", 6.0, occ)]
     if recs and not any(m.recorded for m in jaw.movements.values()) \
             and not any(ef.movement_type(r.name) == "opening" for r in recs):
         # Открывание — поворот вокруг настоящей оси мыщелков: у пациента она бывает наклонена к горизонтали монтажа,
         # а шарнир артикулятора exocad всегда горизонтален, так что этот наклон передаёт только файл движений.
-        recs.insert(0, kin.opening(jaw.anatomy, jaw.settings))
+        recs.insert(0, kin.opening(active_anatomy, jaw.settings))
     movements = []
     for rec in recs:
         fps = (len(rec.transforms) - 1) / rec.duration if getattr(rec, "timed", False) and rec.duration else 60.0
@@ -490,7 +505,7 @@ def case_from_session(session) -> ArticulatorCase:
     # полная реабилитация: сводка подъёма и шаблон окклюзионной плоскости (с верхней челюстью)
     if hasattr(session, "rehab_info"):
         info = session.rehab_info()
-        if info.get("raise_mm") or info.get("template_info"):
+        if any(info.get(k) for k in ("raise_mm", "template_info", "distraction_right_mm", "distraction_left_mm")):
             case.rehab_info = info
         tpl = session.rehab_template()
         if tpl is not None:

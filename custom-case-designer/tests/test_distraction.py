@@ -142,3 +142,38 @@ def test_movements_start_at_distracted_condyles(tmp_path, monkeypatch):
     assert np.linalg.norm(np.array(path["condyle_right"][-1]) - path["condyle_right"][0]) > .5
     s.articulation_rehab(distraction_right_mm=0)
     assert not s.jaw.movements  # старые рассчитанные пути больше не соответствуют положению
+
+
+from test_exocad_articulator_export import case as export_case, project, register, exocad_app
+
+
+def test_distraction_in_export(export_case, project, register, tmp_path):
+    import json
+    from casedesigner import exocad_articulator_export as xa
+    import trimesh
+    from types import SimpleNamespace
+
+    s = session(tmp_path)
+    s.jaw.anatomy = export_case.anatomy
+    s.articulation_rehab(distraction_right_mm=2, distraction_left_mm=.5, raise_mm=1)
+    T = s.rehab_transform()
+    up = {"reg": SimpleNamespace(jaw="upper", transform=np.eye(4)), "scan": export_case.upper, "path": None}
+    lo = {"reg": SimpleNamespace(jaw="lower", transform=np.eye(4)), "scan": export_case.lower, "path": None}
+    bone = trimesh.creation.box((80, 60, 10))
+    fake = SimpleNamespace(jaw=s.jaw, bite_motion=None, scans={"u": up, "l": lo},
+                           structures={"mandible": bone}, landmarks={}, suggested=set(), landmark_sources={},
+                           _jaw_items=lambda: (up, lo), rehab_transform=s.rehab_transform,
+                           rehab_anatomy=s.rehab_anatomy, rehab_info=s.rehab_info, rehab_template=s.rehab_template)
+    case = xa.case_from_session(fake)
+    assert np.allclose(case.lower.vertices, apply(T, export_case.lower.vertices))
+    assert np.allclose(case.bones["lower"].vertices, apply(T, bone.vertices))
+    assert np.allclose(case.upper.vertices, export_case.upper.vertices)
+    assert case.rehab_info["distraction_right_mm"] == 2
+    result = xa.export(case, str(project), str(tmp_path / "distraction-export"), register=register,
+                       exocad_app=exocad_app(tmp_path, custom=True))
+    saved = json.loads((tmp_path / "distraction-export" / xa.SUBFOLDER / "articulator.json").read_text(encoding="utf-8"))
+    assert saved["rehab"]["distraction_left_mm"] == .5
+    assert any("дистракция мыщелков" in note and "справа 2 мм" in note for note in result["notes"])
+    lower = trimesh.load_mesh(tmp_path / "distraction-export" / "distraction-export-lowerjaw.ply", process=False)
+    expected = apply(np.asarray(result["case_to_articulator"]), case.lower.vertices)
+    assert np.allclose(lower.vertices, expected, atol=.001)
