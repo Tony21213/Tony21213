@@ -128,6 +128,8 @@ document.addEventListener('input', (e) => { // ползунки, что меня
 document.addEventListener('change', (e) => {
   const select = e.target.closest('[data-mount-plane]');
   if (select) selectMountPlane(select.value);
+  if (e.target.matches('[data-distraction]')) rehabAction(`distraction-${e.target.dataset.distraction}`, e.target.value);
+  if (e.target.matches('[data-distraction-linked]')) rehabAction('distraction-linked', e.target.checked);
   if (e.target.matches('[data-rehab-raise]')) rehabAction('raise', e.target.value); // подъём прикуса по оси пациента
   if (e.target.matches('[data-aes-distance],[data-aes-auto]')) aestheticChange(e); // «Эстетика»: расстояние до камеры, доводка
   if (e.target.matches('[data-rehab-template]')) rehabAction('template', e.target.checked);
